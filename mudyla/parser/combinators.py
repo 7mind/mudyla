@@ -84,6 +84,18 @@ class MudylaGrammar:
             backtick + axis_values("values") + backtick
         )
 
+        # Environment var with value: - `VARIABLE_NAME=value`
+        # Example: - `LANG=C.UTF-8`
+        env_value = Regex(r"[^`]+")
+        self.environment_def = (
+            Suppress("-") +
+            backtick +
+            self.uppercase_identifier("var_name") +
+            Suppress("=") +
+            env_value("value") +
+            backtick
+        )
+
         # Passthrough env var: - `VARIABLE_NAME`
         # Example: - `HOME`
         self.passthrough_def = (
@@ -207,6 +219,26 @@ def parse_axis_definition(line: str) -> dict:
         return {
             "name": result.name,
             "values": values,
+        }
+    except Exception:
+        return None
+
+
+def parse_environment_definition(line: str) -> dict:
+    """Parse environment variable definition with value.
+
+    Args:
+        line: Line containing environment definition
+
+    Returns:
+        Dict with var_name and value, or None
+    """
+    grammar = MudylaGrammar()
+    try:
+        result = grammar.environment_def.parseString(line, parseAll=True)
+        return {
+            "var_name": result.var_name,
+            "value": result.value,
         }
     except Exception:
         return None

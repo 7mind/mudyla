@@ -357,8 +357,11 @@ class ParsedDocument:
     axis: dict[str, AxisDefinition]
     """All axis definitions indexed by name"""
 
+    environment_vars: dict[str, str]
+    """Environment variables with explicit values (e.g., LANG=C.UTF-8)"""
+
     passthrough_env_vars: list[str]
-    """Environment variables to pass through to Nix"""
+    """Environment variables to pass through from parent environment"""
 
     def get_action(self, name: str) -> ActionDefinition:
         """Get action by name.

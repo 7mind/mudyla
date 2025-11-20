@@ -82,19 +82,35 @@ Format:
 - `flags.flag-name`: Description text
 ```
 
-#### `passthrough` Section
+#### `environment` Section
 
-Documents environment variables that are expected to be available. The Nix environment inherits all environment variables by default.
+Defines environment variables with explicit values and variables to pass through from parent environment.
 
 Format:
 ```markdown
-# passthrough
+# environment
+
+- `LANG=C.UTF-8`
+- `MY_VAR=custom-value`
+
+## passthrough
 
 - `HOME`
 - `USER`
+- `SONATYPE_SECRET`
 ```
 
-**Note**: This section is primarily for documentation. The Nix environment automatically inherits all environment variables from the parent process.
+**Environment variables** (with `=value`):
+- Explicitly set for every action via `export VAR=value` in rendered scripts
+- Defined before the action script executes
+- Values are properly escaped for bash
+
+**Passthrough variables** (in `passthrough` subsection):
+- Passed through from parent environment to Nix environment
+- Used with `--keep VAR` flag in nix develop command
+- Must exist in parent environment at execution time
+
+**Legacy**: Top-level `# passthrough` section still supported for backward compatibility.
 
 #### `Axis` Section
 
@@ -500,10 +516,12 @@ The `dep` pseudo-command allows explicit dependency declaration as an alternativ
 
 **Syntax**:
 ```bash
-dep action-name
+dep action.action-name
 ```
 
 **Purpose**: Declare that this action depends on another action without needing to reference its outputs.
+
+**Design**: Uses the same `action.` prefix as expansions for consistency and extensibility (future: `dep env.VAR`, `dep args.ARG`).
 
 **Use Cases**:
 - Ensure execution order when outputs aren't needed
@@ -522,7 +540,7 @@ ret result:string="Task A completed"
 # action: task-b
 ## definition
 ```bash
-dep task-a
+dep action.task-a
 
 echo "Task B (depends on A)" > task-b.txt
 ret result:string="Task B completed"
@@ -530,9 +548,9 @@ ret result:string="Task B completed"
 ```
 
 **Implementation**:
-- Dependencies are extracted at parse time by scanning for `dep` commands
+- Dependencies are extracted at parse time by scanning for `dep action.` commands
 - At runtime, `dep` is a no-op bash function (dependencies already in DAG)
-- Both implicit (`${action.*}`) and explicit (`dep`) dependencies are collected
+- Both implicit (`${action.*}`) and explicit (`dep action.`) dependencies are collected
 - Duplicate dependencies are automatically deduplicated
 
 **Injected Function**:
@@ -549,12 +567,14 @@ dep() {
 | Method | Syntax | When to Use |
 |--------|--------|-------------|
 | Implicit | `${action.name.output}` | When you need the action's output value |
-| Explicit | `dep action-name` | When you only need execution order |
+| Explicit | `dep action.name` | When you only need execution order |
 
 **Benefits**:
 - Cleaner scripts (no need for dummy variable references)
 - Self-documenting (dependency intent is clear)
 - Works with actions that only produce files/side effects
+- Consistent syntax with expansions (both use `action.` prefix)
+- Extensible for future dependency types
 
 ## Error Handling
 
@@ -1090,17 +1110,20 @@ nix develop --ignore-environment \
 **Motivation**: Provide a cleaner way to declare dependencies without needing to reference action outputs.
 
 **Implementation**:
-- Added `dep` pseudo-command: `dep action-name`
+- Added `dep` pseudo-command: `dep action.action-name`
 - Created `mudyla/parser/dependency_parser.py` to extract dep declarations
 - Added `DependencyDeclaration` class to AST models
-- Modified DAG builder to collect both implicit (`${action.*}`) and explicit (`dep`) dependencies
+- Modified DAG builder to collect both implicit (`${action.*}`) and explicit (`dep action.`) dependencies
 - Injected `dep()` bash function as no-op (dependencies extracted at parse time)
+- Uses `action.` prefix for consistency with expansions and future extensibility
 
 **Benefits**:
 - **Cleaner scripts**: No need for dummy variable references like `echo "Dependency: ${action.name.success}"`
 - **Self-documenting**: Dependency intent is explicit in the script
 - **Execution order control**: Depend on actions that only produce side effects (files, deployments)
 - **Flexibility**: Mix implicit and explicit dependencies as needed
+- **Consistent syntax**: Same `action.` prefix as expansions
+- **Extensible**: Allows for future dependency types (e.g., `dep env.VAR`)
 
 **Example**:
 ```markdown
@@ -1114,7 +1137,7 @@ ret result:string="Task A completed"
 # action: task-b
 ## definition
 ```bash
-dep task-a
+dep action.task-a
 
 echo "Task B (depends on A)" > task-b.txt
 ret result:string="Task B completed"
@@ -1129,5 +1152,61 @@ ret result:string="Task B completed"
 
 **Comparison**:
 - **Before**: `echo "Dependency: ${action.setup.success}" >/dev/null`
-- **After**: `dep setup`
+- **After**: `dep action.setup`
+
+
+### 14. Environment Section with Explicit Values
+**Motivation**: Allow setting environment variables with specific values while maintaining passthrough capability.
+
+**Implementation**:
+- Added `environment` section that replaces top-level `passthrough` section
+- Environment variables with values: `- `LANG=C.UTF-8`` exported in each action script
+- Passthrough subsection: `## passthrough` lists vars to inherit from parent environment
+- Parser combinators for `environment_def` pattern
+- Values properly escaped for bash injection
+- Exports added to rendered scripts before action code
+- Legacy top-level `passthrough` section still supported
+
+**Benefits**:
+- **Explicit configuration**: Set exact values for environment variables (e.g., `LANG=C.UTF-8`)
+- **Reproducibility**: Same environment across all executions
+- **Flexibility**: Mix explicit values with passthrough from parent
+- **Clean separation**: Clear distinction between set values and inherited values
+- **CI/CD friendly**: Define build environment requirements explicitly
+
+**Format**:
+```markdown
+# environment
+
+- `LANG=C.UTF-8`
+- `BUILD_TYPE=release`
+
+## passthrough
+
+- `HOME`
+- `USER`
+- `GITHUB_TOKEN`
+```
+
+**Generated Script**:
+```bash
+# Environment variables
+export LANG="C.UTF-8"
+export BUILD_TYPE="release"
+
+# Action script follows...
+```
+
+**Nix Command**:
+```bash
+nix develop --ignore-environment \
+  --keep HOME --keep USER --keep GITHUB_TOKEN \
+  --command bash script.sh
+```
+
+**Use Cases**:
+- Setting locale variables (`LANG`, `LC_ALL`)
+- Defining build modes or configurations
+- Setting tool-specific variables with known values
+- CI/CD pipelines needing exact environment state
 

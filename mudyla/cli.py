@@ -281,6 +281,7 @@ class CLI:
                 args=custom_args,
                 flags=all_flags,
                 axis_values=axis_values,
+                environment_vars=document.environment_vars,
                 passthrough_env_vars=document.passthrough_env_vars,
                 previous_run_directory=previous_run_dir,
                 github_actions=args.github_actions,

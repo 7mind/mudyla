@@ -8,8 +8,8 @@ from ..ast.models import DependencyDeclaration, SourceLocation
 class DependencyParser:
     """Parser for dep pseudo-command in bash scripts."""
 
-    # Pattern to match: dep action-name
-    DEP_PATTERN = re.compile(r"^\s*dep\s+([a-zA-Z][a-zA-Z0-9_-]*)\s*$")
+    # Pattern to match: dep action.action-name
+    DEP_PATTERN = re.compile(r"^\s*dep\s+action\.([a-zA-Z][a-zA-Z0-9_-]*)\s*$")
 
     @classmethod
     def find_all_dependencies(

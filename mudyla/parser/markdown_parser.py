@@ -29,6 +29,7 @@ from .combinators import (
     parse_argument_definition,
     parse_flag_definition,
     parse_axis_definition,
+    parse_environment_definition,
     parse_passthrough_definition,
     parse_vars_definition,
 )
@@ -97,11 +98,12 @@ class MarkdownParser:
         all_arguments: dict[str, ArgumentDefinition] = {}
         all_flags: dict[str, FlagDefinition] = {}
         all_axis: dict[str, AxisDefinition] = {}
+        all_environment: dict[str, str] = {}
         all_passthrough: list[str] = []
 
         for file_path in file_paths:
             content = file_path.read_text()
-            actions, arguments, flags, axis, passthrough = self._parse_file(
+            actions, arguments, flags, axis, environment_vars, passthrough = self._parse_file(
                 file_path, content
             )
 
@@ -116,10 +118,11 @@ class MarkdownParser:
                     )
                 all_actions[action_name] = action
 
-            # Merge other definitions (last one wins for arguments/flags/axis)
+            # Merge other definitions (last one wins for arguments/flags/axis/environment)
             all_arguments.update(arguments)
             all_flags.update(flags)
             all_axis.update(axis)
+            all_environment.update(environment_vars)
             all_passthrough.extend(passthrough)
 
         # Remove duplicate passthrough vars
@@ -130,6 +133,7 @@ class MarkdownParser:
             arguments=all_arguments,
             flags=all_flags,
             axis=all_axis,
+            environment_vars=all_environment,
             passthrough_env_vars=all_passthrough,
         )
 
@@ -140,12 +144,13 @@ class MarkdownParser:
         dict[str, ArgumentDefinition],
         dict[str, FlagDefinition],
         dict[str, AxisDefinition],
+        dict[str, str],
         list[str],
     ]:
         """Parse a single markdown file.
 
         Returns:
-            Tuple of (actions, arguments, flags, axis, passthrough)
+            Tuple of (actions, arguments, flags, axis, environment_vars, passthrough)
         """
         sections = self._extract_sections(content)
 
@@ -153,6 +158,7 @@ class MarkdownParser:
         arguments = {}
         flags = {}
         axis = {}
+        environment_vars = {}
         passthrough = []
 
         for section in sections:
@@ -165,7 +171,10 @@ class MarkdownParser:
                 flags = self._parse_flags_section(section, file_path)
             elif title_lower == "axis":
                 axis = self._parse_axis_section(section, file_path)
+            elif title_lower == "environment":
+                environment_vars, passthrough = self._parse_environment_section(section, file_path)
             elif title_lower == "passthrough":
+                # Legacy support for top-level passthrough section
                 passthrough = self._parse_passthrough_section(section, file_path)
             else:
                 # Check if it's an action
@@ -175,7 +184,7 @@ class MarkdownParser:
                     action = self._parse_action(section, action_name, file_path)
                     actions[action_name] = action
 
-        return actions, arguments, flags, axis, passthrough
+        return actions, arguments, flags, axis, environment_vars, passthrough
 
     def _extract_sections(self, content: str) -> list[Section]:
         """Extract all top-level sections from markdown content."""
@@ -367,6 +376,52 @@ class MarkdownParser:
                 passthrough.append(var_name)
 
         return passthrough
+
+    def _parse_environment_section(
+        self, section: Section, file_path: Path
+    ) -> tuple[dict[str, str], list[str]]:
+        """Parse environment section with environment vars and passthrough subsection.
+
+        Returns:
+            Tuple of (environment_vars, passthrough_vars)
+        """
+        environment_vars = {}
+        passthrough_vars = []
+
+        # Split content into main section and passthrough subsection
+        content_lines = section.content.split("\n")
+        in_passthrough = False
+
+        for line in content_lines:
+            stripped = line.strip()
+
+            # Check for passthrough subsection header
+            if stripped.startswith("##") and "passthrough" in stripped.lower():
+                in_passthrough = True
+                continue
+
+            # Skip empty lines
+            if not stripped:
+                continue
+
+            # Add leading "- " if not present for parser
+            if not stripped.startswith("-"):
+                line = "- " + stripped
+            else:
+                line = stripped
+
+            if in_passthrough:
+                # Parse as passthrough variable
+                var_name = parse_passthrough_definition(line)
+                if var_name:
+                    passthrough_vars.append(var_name)
+            else:
+                # Try parsing as environment variable with value first
+                env_def = parse_environment_definition(line)
+                if env_def:
+                    environment_vars[env_def["var_name"]] = env_def["value"]
+
+        return environment_vars, passthrough_vars
 
     def _parse_action(
         self, section: Section, action_name: str, file_path: Path

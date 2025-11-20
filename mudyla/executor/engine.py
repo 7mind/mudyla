@@ -119,6 +119,7 @@ set -euo pipefail
         args: dict[str, str],
         flags: dict[str, bool],
         axis_values: dict[str, str],
+        environment_vars: dict[str, str],
         passthrough_env_vars: list[str],
         run_directory: Optional[Path] = None,
         previous_run_directory: Optional[Path] = None,
@@ -131,6 +132,7 @@ set -euo pipefail
         self.args = args
         self.flags = flags
         self.axis_values = axis_values
+        self.environment_vars = environment_vars
         self.passthrough_env_vars = passthrough_env_vars
         self.previous_run_directory = previous_run_directory
         self.github_actions = github_actions
@@ -347,7 +349,18 @@ set -euo pipefail
         ret_function = self.RET_FUNCTION_TEMPLATE.format(
             output_json=str(output_json_path)
         )
-        full_script = ret_function + "\n" + rendered_script
+
+        # Add environment variable exports
+        env_exports = ""
+        if self.environment_vars:
+            env_exports = "# Environment variables\n"
+            for var_name, var_value in sorted(self.environment_vars.items()):
+                # Properly escape the value for bash
+                escaped_value = var_value.replace("\\", "\\\\").replace('"', '\\"')
+                env_exports += f'export {var_name}="{escaped_value}"\n'
+            env_exports += "\n"
+
+        full_script = ret_function + env_exports + rendered_script
 
         # Save script
         script_path = action_dir / "script.sh"

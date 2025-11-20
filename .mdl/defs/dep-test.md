@@ -18,7 +18,7 @@ Depends on task-a using dep command.
 ## definition
 
 ```bash
-dep task-a
+dep action.task-a
 
 echo "Task B (depends on A)" > task-b.txt
 ret result:string="Task B completed"
@@ -31,8 +31,8 @@ Depends on both task-a and task-b using dep commands.
 ## definition
 
 ```bash
-dep task-a
-dep task-b
+dep action.task-a
+dep action.task-b
 
 echo "Task C (depends on A and B)" > task-c.txt
 ret result:string="Task C completed"
