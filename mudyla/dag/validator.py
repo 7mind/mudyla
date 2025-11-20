@@ -1,0 +1,301 @@
+"""Validator for action dependency graphs."""
+
+import os
+from typing import Optional
+
+from ..ast.expansions import ArgsExpansion, EnvExpansion, FlagsExpansion, ActionExpansion
+from ..ast.models import ParsedDocument
+from .graph import ActionGraph
+
+
+class ValidationError(Exception):
+    """Validation error with details."""
+
+    pass
+
+
+class DAGValidator:
+    """Validates action dependency graphs."""
+
+    def __init__(self, document: ParsedDocument, graph: ActionGraph):
+        self.document = document
+        self.graph = graph
+
+    def validate_all(
+        self, args: dict[str, str], flags: dict[str, bool], axis_values: dict[str, str]
+    ) -> None:
+        """Run all validations.
+
+        Args:
+            args: Provided arguments
+            flags: Provided flags
+            axis_values: Provided axis values
+
+        Raises:
+            ValidationError: If any validation fails
+        """
+        errors = []
+
+        # 1. Validate graph is acyclic
+        try:
+            self._validate_acyclic()
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 2. Validate all dependencies exist
+        try:
+            self._validate_dependencies_exist()
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 3. Validate environment variables
+        try:
+            self._validate_environment_variables()
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 4. Validate arguments
+        try:
+            self._validate_arguments(args)
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 5. Validate flags
+        try:
+            self._validate_flags(flags)
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 6. Validate axis values
+        try:
+            self._validate_axis_values(axis_values)
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 7. Validate action outputs
+        try:
+            self._validate_action_outputs()
+        except ValidationError as e:
+            errors.append(str(e))
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_acyclic(self) -> None:
+        """Validate that the graph is acyclic."""
+        cycle = self.graph.find_cycle()
+        if cycle:
+            cycle_str = " -> ".join(cycle)
+            raise ValidationError(f"Circular dependency detected: {cycle_str}")
+
+    def _validate_dependencies_exist(self) -> None:
+        """Validate that all action dependencies exist."""
+        errors = []
+        for node in self.graph.nodes.values():
+            for dep_name in node.dependencies:
+                if dep_name not in self.graph.nodes:
+                    errors.append(
+                        f"Action '{node.action.name}' depends on '{dep_name}' "
+                        f"which does not exist (at {node.action.location})"
+                    )
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_environment_variables(self) -> None:
+        """Validate that all required environment variables are present."""
+        missing_vars = []
+
+        # Get pruned graph (only required actions)
+        pruned_graph = self.graph.prune_to_goals()
+
+        for node in pruned_graph.nodes.values():
+            if not node.selected_version:
+                continue
+
+            # Check environment variables from expansions
+            for expansion in node.selected_version.expansions:
+                if isinstance(expansion, EnvExpansion):
+                    if expansion.variable_name not in os.environ:
+                        missing_vars.append(
+                            f"Action '{node.action.name}' requires environment "
+                            f"variable '{expansion.variable_name}' which is not set "
+                            f"(at {node.selected_version.location})"
+                        )
+
+            # Check documented env vars
+            for var_name in node.action.required_env_vars:
+                if var_name not in os.environ:
+                    missing_vars.append(
+                        f"Action '{node.action.name}' requires environment "
+                        f"variable '{var_name}' which is not set "
+                        f"(documented at {node.action.location})"
+                    )
+
+        if missing_vars:
+            unique_vars = list(set(missing_vars))
+            raise ValidationError("\n".join(unique_vars))
+
+    def _validate_arguments(self, args: dict[str, str]) -> None:
+        """Validate that all required arguments are provided."""
+        errors = []
+
+        # Get pruned graph
+        pruned_graph = self.graph.prune_to_goals()
+
+        # Collect all used arguments
+        used_args = set()
+        for node in pruned_graph.nodes.values():
+            if not node.selected_version:
+                continue
+
+            for expansion in node.selected_version.expansions:
+                if isinstance(expansion, ArgsExpansion):
+                    used_args.add(expansion.argument_name)
+
+        # Check each used argument
+        for arg_name in used_args:
+            if arg_name not in self.document.arguments:
+                errors.append(
+                    f"Argument 'args.{arg_name}' is used but not defined in arguments section"
+                )
+                continue
+
+            arg_def = self.document.arguments[arg_name]
+
+            # Check if mandatory argument is provided
+            if arg_def.is_mandatory and arg_name not in args:
+                errors.append(
+                    f"Mandatory argument 'args.{arg_name}' is not provided "
+                    f"(defined at {arg_def.location})"
+                )
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_flags(self, flags: dict[str, bool]) -> None:
+        """Validate that all used flags are defined."""
+        errors = []
+
+        # Get pruned graph
+        pruned_graph = self.graph.prune_to_goals()
+
+        # Collect all used flags
+        used_flags = set()
+        for node in pruned_graph.nodes.values():
+            if not node.selected_version:
+                continue
+
+            for expansion in node.selected_version.expansions:
+                if isinstance(expansion, FlagsExpansion):
+                    used_flags.add(expansion.flag_name)
+
+        # Check each used flag is defined
+        for flag_name in used_flags:
+            if flag_name not in self.document.flags:
+                errors.append(
+                    f"Flag 'flags.{flag_name}' is used but not defined in flags section"
+                )
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_axis_values(self, axis_values: dict[str, str]) -> None:
+        """Validate axis values."""
+        errors = []
+
+        # Get pruned graph
+        pruned_graph = self.graph.prune_to_goals()
+
+        # Collect required axis
+        required_axis = set()
+        for node in pruned_graph.nodes.values():
+            if node.action.is_multi_version:
+                required_axis.update(node.action.get_required_axis())
+
+        # Check all required axis are provided
+        for axis_name in required_axis:
+            if axis_name not in axis_values:
+                # Check if there's a default
+                if axis_name not in self.document.axis:
+                    errors.append(f"Axis '{axis_name}' is required but not defined")
+                    continue
+
+                axis_def = self.document.axis[axis_name]
+                default_value = axis_def.get_default_value()
+
+                if default_value is None:
+                    actions_needing_axis = [
+                        node.action.name
+                        for node in pruned_graph.nodes.values()
+                        if axis_name in node.action.get_required_axis()
+                    ]
+                    errors.append(
+                        f"Axis '{axis_name}' must be specified (required by: {', '.join(actions_needing_axis)})"
+                    )
+
+        # Validate provided values are valid
+        for axis_name, axis_value in axis_values.items():
+            if axis_name not in self.document.axis:
+                errors.append(f"Axis '{axis_name}' is not defined")
+                continue
+
+            axis_def = self.document.axis[axis_name]
+            try:
+                axis_def.validate_value(axis_value)
+            except ValueError as e:
+                errors.append(str(e))
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_action_outputs(self) -> None:
+        """Validate that all required action outputs are provided."""
+        errors = []
+
+        # Get pruned graph
+        pruned_graph = self.graph.prune_to_goals()
+
+        for node in pruned_graph.nodes.values():
+            if not node.selected_version:
+                errors.append(
+                    f"Action '{node.action.name}' has no valid version selected"
+                )
+                continue
+
+            # Get all required outputs
+            required_outputs: dict[str, set[str]] = {}  # dep_action -> {output_names}
+
+            for expansion in node.selected_version.expansions:
+                if isinstance(expansion, ActionExpansion):
+                    dep_action = expansion.get_dependency_action()
+                    if dep_action not in required_outputs:
+                        required_outputs[dep_action] = set()
+                    required_outputs[dep_action].add(expansion.variable_name)
+
+            # Check each dependency provides the required outputs
+            for dep_action, output_names in required_outputs.items():
+                if dep_action not in pruned_graph.nodes:
+                    continue  # This will be caught by dependency validation
+
+                dep_node = pruned_graph.nodes[dep_action]
+                if not dep_node.selected_version:
+                    continue
+
+                # Get all outputs provided by this dependency
+                provided_outputs = {
+                    ret.name for ret in dep_node.selected_version.return_declarations
+                }
+
+                # Check all required outputs are provided
+                missing = output_names - provided_outputs
+                if missing:
+                    errors.append(
+                        f"Action '{node.action.name}' requires outputs "
+                        f"{{{', '.join(sorted(missing))}}} from '{dep_action}', "
+                        f"but '{dep_action}' only provides "
+                        f"{{{', '.join(sorted(provided_outputs))}}}"
+                    )
+
+        if errors:
+            raise ValidationError("\n".join(errors))

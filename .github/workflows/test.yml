@@ -1,0 +1,54 @@
+name: Test
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v14
+
+    - name: Setup Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@v8
+
+    - name: Check flake
+      run: nix flake check
+
+    - name: Build package
+      run: nix build
+
+    - name: Run test suite
+      run: bash test.sh
+
+    - name: Archive run directories
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: mudyla-runs
+        path: .mdl/runs/
+        retention-days: 1
+
+  type-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v14
+
+    - name: Setup Nix cache
+      uses: DeterminateSystems/magic-nix-cache-action@v8
+
+    - name: Run mypy type checking
+      run: nix develop --command bash -c "mypy mudyla --check-untyped-defs || true"
