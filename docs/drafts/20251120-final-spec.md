@@ -699,11 +699,21 @@ mdl --continue :deploy
 ```
 
 ### 5. CI/CD Integration
-**Added**: GitHub Actions workflow with Determinate Nix installer
+**Added**: GitHub Actions workflow with comprehensive cross-platform testing
+
+**Linux/macOS (Nix-based)**:
+- Uses Determinate Nix installer
 - Automatic testing on push/PR
 - Type checking with mypy
 - Binary caching via Magic Nix Cache
 - Test artifact archiving on failure
+
+**Windows Testing**:
+- Runs on `windows-latest` with Python 3.11
+- Uses UV for fast package installation
+- Tests platform auto-detection (--without-nix flag)
+- Verifies Windows compatibility and output creation
+- Uses Git Bash for script execution
 
 ### 6. GitHub Actions Integration (--github-actions)
 **Motivation**: Improve readability of build logs in GitHub Actions UI.
