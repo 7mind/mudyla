@@ -370,9 +370,6 @@ set -euo pipefail
                 # Fall back to searching PATH (but this might find WSL bash)
                 if bash_cmd is None:
                     bash_cmd = shutil.which("bash.exe") or "bash.exe"
-
-                print(f"Platform detected: Windows")
-                print(f"Using bash: {bash_cmd}")
             else:
                 bash_cmd = "bash"
 
