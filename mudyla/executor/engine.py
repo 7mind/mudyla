@@ -60,10 +60,17 @@ class ExecutionEngine:
     """Engine for executing actions in a DAG."""
 
     RET_FUNCTION_TEMPLATE = """
-# Mudyla ret function
+# Mudyla pseudo-commands
 MDL_OUTPUT_JSON="{output_json}"
 MDL_OUTPUT_LINES=()
 
+# dep pseudo-command (no-op, used for dependency declaration)
+dep() {{
+    # Dependencies are extracted at parse time, this is a no-op at runtime
+    :
+}}
+
+# ret pseudo-command (captures return values)
 ret() {{
     local declaration="$1"
     local name="${{declaration%%:*}}"
@@ -385,10 +392,10 @@ set -euo pipefail
             # Add action-specific required env vars
             env_vars_to_keep.update(action.required_env_vars.keys())
 
-            # Build command with --ignore-environment and --keep-env-var for each var
+            # Build command with --ignore-environment and --keep for each var
             exec_cmd = ["nix", "develop", "--ignore-environment"]
             for var in sorted(env_vars_to_keep):
-                exec_cmd.extend(["--keep-env-var", var])
+                exec_cmd.extend(["--keep", var])
             exec_cmd.extend(["--command", "bash", str(script_path)])
 
         # Execute

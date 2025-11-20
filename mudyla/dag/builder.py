@@ -68,9 +68,14 @@ class DAGBuilder:
             # Extract dependencies
             dependencies = set()
             if selected_version:
+                # Implicit dependencies from ${action.*} expansions
                 for expansion in selected_version.expansions:
                     if isinstance(expansion, ActionExpansion):
                         dependencies.add(expansion.get_dependency_action())
+
+                # Explicit dependencies from dep declarations
+                for dep_decl in selected_version.dependency_declarations:
+                    dependencies.add(dep_decl.action_name)
 
             node = ActionNode(
                 action=action,

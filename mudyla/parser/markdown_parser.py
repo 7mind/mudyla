@@ -15,12 +15,14 @@ from ..ast.models import (
     AxisDefinition,
     AxisValue,
     Condition,
+    DependencyDeclaration,
     FlagDefinition,
     ParsedDocument,
     PlatformCondition,
     SourceLocation,
 )
 from ..ast.types import ReturnType
+from .dependency_parser import DependencyParser
 from .expansion_parser import ExpansionParser
 from .return_parser import ReturnParser
 from .combinators import (
@@ -553,10 +555,16 @@ class MarkdownParser:
         # Parse return declarations
         return_declarations = ReturnParser.find_all_returns(bash_script, location)
 
+        # Parse dependency declarations
+        dependency_declarations = DependencyParser.find_all_dependencies(
+            bash_script, location
+        )
+
         return ActionVersion(
             bash_script=bash_script,
             expansions=expansions,
             return_declarations=return_declarations,
+            dependency_declarations=dependency_declarations,
             conditions=conditions,
             location=location,
         )

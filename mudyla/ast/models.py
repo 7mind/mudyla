@@ -34,6 +34,19 @@ class ReturnDeclaration:
 
 
 @dataclass(frozen=True)
+class DependencyDeclaration:
+    """Explicit dependency declaration in an action."""
+
+    action_name: str
+    """The name of the action this depends on"""
+
+    location: SourceLocation
+
+    def __str__(self) -> str:
+        return f"dep {self.action_name}"
+
+
+@dataclass(frozen=True)
 class ArgumentDefinition:
     """Command-line argument definition."""
 
@@ -183,6 +196,9 @@ class ActionVersion:
 
     return_declarations: list[ReturnDeclaration]
     """Return value declarations"""
+
+    dependency_declarations: list[DependencyDeclaration]
+    """Explicit dependency declarations (dep pseudo-command)"""
 
     conditions: list[Condition]
     """Conditions that must be met for this version (axis and/or platform)"""

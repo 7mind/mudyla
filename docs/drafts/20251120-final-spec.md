@@ -389,12 +389,12 @@ For each action in topological order:
    **With Nix (default)**:
    ```bash
    nix develop --ignore-environment \
-     --keep-env-var VAR1 --keep-env-var VAR2 ... \
+     --keep VAR1 --keep VAR2 ... \
      --command bash <rendered-script>
    ```
 
    - Uses `--ignore-environment` for clean, reproducible builds
-   - Explicitly keeps only required environment variables via `--keep-env-var`:
+   - Explicitly keeps only required environment variables via `--keep`:
      - Global passthrough env vars (from `passthrough` section)
      - Action-specific required env vars (from `vars` section)
    - No implicit environment inheritance (ensures reproducibility)
@@ -493,6 +493,68 @@ ret() {
 
 export MDL_OUTPUT_JSON=".mdl/runs/<run-id>/<action-name>/output.json"
 ```
+
+## `dep` Pseudo-Command
+
+The `dep` pseudo-command allows explicit dependency declaration as an alternative to implicit dependencies created by `${action.*}` expansions.
+
+**Syntax**:
+```bash
+dep action-name
+```
+
+**Purpose**: Declare that this action depends on another action without needing to reference its outputs.
+
+**Use Cases**:
+- Ensure execution order when outputs aren't needed
+- Make dependencies explicit and visible in the script
+- Depend on actions that produce side effects (files, deployments) rather than return values
+
+**Example**:
+```markdown
+# action: task-a
+## definition
+```bash
+echo "Task A" > task-a.txt
+ret result:string="Task A completed"
+```
+
+# action: task-b
+## definition
+```bash
+dep task-a
+
+echo "Task B (depends on A)" > task-b.txt
+ret result:string="Task B completed"
+```
+```
+
+**Implementation**:
+- Dependencies are extracted at parse time by scanning for `dep` commands
+- At runtime, `dep` is a no-op bash function (dependencies already in DAG)
+- Both implicit (`${action.*}`) and explicit (`dep`) dependencies are collected
+- Duplicate dependencies are automatically deduplicated
+
+**Injected Function**:
+```bash
+# dep pseudo-command (no-op, used for dependency declaration)
+dep() {
+    # Dependencies are extracted at parse time, this is a no-op at runtime
+    :
+}
+```
+
+**Comparison with Implicit Dependencies**:
+
+| Method | Syntax | When to Use |
+|--------|--------|-------------|
+| Implicit | `${action.name.output}` | When you need the action's output value |
+| Explicit | `dep action-name` | When you only need execution order |
+
+**Benefits**:
+- Cleaner scripts (no need for dummy variable references)
+- Self-documenting (dependency intent is clear)
+- Works with actions that only produce files/side effects
 
 ## Error Handling
 
@@ -1002,7 +1064,7 @@ On Linux/macOS: selects default (only matching version)
 
 **Implementation**:
 - Added `--ignore-environment` flag to `nix develop` command
-- Explicitly whitelist environment variables with `--keep-env-var`:
+- Explicitly whitelist environment variables with `--keep`:
   - Global passthrough env vars (from `passthrough` section)
   - Action-specific required env vars (from `vars` section)
 - No implicit inheritance from parent environment
@@ -1017,9 +1079,55 @@ On Linux/macOS: selects default (only matching version)
 ```bash
 # Action requires HOME and USER
 nix develop --ignore-environment \
-  --keep-env-var HOME --keep-env-var USER \
+  --keep HOME --keep USER \
   --command bash script.sh
 ```
 
 **Without Nix mode**: Still inherits environment normally (can't use --ignore-environment without Nix)
+
+
+### 13. Explicit Dependency Declaration (dep Pseudo-Command)
+**Motivation**: Provide a cleaner way to declare dependencies without needing to reference action outputs.
+
+**Implementation**:
+- Added `dep` pseudo-command: `dep action-name`
+- Created `mudyla/parser/dependency_parser.py` to extract dep declarations
+- Added `DependencyDeclaration` class to AST models
+- Modified DAG builder to collect both implicit (`${action.*}`) and explicit (`dep`) dependencies
+- Injected `dep()` bash function as no-op (dependencies extracted at parse time)
+
+**Benefits**:
+- **Cleaner scripts**: No need for dummy variable references like `echo "Dependency: ${action.name.success}"`
+- **Self-documenting**: Dependency intent is explicit in the script
+- **Execution order control**: Depend on actions that only produce side effects (files, deployments)
+- **Flexibility**: Mix implicit and explicit dependencies as needed
+
+**Example**:
+```markdown
+# action: task-a
+## definition
+```bash
+echo "Task A" > task-a.txt
+ret result:string="Task A completed"
+```
+
+# action: task-b
+## definition
+```bash
+dep task-a
+
+echo "Task B (depends on A)" > task-b.txt
+ret result:string="Task B completed"
+```
+```
+
+**Use Cases**:
+- Sequential deployment steps where outputs aren't needed
+- Testing pipelines where test order matters
+- Build steps that depend on file generation
+- Any action dependency where outputs aren't referenced
+
+**Comparison**:
+- **Before**: `echo "Dependency: ${action.setup.success}" >/dev/null`
+- **After**: `dep setup`
 
