@@ -4,6 +4,8 @@ A shell script orchestrator that allows defining build actions in Markdown files
 
 Totally Claude'd.
 
+Based on some ideas from Grandmaster (our build tool which is currently under development) and [ix package manager](https://stal-ix.github.io/IX.html)
+
 ## Features
 
 - **Markdown-based action definitions**: Define actions in readable Markdown files
