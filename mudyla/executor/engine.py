@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -353,7 +354,9 @@ set -euo pipefail
         # Build execution command
         if self.without_nix:
             # Run bash directly without Nix
-            exec_cmd = ["bash", str(script_path)]
+            # On Windows, use bash.exe to ensure we get Git Bash, not WSL bash
+            bash_cmd = "bash.exe" if platform.system() == "Windows" else "bash"
+            exec_cmd = [bash_cmd, str(script_path)]
         else:
             # Run under Nix develop environment
             # Note: We don't use --ignore-env because we want to preserve the environment

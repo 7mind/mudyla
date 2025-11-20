@@ -555,13 +555,18 @@ Runs Mudyla without Nix dependency:
 - **Local development**: Quick testing without Nix environment overhead
 
 **Behavior**:
-- Executes bash scripts directly: `bash script.sh` instead of `nix develop --command bash script.sh`
+- Executes bash scripts directly: `bash script.sh` (or `bash.exe` on Windows) instead of `nix develop --command bash script.sh`
 - Environment variables passed through normally
 - All other features work identically (DAG, validation, caching, etc.)
 - **Windows auto-detection**: Flag is automatically set when running on Windows
+- **Windows**: Uses `bash.exe` to ensure Git Bash is used (not WSL bash)
+
+**Requirements**:
+- **Windows**: Git Bash must be installed (included with Git for Windows)
+- **Linux/macOS**: Standard bash shell
+- Dependencies must be available in the system PATH
 
 **Limitations**:
-- Dependencies must be available in the system PATH
 - No Nix environment isolation
 - User responsible for ensuring required tools are installed
 
@@ -752,13 +757,21 @@ done
 **Implementation**:
 - `--without-nix` flag executes bash scripts directly
 - Windows auto-detection: automatically enables flag on Windows platform
-- Command: `bash script.sh` instead of `nix develop --command bash script.sh`
+- Windows: Uses `bash.exe` to invoke Git Bash (avoids WSL bash)
+- Linux/macOS: Uses `bash` command
+- Command: `bash script.sh` (or `bash.exe` on Windows) instead of `nix develop --command bash script.sh`
 
 **Benefits**:
-- Works on Windows (with bash available)
+- Works on Windows (with Git Bash available)
 - Works in Docker containers without Nix
 - Works in CI systems where Nix isn't installed
 - Reduced overhead for local testing
+
+**Requirements**:
+- **Windows**: Git Bash must be installed and in PATH
+  - Included with Git for Windows
+  - Available by default in GitHub Actions Windows runners
+- **Linux/macOS**: Standard bash shell
 
 **Use Cases**:
 - Windows development environments
