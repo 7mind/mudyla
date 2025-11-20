@@ -244,12 +244,36 @@ Multiple conditions can be combined with commas:
 ```\
 ```
 
-**Rules**:
-- User must specify all required axis values via command line
-- Platform is detected automatically
-- All conditions in a `when` clause must match for that version to be selected
-- At most one version matches the given conditions
-- Error if no version matches or if required axis not specified
+**Version Selection Rules**:
+
+1. **Condition Matching**: All conditions in a `when` clause must match for that version to be selected
+   - User specifies axis values via command line (e.g., `build-mode=release`)
+   - Platform is detected automatically
+
+2. **Specificity-Based Selection**: When multiple versions match, the most specific one is chosen
+   - Specificity = number of conditions in the version
+   - Version with 0 conditions (no `when` clause) = default/fallback with specificity 0
+   - Version with 1 condition has specificity 1
+   - Version with 2 conditions has specificity 2
+   - Higher specificity wins
+
+3. **Ambiguity Detection**: Error if multiple versions have the same specificity and all match
+
+4. **Example**: Action with default and Windows-specific versions:
+   ```markdown
+   ## definition
+   # Specificity 0 (default, matches any platform)
+
+   ## definition when `sys.platform: windows`
+   # Specificity 1 (matches only Windows)
+   ```
+   - On Windows: selects the Windows version (specificity 1 > 0)
+   - On Linux/macOS: selects the default version (only matching version)
+
+5. **Error Conditions**:
+   - No version matches the given conditions
+   - Multiple versions with same specificity match (ambiguous)
+   - Required axis value not specified
 
 ## Expansion Syntax
 
@@ -923,4 +947,43 @@ brew install tool
 ```
 
 **Platform values**: `windows`, `linux`, `macos`
+
+
+
+### 11. Specificity-Based Version Selection
+**Motivation**: Allow default implementations with platform/axis-specific overrides.
+
+**Implementation**:
+- Version specificity = number of conditions (0 for default, 1 for single condition, etc.)
+- When multiple versions match, select the one with highest specificity
+- Versions with no `when` clause have specificity 0 (default/fallback)
+- Error if multiple versions with same specificity match (ambiguous)
+
+**Benefits**:
+- Write default implementation without duplicating for each platform
+- Override only where needed (e.g., Windows-specific file extension)
+- Cleaner action definitions
+- Follows principle of least surprise (most specific wins)
+
+**Example**:
+```markdown
+# action: build
+
+## definition
+# Default for Linux/macOS
+ret binary:file=output.bin
+
+## definition when \`sys.platform: windows\`
+# Override for Windows
+ret binary:file=output.exe
+```
+
+On Windows: selects Windows version (specificity 1 > 0)
+On Linux/macOS: selects default (only matching version)
+
+**Selection Algorithm**:
+1. Find all versions where all conditions match
+2. Group by specificity (number of conditions)
+3. Select version from highest specificity group
+4. Error if multiple versions in that group (ambiguous)
 

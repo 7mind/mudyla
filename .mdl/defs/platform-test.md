@@ -49,3 +49,26 @@ ret message:string="Linux Development Build"
 ```bash
 ret message:string="Windows Development Build"
 ```
+
+# action: build-binary
+
+This action demonstrates specificity-based version selection.
+Default version for Linux/macOS, specific version for Windows.
+
+## definition
+
+```bash
+echo "Building for Unix..."
+touch output.bin
+ret binary:file=output.bin
+ret platform:string="unix"
+```
+
+## definition when `sys.platform: windows`
+
+```bash
+echo "Building for Windows..."
+touch output.exe
+ret binary:file=output.exe
+ret platform:string="windows"
+```

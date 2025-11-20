@@ -237,6 +237,9 @@ class ActionDefinition:
     ) -> ActionVersion:
         """Get the appropriate version for the given axis values and platform.
 
+        Uses specificity-based selection: versions with more conditions are more specific.
+        When multiple versions match, selects the most specific one (most conditions).
+
         Args:
             axis_values: Current axis values
             platform: Current platform (windows, linux, macos)
@@ -245,7 +248,7 @@ class ActionDefinition:
             Matching action version
 
         Raises:
-            ValueError: If no version matches or multiple versions match
+            ValueError: If no version matches or multiple versions with same specificity match
         """
         if not self.is_multi_version:
             assert len(self.versions) == 1
@@ -259,13 +262,32 @@ class ActionDefinition:
                 f"No version of action '{self.name}' matches conditions. "
                 f"Axis values: {axis_values}, Platform: {platform}"
             )
-        if len(matching) > 1:
+
+        # Select by specificity: prefer versions with more conditions
+        # Specificity is the number of conditions a version has
+        if len(matching) == 1:
+            return matching[0]
+
+        # Group by specificity
+        by_specificity: dict[int, list[ActionVersion]] = {}
+        for version in matching:
+            specificity = len(version.conditions)
+            if specificity not in by_specificity:
+                by_specificity[specificity] = []
+            by_specificity[specificity].append(version)
+
+        # Get the highest specificity
+        max_specificity = max(by_specificity.keys())
+        most_specific = by_specificity[max_specificity]
+
+        if len(most_specific) > 1:
             raise ValueError(
-                f"Multiple versions of action '{self.name}' match conditions. "
-                f"Axis values: {axis_values}, Platform: {platform}"
+                f"Multiple versions of action '{self.name}' match with same specificity. "
+                f"Axis values: {axis_values}, Platform: {platform}. "
+                f"Matching versions have {max_specificity} condition(s) each."
             )
 
-        return matching[0]
+        return most_specific[0]
 
     def get_required_axis(self) -> set[str]:
         """Get the set of axis names required by this action."""
