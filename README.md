@@ -6,6 +6,12 @@ Totally Claude'd.
 
 Based on some ideas from Grandmaster (our build tool which is currently under development) and [ix package manager](https://stal-ix.github.io/IX.html)
 
+Successor of [mobala](https://github.com/7mind/mobala)
+
+If you use Scala and SBT, Mudyla works well with [Squish](https://github.com/7mind/squish-find-the-brains).
+
+An example of a real project using this gloomy tool: [Baboon](https://github.com/7mind/baboon/tree/main/.mdl/defs).
+
 ## Features
 
 - **Markdown-based action definitions**: Define actions in readable Markdown files
