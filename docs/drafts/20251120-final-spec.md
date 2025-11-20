@@ -39,6 +39,8 @@ mdl [OPTIONS] :goal1 :goal2 ...
 - `--dry-run`: Show execution plan without executing
 - `--continue`: Continue from last run (skip successful actions)
 - `--github-actions`: Enable GitHub Actions integration (collapsible groups, streaming output)
+- `--verbose`: Stream action output to console in real-time (without GitHub Actions markers)
+- `--without-nix`: Run without Nix (execute bash scripts directly, auto-enabled on Windows)
 - `--<arg-name>=<value>`: Set argument value
 - `--<flag-name>`: Set flag to 1
 - `--axis <axis-name>=<value>`: Set axis value (e.g., `--axis build-mode=production`)
@@ -297,12 +299,21 @@ For each action in topological order:
    - Include `ret` function implementation
    - Save rendered script
 
-4. **Execute under Nix**:
+4. **Execute script**:
+
+   **With Nix (default)**:
    ```bash
    nix develop --command bash <rendered-script>
    ```
+
+   **Without Nix** (`--without-nix` flag or Windows):
+   ```bash
+   bash <rendered-script>
+   ```
+
    - Environment variables are inherited by default
    - Record start time (ISO format)
+   - Auto-detects Windows and uses `--without-nix` mode
 
 5. **Capture execution results**:
    - Capture stdout/stderr to files in run directory
@@ -492,6 +503,81 @@ All tests passed
 
 This creates collapsible sections in GitHub Actions logs, improving readability for complex build pipelines.
 
+### Verbose Mode
+
+```bash
+mdl --verbose :goal1 :goal2
+```
+
+Streams action output to console in real-time during development:
+
+**Features**:
+- **Real-time output**: See action progress as it happens
+  - Useful for debugging and development
+  - No need to wait for action completion
+- **Clean format**: No GitHub Actions markers or special formatting
+  - Simple, readable output
+  - Just the raw stdout/stderr from each action
+- **File logging**: Still writes to stdout.log and stderr.log files
+  - Preserves all output for post-execution analysis
+  - Same file structure as normal mode
+
+**When to use**:
+- **Local development**: Watch builds/tests in real-time
+- **Debugging**: See where actions hang or fail immediately
+- **Long-running actions**: Monitor progress without waiting
+
+**Difference from --github-actions**:
+- `--verbose`: Clean output, no markers (for local development)
+- `--github-actions`: Collapsible groups with `::group::` markers (for CI/CD)
+
+**Example**:
+```bash
+# See compilation output in real-time
+mdl --verbose :build-compiler
+
+# Watch test execution
+mdl --verbose :run-tests
+```
+
+### Running Without Nix
+
+```bash
+mdl --without-nix :goal1 :goal2
+```
+
+Runs Mudyla without Nix dependency:
+
+**Use Cases**:
+- **Windows environments**: Automatically enabled on Windows (platform detection)
+- **Containers without Nix**: Docker/Podman containers that don't have Nix installed
+- **CI systems**: GitHub Actions, GitLab CI, etc. where Nix isn't available
+- **Local development**: Quick testing without Nix environment overhead
+
+**Behavior**:
+- Executes bash scripts directly: `bash script.sh` instead of `nix develop --command bash script.sh`
+- Environment variables passed through normally
+- All other features work identically (DAG, validation, caching, etc.)
+- **Windows auto-detection**: Flag is automatically set when running on Windows
+
+**Limitations**:
+- Dependencies must be available in the system PATH
+- No Nix environment isolation
+- User responsible for ensuring required tools are installed
+
+**Example - Windows**:
+```bash
+# On Windows, Nix mode is automatically disabled
+C:\project> mdl :build
+Note: Running on Windows - automatically enabling --without-nix mode
+```
+
+**Example - Manual override**:
+```bash
+# Explicitly run without Nix on Linux/macOS
+mdl --without-nix :build :test
+```
+
 ## Testing Strategy
 
 Test project should include:
@@ -618,3 +704,83 @@ mdl --continue :deploy
 - Type checking with mypy
 - Binary caching via Magic Nix Cache
 - Test artifact archiving on failure
+
+### 6. GitHub Actions Integration (--github-actions)
+**Motivation**: Improve readability of build logs in GitHub Actions UI.
+
+**Implementation**:
+- Wraps each action execution in `::group::` / `::endgroup::` annotations
+- Streams output to console in real-time (instead of buffering to files)
+- Still writes stdout.log and stderr.log for debugging
+- Uses threading to handle stdout/stderr simultaneously
+
+**Benefits**:
+- Collapsible action sections in GitHub Actions logs
+- Real-time feedback during long-running actions
+- Better organization for complex pipelines
+- No delayed output
+
+### 7. Bash Variable Compatibility
+**Issue**: Mudyla was incorrectly parsing bash variables like `${d}` as Mudyla expansions.
+
+**Solution**:
+- Mudyla expansions must contain a dot: `${prefix.rest}`
+- Bash variables (no dot) are left unchanged: `${variable}`
+- Enables mixing bash and Mudyla expansions in the same script
+
+**Examples**:
+```bash
+for d in foo-*; do
+  echo ${d}                     # Bash variable
+  cp ${d}/file ${args.output}   # Mixed: ${d} is bash, ${args.output} is Mudyla
+done
+```
+
+### 8. Cross-Platform Support (--without-nix)
+**Motivation**: Enable Mudyla usage on Windows and environments without Nix.
+
+**Implementation**:
+- `--without-nix` flag executes bash scripts directly
+- Windows auto-detection: automatically enables flag on Windows platform
+- Command: `bash script.sh` instead of `nix develop --command bash script.sh`
+
+**Benefits**:
+- Works on Windows (with bash available)
+- Works in Docker containers without Nix
+- Works in CI systems where Nix isn't installed
+- Reduced overhead for local testing
+
+**Use Cases**:
+- Windows development environments
+- GitHub Actions without Nix
+- Lightweight containers
+- Quick local testing
+
+### 9. Verbose Mode (--verbose)
+**Motivation**: Enable real-time output monitoring during local development without GitHub Actions formatting.
+
+**Implementation**:
+- `--verbose` flag streams output to console in real-time
+- Uses same threading mechanism as `--github-actions` mode
+- No `::group::` / `::endgroup::` markers (clean output)
+- Still writes stdout.log and stderr.log files
+
+**Benefits**:
+- Real-time feedback during development
+- Easier debugging of long-running actions
+- Clean, readable output without CI markers
+- Combines benefits of streaming with file logging
+
+**Comparison**:
+- Normal mode: Silent execution, output only in log files
+- `--verbose`: Streams to console + files, no markers
+- `--github-actions`: Streams to console + files, with collapsible group markers
+
+**Usage**:
+```bash
+# Watch build output in real-time
+mdl --verbose :build
+
+# Debug failing tests
+mdl --verbose :run-tests
+```

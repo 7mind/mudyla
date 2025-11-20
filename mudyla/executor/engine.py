@@ -115,6 +115,8 @@ set -euo pipefail
         run_directory: Optional[Path] = None,
         previous_run_directory: Optional[Path] = None,
         github_actions: bool = False,
+        without_nix: bool = False,
+        verbose: bool = False,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -124,6 +126,8 @@ set -euo pipefail
         self.passthrough_env_vars = passthrough_env_vars
         self.previous_run_directory = previous_run_directory
         self.github_actions = github_actions
+        self.without_nix = without_nix
+        self.verbose = verbose
 
         # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
@@ -346,11 +350,16 @@ set -euo pipefail
         stdout_path = action_dir / "stdout.log"
         stderr_path = action_dir / "stderr.log"
 
-        # Build nix develop command
-        # Note: We don't use --ignore-env because we want to preserve the environment
-        # The passthrough_env_vars and required_env_vars are validated but not explicitly kept
-        # since nix develop inherits the environment by default
-        nix_cmd = ["nix", "develop", "--command", "bash", str(script_path)]
+        # Build execution command
+        if self.without_nix:
+            # Run bash directly without Nix
+            exec_cmd = ["bash", str(script_path)]
+        else:
+            # Run under Nix develop environment
+            # Note: We don't use --ignore-env because we want to preserve the environment
+            # The passthrough_env_vars and required_env_vars are validated but not explicitly kept
+            # since nix develop inherits the environment by default
+            exec_cmd = ["nix", "develop", "--command", "bash", str(script_path)]
 
         # Execute
         if self.github_actions:
@@ -363,7 +372,7 @@ set -euo pipefail
         start_time_iso = start_time.isoformat()
 
         try:
-            if self.github_actions:
+            if self.github_actions or self.verbose:
                 # Stream output to console AND write to files
                 import sys
                 import threading
@@ -372,7 +381,7 @@ set -euo pipefail
                     stderr_path, "w"
                 ) as stderr_file:
                     process = subprocess.Popen(
-                        nix_cmd,
+                        exec_cmd,
                         cwd=str(self.project_root),
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
@@ -409,14 +418,15 @@ set -euo pipefail
                     stdout_thread.join()
                     stderr_thread.join()
 
-                print("::endgroup::")
+                if self.github_actions:
+                    print("::endgroup::")
             else:
                 # Normal mode - only write to files
                 with open(stdout_path, "w") as stdout_file, open(
                     stderr_path, "w"
                 ) as stderr_file:
                     result = subprocess.run(
-                        nix_cmd,
+                        exec_cmd,
                         cwd=str(self.project_root),
                         stdout=stdout_file,
                         stderr=stderr_file,

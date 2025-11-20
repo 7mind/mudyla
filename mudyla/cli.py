@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import platform
 import sys
 from glob import glob
 from pathlib import Path
@@ -64,6 +65,20 @@ class CLI:
         )
 
         self.parser.add_argument(
+            "--without-nix",
+            dest="without_nix",
+            action="store_true",
+            help="Run without Nix (execute bash scripts directly, auto-enabled on Windows)",
+        )
+
+        self.parser.add_argument(
+            "--verbose",
+            dest="verbose",
+            action="store_true",
+            help="Stream action output to console in real-time (without GitHub Actions markers)",
+        )
+
+        self.parser.add_argument(
             "goals",
             nargs="*",
             help="Goal actions to execute (format: :action-name)",
@@ -80,6 +95,11 @@ class CLI:
         """
         # Parse known args first to separate goals from flags/args
         args, unknown = self.parser.parse_known_args(argv)
+
+        # Auto-enable --without-nix on Windows
+        if platform.system() == "Windows" and not args.without_nix:
+            args.without_nix = True
+            print("Note: Running on Windows - automatically enabling --without-nix mode")
 
         # Parse custom arguments, flags, and axis
         custom_args = {}
@@ -264,6 +284,8 @@ class CLI:
                 passthrough_env_vars=document.passthrough_env_vars,
                 previous_run_directory=previous_run_dir,
                 github_actions=args.github_actions,
+                without_nix=args.without_nix,
+                verbose=args.verbose,
             )
 
             result = engine.execute_all()
