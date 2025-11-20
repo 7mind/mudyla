@@ -167,7 +167,9 @@ ret output-name:type=value
 
 #### Multi-Version Actions
 
-Actions can have multiple implementations based on axis values:
+Actions can have multiple implementations based on axis values and/or system platform:
+
+##### Axis-Based Versions
 
 ```markdown
 # action: publish-compiler
@@ -185,10 +187,69 @@ Actions can have multiple implementations based on axis values:
 ```\
 ```
 
+##### Platform-Based Versions
+
+Actions can select implementations based on the current platform:
+
+```markdown
+# action: install-dependencies
+
+## definition when `sys.platform: linux`
+
+```bash
+# Linux-specific installation
+apt-get install dependencies
+```\
+
+## definition when `sys.platform: macos`
+
+```bash
+# macOS-specific installation
+brew install dependencies
+```\
+
+## definition when `sys.platform: windows`
+
+```bash
+# Windows-specific installation
+choco install dependencies
+```\
+```
+
+**Platform values**: `windows`, `linux`, `macos`
+
+##### Combined Conditions
+
+Multiple conditions can be combined with commas:
+
+```markdown
+# action: build-package
+
+## definition when `build-mode: release, sys.platform: linux`
+
+```bash
+# Linux release build
+```\
+
+## definition when `build-mode: release, sys.platform: windows`
+
+```bash
+# Windows release build
+```\
+
+## definition when `build-mode: development, sys.platform: linux`
+
+```bash
+# Linux development build
+```\
+```
+
 **Rules**:
-- User must specify all required axis values
-- At most one definition matches the given axis values
-- Error if no definition matches or if axis not specified
+- User must specify all required axis values via command line
+- Platform is detected automatically
+- All conditions in a `when` clause must match for that version to be selected
+- At most one version matches the given conditions
+- Error if no version matches or if required axis not specified
 
 ## Expansion Syntax
 
@@ -823,3 +884,43 @@ mdl --verbose :build
 # Debug failing tests
 mdl --verbose :run-tests
 ```
+
+
+### 10. Platform-Based Conditions
+**Motivation**: Enable platform-specific action implementations for cross-platform projects.
+
+**Implementation**:
+- Added `PlatformCondition` class alongside `AxisCondition`
+- Platform detection via `platform.system()`: Windows → "windows", Darwin → "macos", Linux → "linux"
+- Conditions can be combined: `definition when \`build-mode: release, sys.platform: linux\``
+- Parser handles comma-separated conditions in "when" clauses
+- DAG builder automatically detects and passes current platform to version selection
+
+**Benefits**:
+- Write platform-specific implementations in the same action file
+- Automatic platform detection (no manual configuration)
+- Combine with axis conditions for fine-grained control
+- Enables truly cross-platform build scripts
+
+**Examples**:
+```markdown
+# Platform-specific tools
+## definition when \`sys.platform: linux\`
+\`\`\`bash
+apt-get install tool
+\`\`\`
+
+## definition when \`sys.platform: macos\`
+\`\`\`bash
+brew install tool
+\`\`\`
+
+# Combined with axis
+## definition when \`build-mode: release, sys.platform: windows\`
+\`\`\`bash
+# Windows release build
+\`\`\`
+```
+
+**Platform values**: `windows`, `linux`, `macos`
+

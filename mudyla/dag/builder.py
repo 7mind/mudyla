@@ -1,8 +1,27 @@
 """DAG builder for constructing action dependency graphs."""
 
+import platform
+
 from ..ast.expansions import ActionExpansion
 from ..ast.models import ParsedDocument
 from .graph import ActionGraph, ActionNode
+
+
+def get_normalized_platform() -> str:
+    """Get the normalized platform name.
+
+    Returns:
+        Platform name: windows, linux, or macos
+    """
+    system = platform.system()
+    if system == "Windows":
+        return "windows"
+    elif system == "Darwin":
+        return "macos"
+    elif system == "Linux":
+        return "linux"
+    else:
+        return system.lower()
 
 
 class DAGBuilder:
@@ -31,13 +50,16 @@ class DAGBuilder:
             if goal not in self.document.actions:
                 raise ValueError(f"Goal action '{goal}' not found")
 
+        # Get current platform
+        current_platform = get_normalized_platform()
+
         # Create nodes for all actions
         nodes: dict[str, ActionNode] = {}
 
         for action_name, action in self.document.actions.items():
             # Select appropriate version
             try:
-                selected_version = action.get_version(axis_values)
+                selected_version = action.get_version(axis_values, current_platform)
             except ValueError as e:
                 # If this action is not needed, we can skip the error for now
                 # The validator will check if it's actually required

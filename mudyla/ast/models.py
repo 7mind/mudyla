@@ -1,7 +1,8 @@
 """AST model classes for Mudyla."""
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .expansions import Expansion
 from .types import ReturnType
@@ -128,15 +129,46 @@ class AxisDefinition:
 
 
 @dataclass(frozen=True)
-class AxisCondition:
+class Condition(ABC):
+    """Base class for version selection conditions."""
+
+    @abstractmethod
+    def matches(self, context: dict[str, Any]) -> bool:
+        """Check if this condition matches the given context.
+
+        Args:
+            context: Context containing axis_values and platform
+
+        Returns:
+            True if condition matches
+        """
+        pass
+
+
+@dataclass(frozen=True)
+class AxisCondition(Condition):
     """Condition for an action version based on axis value."""
 
     axis_name: str
     axis_value: str
 
-    def matches(self, axis_values: dict[str, str]) -> bool:
+    def matches(self, context: dict[str, Any]) -> bool:
         """Check if this condition matches the given axis values."""
+        axis_values = context.get("axis_values", {})
         return axis_values.get(self.axis_name) == self.axis_value
+
+
+@dataclass(frozen=True)
+class PlatformCondition(Condition):
+    """Condition for an action version based on system platform."""
+
+    platform_value: str
+    """Expected platform: windows, linux, or macos"""
+
+    def matches(self, context: dict[str, Any]) -> bool:
+        """Check if this condition matches the current platform."""
+        current_platform = context.get("platform", "")
+        return current_platform == self.platform_value
 
 
 @dataclass(frozen=True)
@@ -152,14 +184,29 @@ class ActionVersion:
     return_declarations: list[ReturnDeclaration]
     """Return value declarations"""
 
-    conditions: list[AxisCondition]
-    """Axis conditions that must be met for this version"""
+    conditions: list[Condition]
+    """Conditions that must be met for this version (axis and/or platform)"""
 
     location: SourceLocation
 
     def matches_axis_values(self, axis_values: dict[str, str]) -> bool:
-        """Check if all conditions match the given axis values."""
-        return all(cond.matches(axis_values) for cond in self.conditions)
+        """Check if all conditions match the given axis values.
+
+        Deprecated: Use matches_context instead.
+        """
+        context = {"axis_values": axis_values, "platform": ""}
+        return all(cond.matches(context) for cond in self.conditions)
+
+    def matches_context(self, context: dict[str, Any]) -> bool:
+        """Check if all conditions match the given context.
+
+        Args:
+            context: Dictionary with axis_values and platform
+
+        Returns:
+            True if all conditions match
+        """
+        return all(cond.matches(context) for cond in self.conditions)
 
 
 @dataclass
@@ -185,11 +232,14 @@ class ActionDefinition:
         """Check if this action has multiple versions."""
         return len(self.versions) > 1
 
-    def get_version(self, axis_values: dict[str, str]) -> ActionVersion:
-        """Get the appropriate version for the given axis values.
+    def get_version(
+        self, axis_values: dict[str, str], platform: str = ""
+    ) -> ActionVersion:
+        """Get the appropriate version for the given axis values and platform.
 
         Args:
             axis_values: Current axis values
+            platform: Current platform (windows, linux, macos)
 
         Returns:
             Matching action version
@@ -201,15 +251,18 @@ class ActionDefinition:
             assert len(self.versions) == 1
             return self.versions[0]
 
-        matching = [v for v in self.versions if v.matches_axis_values(axis_values)]
+        context = {"axis_values": axis_values, "platform": platform}
+        matching = [v for v in self.versions if v.matches_context(context)]
 
         if len(matching) == 0:
             raise ValueError(
-                f"No version of action '{self.name}' matches axis values: {axis_values}"
+                f"No version of action '{self.name}' matches conditions. "
+                f"Axis values: {axis_values}, Platform: {platform}"
             )
         if len(matching) > 1:
             raise ValueError(
-                f"Multiple versions of action '{self.name}' match axis values: {axis_values}"
+                f"Multiple versions of action '{self.name}' match conditions. "
+                f"Axis values: {axis_values}, Platform: {platform}"
             )
 
         return matching[0]
@@ -219,7 +272,8 @@ class ActionDefinition:
         axis_names = set()
         for version in self.versions:
             for condition in version.conditions:
-                axis_names.add(condition.axis_name)
+                if isinstance(condition, AxisCondition):
+                    axis_names.add(condition.axis_name)
         return axis_names
 
     def get_all_expansions(self) -> list[Expansion]:

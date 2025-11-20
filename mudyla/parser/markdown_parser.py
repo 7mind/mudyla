@@ -14,8 +14,10 @@ from ..ast.models import (
     AxisCondition,
     AxisDefinition,
     AxisValue,
+    Condition,
     FlagDefinition,
     ParsedDocument,
+    PlatformCondition,
     SourceLocation,
 )
 from ..ast.types import ReturnType
@@ -47,8 +49,10 @@ class MarkdownParser:
     # Pattern to match action header: action: action-name
     ACTION_HEADER_PATTERN = re.compile(r"^action:\s*([a-zA-Z][a-zA-Z0-9_-]*)$")
 
-    # Pattern to match axis condition: definition when `axis-name: value`
-    AXIS_CONDITION_PATTERN = re.compile(r"^definition\s+when\s+`([^:]+):\s*([^`]+)`$")
+    # Pattern to match condition: definition when `conditions...`
+    # Conditions can be axis-based or platform-based, separated by commas
+    # Examples: `build-mode: release` or `build-mode: release, sys.platform: windows`
+    CONDITION_PATTERN = re.compile(r"^definition\s+when\s+`([^`]+)`$")
 
     # Pattern for argument definition: `args.name`: type="value"; description
     # Note: List items are extracted without the leading "- "
@@ -452,13 +456,10 @@ class MarkdownParser:
 
                 # Check if this is a conditional definition
                 header_text = line.strip().lstrip("#").strip()
-                cond_match = self.AXIS_CONDITION_PATTERN.match(header_text)
+                cond_match = self.CONDITION_PATTERN.match(header_text)
                 if cond_match:
-                    axis_name = cond_match.group(1).strip()
-                    axis_value = cond_match.group(2).strip()
-                    current_conditions = [
-                        AxisCondition(axis_name=axis_name, axis_value=axis_value)
-                    ]
+                    conditions_str = cond_match.group(1)
+                    current_conditions = self._parse_conditions(conditions_str)
                 else:
                     current_conditions = []
 
@@ -489,10 +490,52 @@ class MarkdownParser:
 
         return versions
 
+    def _parse_conditions(self, conditions_str: str) -> list[Condition]:
+        """Parse a comma-separated list of conditions.
+
+        Args:
+            conditions_str: String like "build-mode: release" or "build-mode: release, sys.platform: windows"
+
+        Returns:
+            List of Condition objects (AxisCondition or PlatformCondition)
+
+        Raises:
+            ValueError: If condition format is invalid
+        """
+        conditions = []
+
+        # Split by comma to get individual conditions
+        for cond_part in conditions_str.split(","):
+            cond_part = cond_part.strip()
+
+            # Parse "name: value" format
+            if ":" not in cond_part:
+                raise ValueError(f"Invalid condition format: '{cond_part}'. Expected 'name: value'")
+
+            name, value = cond_part.split(":", 1)
+            name = name.strip()
+            value = value.strip()
+
+            # Determine if this is a platform condition or axis condition
+            if name == "sys.platform":
+                # Validate platform value
+                valid_platforms = ["windows", "linux", "macos"]
+                if value not in valid_platforms:
+                    raise ValueError(
+                        f"Invalid platform value: '{value}'. "
+                        f"Valid values: {', '.join(valid_platforms)}"
+                    )
+                conditions.append(PlatformCondition(platform_value=value))
+            else:
+                # Assume it's an axis condition
+                conditions.append(AxisCondition(axis_name=name, axis_value=value))
+
+        return conditions
+
     def _create_action_version(
         self,
         bash_script: str,
-        conditions: list[AxisCondition],
+        conditions: list[Condition],
         action_name: str,
         file_path: Path,
         line_number: int,
