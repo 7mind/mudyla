@@ -375,11 +375,21 @@ set -euo pipefail
 
             exec_cmd = [bash_cmd, str(script_path)]
         else:
-            # Run under Nix develop environment
-            # Note: We don't use --ignore-env because we want to preserve the environment
-            # The passthrough_env_vars and required_env_vars are validated but not explicitly kept
-            # since nix develop inherits the environment by default
-            exec_cmd = ["nix", "develop", "--command", "bash", str(script_path)]
+            # Run under Nix develop environment with clean environment
+            # Collect all environment variables that should be kept
+            env_vars_to_keep = set()
+
+            # Add global passthrough env vars
+            env_vars_to_keep.update(self.passthrough_env_vars)
+
+            # Add action-specific required env vars
+            env_vars_to_keep.update(action.required_env_vars.keys())
+
+            # Build command with --ignore-environment and --keep-env-var for each var
+            exec_cmd = ["nix", "develop", "--ignore-environment"]
+            for var in sorted(env_vars_to_keep):
+                exec_cmd.extend(["--keep-env-var", var])
+            exec_cmd.extend(["--command", "bash", str(script_path)])
 
         # Execute
         if self.github_actions:

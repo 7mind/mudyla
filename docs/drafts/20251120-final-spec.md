@@ -388,15 +388,23 @@ For each action in topological order:
 
    **With Nix (default)**:
    ```bash
-   nix develop --command bash <rendered-script>
+   nix develop --ignore-environment \
+     --keep-env-var VAR1 --keep-env-var VAR2 ... \
+     --command bash <rendered-script>
    ```
+
+   - Uses `--ignore-environment` for clean, reproducible builds
+   - Explicitly keeps only required environment variables via `--keep-env-var`:
+     - Global passthrough env vars (from `passthrough` section)
+     - Action-specific required env vars (from `vars` section)
+   - No implicit environment inheritance (ensures reproducibility)
 
    **Without Nix** (`--without-nix` flag or Windows):
    ```bash
    bash <rendered-script>
    ```
 
-   - Environment variables are inherited by default
+   - Environment variables inherited normally from parent process
    - Record start time (ISO format)
    - Auto-detects Windows and uses `--without-nix` mode
 
@@ -986,4 +994,32 @@ On Linux/macOS: selects default (only matching version)
 2. Group by specificity (number of conditions)
 3. Select version from highest specificity group
 4. Error if multiple versions in that group (ambiguous)
+
+
+
+### 12. Clean Nix Environment (--ignore-environment)
+**Motivation**: Ensure reproducible builds by preventing implicit environment variable inheritance.
+
+**Implementation**:
+- Added `--ignore-environment` flag to `nix develop` command
+- Explicitly whitelist environment variables with `--keep-env-var`:
+  - Global passthrough env vars (from `passthrough` section)
+  - Action-specific required env vars (from `vars` section)
+- No implicit inheritance from parent environment
+
+**Benefits**:
+- **Reproducibility**: Same build regardless of parent environment
+- **Security**: No accidental leaking of sensitive env vars
+- **Debugging**: Easier to identify missing environment variable declarations
+- **Clarity**: Explicit about what environment variables are needed
+
+**Example**:
+```bash
+# Action requires HOME and USER
+nix develop --ignore-environment \
+  --keep-env-var HOME --keep-env-var USER \
+  --command bash script.sh
+```
+
+**Without Nix mode**: Still inherits environment normally (can't use --ignore-environment without Nix)
 
