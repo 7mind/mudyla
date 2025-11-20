@@ -354,8 +354,28 @@ set -euo pipefail
         # Build execution command
         if self.without_nix:
             # Run bash directly without Nix
-            # On Windows, use bash.exe to ensure we get Git Bash, not WSL bash
-            bash_cmd = "bash.exe" if platform.system() == "Windows" else "bash"
+            if platform.system() == "Windows":
+                # On Windows, find Git Bash (not WSL bash)
+                # Try common Git Bash locations first
+                git_bash_paths = [
+                    r"C:\Program Files\Git\bin\bash.exe",
+                    r"C:\Program Files (x86)\Git\bin\bash.exe",
+                ]
+                bash_cmd = None
+                for path in git_bash_paths:
+                    if Path(path).exists():
+                        bash_cmd = path
+                        break
+
+                # Fall back to searching PATH (but this might find WSL bash)
+                if bash_cmd is None:
+                    bash_cmd = shutil.which("bash.exe") or "bash.exe"
+
+                print(f"Platform detected: Windows")
+                print(f"Using bash: {bash_cmd}")
+            else:
+                bash_cmd = "bash"
+
             exec_cmd = [bash_cmd, str(script_path)]
         else:
             # Run under Nix develop environment
