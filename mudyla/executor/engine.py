@@ -387,6 +387,10 @@ set -euo pipefail
         else:
             print(f"Executing action: {action_name}")
 
+        # Print command in verbose/CI modes
+        if self.github_actions or self.verbose:
+            print(f"Command: {' '.join(exec_cmd)}")
+
         # Record start time
         start_time = datetime.now()
         start_time_iso = start_time.isoformat()

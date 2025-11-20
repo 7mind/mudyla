@@ -479,6 +479,9 @@ Optimizes output for GitHub Actions CI/CD:
 - **Collapsible groups**: Wraps each action in `::group::` / `::endgroup::` annotations
   - Makes logs easier to navigate in GitHub Actions UI
   - Each action can be expanded/collapsed independently
+- **Command visibility**: Prints the actual command being executed
+  - See exact bash invocation for each action
+  - Helpful for debugging CI issues
 - **Streaming output**: Real-time output to console while also writing to log files
   - No delay in seeing action progress
   - Still creates stdout.log and stderr.log for debugging
@@ -515,6 +518,9 @@ Streams action output to console in real-time during development:
 - **Real-time output**: See action progress as it happens
   - Useful for debugging and development
   - No need to wait for action completion
+- **Command visibility**: Prints the actual command being executed
+  - See exact bash invocation for each action
+  - Helpful for understanding execution environment
 - **Clean format**: No GitHub Actions markers or special formatting
   - Simple, readable output
   - Just the raw stdout/stderr from each action
@@ -729,12 +735,14 @@ mdl --continue :deploy
 **Implementation**:
 - Wraps each action execution in `::group::` / `::endgroup::` annotations
 - Streams output to console in real-time (instead of buffering to files)
+- Prints actual command being executed for transparency
 - Still writes stdout.log and stderr.log for debugging
 - Uses threading to handle stdout/stderr simultaneously
 
 **Benefits**:
 - Collapsible action sections in GitHub Actions logs
 - Real-time feedback during long-running actions
+- Command visibility for debugging CI issues
 - Better organization for complex pipelines
 - No delayed output
 
@@ -791,19 +799,21 @@ done
 **Implementation**:
 - `--verbose` flag streams output to console in real-time
 - Uses same threading mechanism as `--github-actions` mode
+- Prints actual command being executed for each action
 - No `::group::` / `::endgroup::` markers (clean output)
 - Still writes stdout.log and stderr.log files
 
 **Benefits**:
 - Real-time feedback during development
+- Command visibility for debugging
 - Easier debugging of long-running actions
 - Clean, readable output without CI markers
 - Combines benefits of streaming with file logging
 
 **Comparison**:
-- Normal mode: Silent execution, output only in log files
-- `--verbose`: Streams to console + files, no markers
-- `--github-actions`: Streams to console + files, with collapsible group markers
+- Normal mode: Silent execution, output only in log files, no command printing
+- `--verbose`: Streams to console + files, prints commands, no markers
+- `--github-actions`: Streams to console + files, prints commands, with collapsible group markers
 
 **Usage**:
 ```bash
