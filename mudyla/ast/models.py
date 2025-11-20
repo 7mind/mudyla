@@ -198,7 +198,10 @@ class ActionVersion:
     """Return value declarations"""
 
     dependency_declarations: list[DependencyDeclaration]
-    """Explicit dependency declarations (dep pseudo-command)"""
+    """Explicit action dependency declarations (dep action.*)"""
+
+    env_dependencies: list[str]
+    """Explicit environment variable dependencies (dep env.*)"""
 
     conditions: list[Condition]
     """Conditions that must be met for this version (axis and/or platform)"""

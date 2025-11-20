@@ -444,6 +444,13 @@ class MarkdownParser:
                 f"{location}: Action '{action_name}' has no bash code block"
             )
 
+        # Collect environment variable dependencies from all versions
+        # These come from dep env.VAR declarations
+        for version in versions:
+            for env_var in version.env_dependencies:
+                if env_var not in required_env_vars:
+                    required_env_vars[env_var] = f"Required by dep env.{env_var}"
+
         return ActionDefinition(
             name=action_name,
             versions=versions,
@@ -611,7 +618,7 @@ class MarkdownParser:
         return_declarations = ReturnParser.find_all_returns(bash_script, location)
 
         # Parse dependency declarations
-        dependency_declarations = DependencyParser.find_all_dependencies(
+        dependency_declarations, env_dependencies = DependencyParser.find_all_dependencies(
             bash_script, location
         )
 
@@ -620,6 +627,7 @@ class MarkdownParser:
             expansions=expansions,
             return_declarations=return_declarations,
             dependency_declarations=dependency_declarations,
+            env_dependencies=env_dependencies,
             conditions=conditions,
             location=location,
         )

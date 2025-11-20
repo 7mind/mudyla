@@ -512,46 +512,80 @@ export MDL_OUTPUT_JSON=".mdl/runs/<run-id>/<action-name>/output.json"
 
 ## `dep` Pseudo-Command
 
-The `dep` pseudo-command allows explicit dependency declaration as an alternative to implicit dependencies created by `${action.*}` expansions.
+The `dep` pseudo-command allows explicit dependency declaration without needing to reference outputs or fake usage.
 
-**Syntax**:
-```bash
-dep action.action-name
-```
+### Supported Dependency Types
+
+#### Action Dependencies
+
+**Syntax**: `dep action.action-name`
 
 **Purpose**: Declare that this action depends on another action without needing to reference its outputs.
 
-**Design**: Uses the same `action.` prefix as expansions for consistency and extensibility (future: `dep env.VAR`, `dep args.ARG`).
+**Example**:
+```bash
+dep action.build
+dep action.test
+
+echo "Deploying after build and test..."
+ret success:bool=true
+```
 
 **Use Cases**:
 - Ensure execution order when outputs aren't needed
-- Make dependencies explicit and visible in the script
-- Depend on actions that produce side effects (files, deployments) rather than return values
+- Depend on actions that produce side effects (files, deployments)
+- Make dependency chain explicit in the script
+
+#### Environment Variable Dependencies
+
+**Syntax**: `dep env.VARIABLE_NAME`
+
+**Purpose**: Declare required environment variables without faking usage.
 
 **Example**:
-```markdown
-# action: task-a
-## definition
 ```bash
-echo "Task A" > task-a.txt
-ret result:string="Task A completed"
+dep env.SONATYPE_SECRET
+dep env.API_KEY
+
+echo "Publishing artifacts..."
+sbt +publishSigned
+ret success:bool=true
 ```
 
-# action: task-b
-## definition
+**Before `dep env.VAR`**:
 ```bash
-dep action.task-a
-
-echo "Task B (depends on A)" > task-b.txt
-ret result:string="Task B completed"
+# Had to fake usage to force validation
+[[ -n "${env.SONATYPE_SECRET}" ]] || exit 1
+echo "Publishing artifacts..."
+sbt +publishSigned
 ```
+
+**After `dep env.VAR`**:
+```bash
+# Clean, declarative dependency
+dep env.SONATYPE_SECRET
+echo "Publishing artifacts..."
+sbt +publishSigned
 ```
 
-**Implementation**:
-- Dependencies are extracted at parse time by scanning for `dep action.` commands
-- At runtime, `dep` is a no-op bash function (dependencies already in DAG)
-- Both implicit (`${action.*}`) and explicit (`dep action.`) dependencies are collected
-- Duplicate dependencies are automatically deduplicated
+**Use Cases**:
+- Declare required secrets without exposing them in checks
+- Document environment requirements at script start
+- Validate environment before expensive operations
+- Alternative to `vars` subsection for inline declaration
+
+### Implementation Details
+
+**Parsing**:
+- `dep action.*` creates DAG dependencies
+- `dep env.*` adds to action's required_env_vars
+- Both extracted at parse time by scanning bash scripts
+- At runtime, `dep` is a no-op bash function
+
+**Validation**:
+- Action dependencies validated during DAG construction
+- Environment dependencies validated before execution
+- Missing dependencies cause early failure with clear errors
 
 **Injected Function**:
 ```bash
@@ -562,19 +596,20 @@ dep() {
 }
 ```
 
-**Comparison with Implicit Dependencies**:
+### Comparison Table
 
-| Method | Syntax | When to Use |
-|--------|--------|-------------|
-| Implicit | `${action.name.output}` | When you need the action's output value |
-| Explicit | `dep action.name` | When you only need execution order |
+| Type | Implicit | Explicit |
+|------|----------|----------|
+| **Actions** | `${action.name.output}` (when you need output) | `dep action.name` (execution order only) |
+| **Environment** | `${env.VAR}` (when you use the value) | `dep env.VAR` (validation only) |
 
-**Benefits**:
-- Cleaner scripts (no need for dummy variable references)
-- Self-documenting (dependency intent is clear)
-- Works with actions that only produce files/side effects
-- Consistent syntax with expansions (both use `action.` prefix)
-- Extensible for future dependency types
+### Benefits
+
+- **Cleaner scripts**: No dummy variable references or fake checks
+- **Self-documenting**: Dependencies visible at script start
+- **Consistent syntax**: Same prefix pattern as expansions
+- **Extensible**: Design allows future types (args, flags, etc.)
+- **Early validation**: Fail fast on missing dependencies
 
 ## Error Handling
 
@@ -1107,52 +1142,57 @@ nix develop --ignore-environment \
 
 
 ### 13. Explicit Dependency Declaration (dep Pseudo-Command)
-**Motivation**: Provide a cleaner way to declare dependencies without needing to reference action outputs.
+**Motivation**: Provide a cleaner way to declare dependencies without needing to reference outputs or fake usage.
 
 **Implementation**:
-- Added `dep` pseudo-command: `dep action.action-name`
-- Created `mudyla/parser/dependency_parser.py` to extract dep declarations
-- Added `DependencyDeclaration` class to AST models
-- Modified DAG builder to collect both implicit (`${action.*}`) and explicit (`dep action.`) dependencies
+- Added `dep` pseudo-command with two types: `dep action.name` and `dep env.VAR`
+- Created `mudyla/parser/dependency_parser.py` to extract both dependency types
+- Action dependencies: Added `DependencyDeclaration` class and DAG integration
+- Environment dependencies: Added to action's `required_env_vars` for validation
 - Injected `dep()` bash function as no-op (dependencies extracted at parse time)
-- Uses `action.` prefix for consistency with expansions and future extensibility
+- Uses consistent prefix pattern (`action.`, `env.`) for extensibility
 
 **Benefits**:
-- **Cleaner scripts**: No need for dummy variable references like `echo "Dependency: ${action.name.success}"`
-- **Self-documenting**: Dependency intent is explicit in the script
-- **Execution order control**: Depend on actions that only produce side effects (files, deployments)
-- **Flexibility**: Mix implicit and explicit dependencies as needed
-- **Consistent syntax**: Same `action.` prefix as expansions
-- **Extensible**: Allows for future dependency types (e.g., `dep env.VAR`)
+- **Cleaner scripts**: No dummy variable references or fake validation checks
+- **Self-documenting**: All dependencies declared at script start
+- **Execution order control**: Explicit action dependencies without outputs
+- **Environment validation**: Declare required env vars without faking usage
+- **Consistent syntax**: Same prefix pattern as expansions
+- **Extensible**: Design allows future types (args, flags, etc.)
 
-**Example**:
-```markdown
-# action: task-a
-## definition
+**Action Dependency Example**:
 ```bash
-echo "Task A" > task-a.txt
-ret result:string="Task A completed"
+dep action.build
+dep action.test
+
+echo "Deploying..."
+ret success:bool=true
 ```
 
-# action: task-b
-## definition
+**Environment Dependency Example**:
 ```bash
-dep action.task-a
+dep env.SONATYPE_SECRET
+dep env.API_KEY
 
-echo "Task B (depends on A)" > task-b.txt
-ret result:string="Task B completed"
+echo "Publishing artifacts..."
+sbt +publishSigned
 ```
-```
+
+**Before/After Comparison**:
+
+Action dependencies:
+- **Before**: `echo "Dependency: ${action.setup.success}" >/dev/null`
+- **After**: `dep action.setup`
+
+Environment dependencies:
+- **Before**: `[[ -n "${env.SECRET}" ]] || exit 1`
+- **After**: `dep env.SECRET`
 
 **Use Cases**:
 - Sequential deployment steps where outputs aren't needed
 - Testing pipelines where test order matters
-- Build steps that depend on file generation
-- Any action dependency where outputs aren't referenced
-
-**Comparison**:
-- **Before**: `echo "Dependency: ${action.setup.success}" >/dev/null`
-- **After**: `dep action.setup`
+- Publishing actions requiring secrets
+- Validating environment before expensive operations
 
 
 ### 14. Environment Section with Explicit Values

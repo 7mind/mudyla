@@ -9,12 +9,15 @@ class DependencyParser:
     """Parser for dep pseudo-command in bash scripts."""
 
     # Pattern to match: dep action.action-name
-    DEP_PATTERN = re.compile(r"^\s*dep\s+action\.([a-zA-Z][a-zA-Z0-9_-]*)\s*$")
+    ACTION_DEP_PATTERN = re.compile(r"^\s*dep\s+action\.([a-zA-Z][a-zA-Z0-9_-]*)\s*$")
+
+    # Pattern to match: dep env.VARIABLE_NAME
+    ENV_DEP_PATTERN = re.compile(r"^\s*dep\s+env\.([A-Z_][A-Z0-9_]*)\s*$")
 
     @classmethod
     def find_all_dependencies(
         cls, script: str, base_location: SourceLocation
-    ) -> list[DependencyDeclaration]:
+    ) -> tuple[list[DependencyDeclaration], list[str]]:
         """Find all dependency declarations in a bash script.
 
         Args:
@@ -22,12 +25,13 @@ class DependencyParser:
             base_location: Base source location for the script
 
         Returns:
-            List of dependency declarations
+            Tuple of (action_dependencies, env_var_dependencies)
 
         Raises:
             ValueError: If dependency format is invalid
         """
-        dependencies = []
+        action_dependencies = []
+        env_dependencies = []
         lines = script.split("\n")
 
         for i, line in enumerate(lines):
@@ -36,16 +40,24 @@ class DependencyParser:
             if stripped.startswith("#"):
                 continue
 
-            match = cls.DEP_PATTERN.match(line)
-            if match:
-                action_name = match.group(1)
+            # Try action dependency
+            action_match = cls.ACTION_DEP_PATTERN.match(line)
+            if action_match:
+                action_name = action_match.group(1)
                 location = SourceLocation(
                     file_path=base_location.file_path,
                     line_number=base_location.line_number + i,
                     section_name=base_location.section_name,
                 )
-                dependencies.append(
+                action_dependencies.append(
                     DependencyDeclaration(action_name=action_name, location=location)
                 )
+                continue
 
-        return dependencies
+            # Try environment variable dependency
+            env_match = cls.ENV_DEP_PATTERN.match(line)
+            if env_match:
+                env_var = env_match.group(1)
+                env_dependencies.append(env_var)
+
+        return action_dependencies, env_dependencies
