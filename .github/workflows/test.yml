@@ -29,6 +29,9 @@ jobs:
     - name: Run test suite
       run: bash test.sh
 
+    - name: Test GitHub Actions integration
+      run: nix run . -- --github-actions :create-directory :write-message
+
     - name: Archive run directories
       if: failure()
       uses: actions/upload-artifact@v4

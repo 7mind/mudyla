@@ -57,6 +57,13 @@ class CLI:
         )
 
         self.parser.add_argument(
+            "--github-actions",
+            dest="github_actions",
+            action="store_true",
+            help="Enable GitHub Actions integration (collapsible groups, streaming output)",
+        )
+
+        self.parser.add_argument(
             "goals",
             nargs="*",
             help="Goal actions to execute (format: :action-name)",
@@ -256,6 +263,7 @@ class CLI:
                 axis_values=axis_values,
                 passthrough_env_vars=document.passthrough_env_vars,
                 previous_run_directory=previous_run_dir,
+                github_actions=args.github_actions,
             )
 
             result = engine.execute_all()

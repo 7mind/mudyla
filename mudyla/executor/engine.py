@@ -114,6 +114,7 @@ set -euo pipefail
         passthrough_env_vars: list[str],
         run_directory: Optional[Path] = None,
         previous_run_directory: Optional[Path] = None,
+        github_actions: bool = False,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -122,6 +123,7 @@ set -euo pipefail
         self.axis_values = axis_values
         self.passthrough_env_vars = passthrough_env_vars
         self.previous_run_directory = previous_run_directory
+        self.github_actions = github_actions
 
         # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
@@ -351,30 +353,83 @@ set -euo pipefail
         nix_cmd = ["nix", "develop", "--command", "bash", str(script_path)]
 
         # Execute
-        print(f"Executing action: {action_name}")
+        if self.github_actions:
+            print(f"::group::{action_name}")
+        else:
+            print(f"Executing action: {action_name}")
 
         # Record start time
         start_time = datetime.now()
         start_time_iso = start_time.isoformat()
 
         try:
-            with open(stdout_path, "w") as stdout_file, open(
-                stderr_path, "w"
-            ) as stderr_file:
-                result = subprocess.run(
-                    nix_cmd,
-                    cwd=str(self.project_root),
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    env=os.environ.copy(),
-                )
+            if self.github_actions:
+                # Stream output to console AND write to files
+                import sys
+                import threading
+
+                with open(stdout_path, "w") as stdout_file, open(
+                    stderr_path, "w"
+                ) as stderr_file:
+                    process = subprocess.Popen(
+                        nix_cmd,
+                        cwd=str(self.project_root),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=os.environ.copy(),
+                        text=True,
+                        bufsize=1,
+                    )
+
+                    def stream_output(pipe, console_stream, file_stream):
+                        """Stream output from pipe to both console and file."""
+                        if pipe:
+                            for line in pipe:
+                                console_stream.write(line)
+                                console_stream.flush()
+                                file_stream.write(line)
+
+                    # Start threads to read stdout and stderr simultaneously
+                    stdout_thread = threading.Thread(
+                        target=stream_output,
+                        args=(process.stdout, sys.stdout, stdout_file),
+                    )
+                    stderr_thread = threading.Thread(
+                        target=stream_output,
+                        args=(process.stderr, sys.stderr, stderr_file),
+                    )
+
+                    stdout_thread.start()
+                    stderr_thread.start()
+
+                    # Wait for process to complete
+                    returncode = process.wait()
+
+                    # Wait for output threads to finish
+                    stdout_thread.join()
+                    stderr_thread.join()
+
+                print("::endgroup::")
+            else:
+                # Normal mode - only write to files
+                with open(stdout_path, "w") as stdout_file, open(
+                    stderr_path, "w"
+                ) as stderr_file:
+                    result = subprocess.run(
+                        nix_cmd,
+                        cwd=str(self.project_root),
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        env=os.environ.copy(),
+                    )
+                    returncode = result.returncode
 
             # Record end time
             end_time = datetime.now()
             end_time_iso = end_time.isoformat()
             duration = (end_time - start_time).total_seconds()
 
-            if result.returncode != 0:
+            if returncode != 0:
                 # Write failure meta.json
                 meta = {
                     "action_name": action_name,
@@ -382,8 +437,8 @@ set -euo pipefail
                     "start_time": start_time_iso,
                     "end_time": end_time_iso,
                     "duration_seconds": duration,
-                    "exit_code": result.returncode,
-                    "error_message": f"Script exited with code {result.returncode}",
+                    "exit_code": returncode,
+                    "error_message": f"Script exited with code {returncode}",
                 }
                 (action_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -397,8 +452,8 @@ set -euo pipefail
                     start_time=start_time_iso,
                     end_time=end_time_iso,
                     duration_seconds=duration,
-                    exit_code=result.returncode,
-                    error_message=f"Script exited with code {result.returncode}",
+                    exit_code=returncode,
+                    error_message=f"Script exited with code {returncode}",
                 )
 
             # Parse outputs
@@ -411,7 +466,7 @@ set -euo pipefail
                     start_time=start_time_iso,
                     end_time=end_time_iso,
                     duration=duration,
-                    exit_code=result.returncode,
+                    exit_code=returncode,
                     error_message="No output.json generated",
                 )
 
@@ -425,7 +480,7 @@ set -euo pipefail
                     start_time=start_time_iso,
                     end_time=end_time_iso,
                     duration_seconds=duration,
-                    exit_code=result.returncode,
+                    exit_code=returncode,
                     error_message="No output.json generated",
                 )
 

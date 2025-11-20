@@ -1,0 +1,620 @@
+# Mudyla (Multimodal Dynamic Launcher) - Final Specification
+
+## Overview
+
+Mudyla is a shell script orchestrator that allows defining build actions in Markdown files and executing them as a dependency graph under Nix environments.
+
+### Key Features
+
+- **Markdown-based definitions**: Define actions, dependencies, and configurations in readable Markdown
+- **DAG execution**: Automatic dependency resolution and parallel-safe execution order
+- **Nix integration**: Execute actions in reproducible Nix environments
+- **Type-safe outputs**: Validate file/directory outputs and typed return values
+- **Multi-version actions**: Support for axis-based conditional implementations
+- **Incremental builds**: `--continue` flag to resume from last run, skipping successful actions
+- **Execution tracking**: Meta.json files track timing, success status, and errors
+- **Parser combinators**: Robust pyparsing-based grammar for reliable parsing
+
+## Implementation Details
+
+- **Language**: Python 3.11+
+- **Distribution**: Nix flake
+- **Project Root Detection**: Closest parent directory containing `.git/`
+- **Parser**: pyparsing-based parser combinators for Markdown syntax
+- **Dependencies**: mistune (Markdown), pyparsing (parsing)
+
+## Command Line Interface
+
+### Basic Syntax
+
+```bash
+mdl [OPTIONS] :goal1 :goal2 ...
+```
+
+### Options
+
+- `--defs <pattern>`: Glob pattern for markdown files (default: `.mdl/defs/**.md`)
+- `--out <path>`: Output JSON file path (optional, always prints to stdout)
+- `--list-actions`: List all available actions and exit
+- `--dry-run`: Show execution plan without executing
+- `--continue`: Continue from last run (skip successful actions)
+- `--github-actions`: Enable GitHub Actions integration (collapsible groups, streaming output)
+- `--<arg-name>=<value>`: Set argument value
+- `--<flag-name>`: Set flag to 1
+- `--axis <axis-name>=<value>`: Set axis value (e.g., `--axis build-mode=production`)
+
+### Goals
+
+Goals are action names prefixed with `:` (e.g., `:build-compiler :test-compiler`)
+
+## Markdown File Format
+
+### Global Sections
+
+These sections appear at document root level and define global configuration:
+
+#### `arguments` Section
+
+Defines command-line arguments that can be passed to actions.
+
+Format:
+```markdown
+# arguments
+
+- `args.arg-name`: type="default-value"; Description text
+- `args.mandatory-arg`: type; Description text
+```
+
+Types: `int`, `string`, `file`, `directory`
+
+If no default value provided, the argument is mandatory.
+
+#### `flags` Section
+
+Defines boolean flags (resolved to 1 if present, 0 otherwise).
+
+Format:
+```markdown
+# flags
+
+- `flags.flag-name`: Description text
+```
+
+#### `passthrough` Section
+
+Documents environment variables that are expected to be available. The Nix environment inherits all environment variables by default.
+
+Format:
+```markdown
+# passthrough
+
+- `HOME`
+- `USER`
+```
+
+**Note**: This section is primarily for documentation. The Nix environment automatically inherits all environment variables from the parent process.
+
+#### `Axis` Section
+
+Defines axis variables for multi-version actions.
+
+Format:
+```markdown
+# Axis
+
+- `axis-name`=`{value1|value2*|value3}`
+```
+
+The asterisk (*) marks the default value. Each axis must have zero or exactly one default value.
+
+### Action Sections
+
+Actions are defined in sections with headers matching the pattern:
+
+```markdown
+# action: action-name
+```
+
+Or any header level (`##`, `###`, etc.)
+
+**Rules**:
+- Action names use minus-separated format (kebab-case)
+- Duplicate action names cause an error
+- No nested action definitions (if we find an action, we don't look for nested ones)
+
+#### Action Components
+
+##### `vars` Subsection (Optional)
+
+Documents required environment variables.
+
+Format:
+```markdown
+## vars
+
+- `VARIABLE_NAME`: Description text
+```
+
+##### Bash Code Block (Required)
+
+Each action must contain exactly one bash code block. It may be nested in a subsection.
+
+```markdown
+```bash
+#!/usr/bin/env bash
+# Action script here
+```\
+```
+
+##### Return Values
+
+Actions declare outputs using `ret` pseudo-function calls within the bash script:
+
+```bash
+ret output-name:type=value
+```
+
+**Types**:
+- `int`: Integer value
+- `string`: String value
+- `bool`: Boolean value (0 or 1)
+- `file`: File path (validated for existence)
+- `directory`: Directory path (validated for existence)
+
+**Note**: Type names are lowercase. Multiple return statements are allowed.
+
+#### Multi-Version Actions
+
+Actions can have multiple implementations based on axis values:
+
+```markdown
+# action: publish-compiler
+
+## definition when `build-mode: release`
+
+```bash
+# Release version script
+```\
+
+## definition when `build-mode: development`
+
+```bash
+# Development version script
+```\
+```
+
+**Rules**:
+- User must specify all required axis values
+- At most one definition matches the given axis values
+- Error if no definition matches or if axis not specified
+
+## Expansion Syntax
+
+Within bash scripts, special expansions are recognized and substituted:
+
+### System Variables: `${sys.variable-name}`
+
+Provided by the tool:
+- `${sys.project-root}`: Path to project root (parent dir containing `.git/`)
+
+### Action Dependencies: `${action.action-name.variable-name}`
+
+References output from another action. Creates dependency edge in DAG.
+
+### Environment Variables: `${env.VARIABLE_NAME}`
+
+References environment variable. Validated before execution.
+
+### Arguments: `${args.argument-name}`
+
+References command-line argument value.
+
+### Flags: `${flags.flag-name}`
+
+References command-line flag (1 if present, 0 otherwise).
+
+### Bash Variable Compatibility
+
+**Important**: Mudyla expansions must contain a dot (`.`) to distinguish them from bash variables.
+
+- **Mudyla expansions**: `${prefix.rest}` - Processed by Mudyla
+- **Bash variables**: `${variable}` - Left unchanged for bash to process
+
+This ensures compatibility with standard bash scripts:
+
+```bash
+# Bash variables work normally
+for d in foo-*; do
+  echo ${d}                    # Bash variable - not processed
+  cp ${d}/file ${args.output}  # Mixed: ${d} is bash, ${args.output} is Mudyla
+done
+```
+
+All of these are valid Mudyla expansions (contain dot):
+- `${sys.project-root}`
+- `${action.build.output}`
+- `${env.HOME}`
+- `${args.output-dir}`
+- `${flags.verbose}`
+
+All of these are bash variables (no dot):
+- `${d}` - Loop variable
+- `${HOME}` - Bash environment variable
+- `${1}` - Positional parameter
+- `${variable}` - Any bash variable
+
+**Best Practice**: Use Mudyla's `${env.VARIABLE}` for environment variables to get validation, or use plain bash `${VARIABLE}` if validation is not needed.
+
+## Execution Model
+
+### 1. Parse Phase
+
+- Parse all markdown files matching glob pattern
+- Extract actions, arguments, flags, axis definitions
+- Build internal AST representation
+
+### 2. Graph Building Phase
+
+- Build dependency DAG from action dependencies
+- Trace from goal actions to determine required actions
+- Prune unused actions from graph
+
+### 3. Validation Phase
+
+Validate:
+- All required environment variables (from `${env.*}`) are present
+- All mandatory arguments are provided
+- Graph is acyclic (no circular dependencies)
+- All required outputs are returned by dependencies
+- All axis values are specified when multi-version actions are used
+- Each axis has zero or exactly one default value
+
+### 4. Planning Phase
+
+Print execution plan showing:
+- Actions to execute
+- Dependencies between actions
+- Order of execution
+
+### 5. Execution Phase
+
+For each action in topological order:
+
+1. **Check for continuation**: If `--continue` flag is set:
+   - Find the last run directory (sorted by nanosecond timestamp)
+   - If action has `meta.json` with `success: true`, restore from previous run:
+     - Copy entire action directory to new run
+     - Skip execution, use cached outputs
+     - Print "(restored from previous run)"
+   - Otherwise, execute normally
+
+2. **Create run directory**: `.mdl/runs/<run-id>/<action-name>/`
+   - Run ID format: `YYYYMMDD-HHMMSS-nnnnnnnnn` (nanosecond-grained timestamp)
+   - Ensures chronological ordering of runs
+
+3. **Render bash script**:
+   - Expand all `${...}` expansions
+   - Include `ret` function implementation
+   - Save rendered script
+
+4. **Execute under Nix**:
+   ```bash
+   nix develop --command bash <rendered-script>
+   ```
+   - Environment variables are inherited by default
+   - Record start time (ISO format)
+
+5. **Capture execution results**:
+   - Capture stdout/stderr to files in run directory
+   - Parse output JSON from `ret` function calls
+   - Record end time and calculate duration
+
+6. **Write metadata**: Create `meta.json` with:
+   - `action_name`: Name of the action
+   - `success`: Boolean success status
+   - `start_time`: ISO timestamp
+   - `end_time`: ISO timestamp
+   - `duration_seconds`: Execution time in seconds
+   - `exit_code`: Process exit code
+   - `error_message`: Optional error description (if failed)
+
+7. **Handle results**:
+   - On failure: Print captured output, keep run directory, stop execution
+   - On success: Continue to next action, outputs available to dependents
+
+### 6. Output Phase
+
+- Print JSON to stdout with all goal action results
+- Optionally save to `--out` file
+- Clean run directory on success
+- Keep run directory on failure
+
+## Output Format
+
+```json
+{
+  "action-name": {
+    "output-var": "value",
+    "another-var": 123
+  },
+  "action-name2": {
+    "output-var": "value"
+  }
+}
+```
+
+## Run Directory Structure
+
+```
+.mdl/
+  runs/
+    <run-id>/              # Format: YYYYMMDD-HHMMSS-nnnnnnnnn (nanosecond timestamp)
+      <action-name>/
+        script.sh          # Rendered bash script
+        stdout.log         # Captured stdout
+        stderr.log         # Captured stderr
+        output.json        # Return values
+        meta.json          # Execution metadata (timing, success status)
+```
+
+### meta.json Format
+
+```json
+{
+  "action_name": "action-name",
+  "success": true,
+  "start_time": "2025-11-20T19:42:41.720785",
+  "end_time": "2025-11-20T19:42:41.802233",
+  "duration_seconds": 0.081448,
+  "exit_code": 0,
+  "error_message": "Optional error description"
+}
+```
+
+## `ret` Function Implementation
+
+The `ret` function is injected into the bash environment:
+
+```bash
+ret() {
+  local declaration="$1"
+  local name="${declaration%%:*}"
+  local rest="${declaration#*:}"
+  local type="${rest%%=*}"
+  local value="${rest#*=}"
+
+  # Append to output JSON
+  echo "{\"$name\": {\"type\": \"$type\", \"value\": \"$value\"}}" >> "$MDL_OUTPUT_JSON"
+}
+
+export MDL_OUTPUT_JSON=".mdl/runs/<run-id>/<action-name>/output.json"
+```
+
+## Error Handling
+
+Fail fast with clear error messages:
+
+- **Parse errors**: Line number and description
+- **Duplicate actions**: List conflicting definitions
+- **Missing dependencies**: Show missing action/output
+- **Cyclic dependencies**: Show cycle path
+- **Missing env vars**: List required variables
+- **Missing arguments**: List mandatory arguments
+- **No .git directory**: Cannot determine project root
+- **No flake.nix**: Required for Nix execution
+- **Missing axis values**: List required axis
+- **Invalid axis defaults**: Show which axis has multiple defaults
+- **File/directory validation**: Show expected path
+- **Action failures**: Show stdout/stderr and run directory location
+
+## CLI Commands
+
+### Execute Goals
+
+```bash
+mdl :goal1 :goal2
+```
+
+### List Available Actions
+
+```bash
+mdl --list-actions
+```
+
+Output format:
+```
+action-name
+  Description: <first line of action section>
+  Arguments: arg1, arg2
+  Flags: flag1
+  Env vars: VAR1, VAR2
+  Returns: output1:type, output2:type
+  Axis: build-mode (if applicable)
+```
+
+### Show Execution Plan
+
+```bash
+mdl --dry-run :goal1
+```
+
+Shows DAG and execution order without executing.
+
+### Continue from Previous Run
+
+```bash
+mdl --continue :goal1 :goal2
+```
+
+Resumes execution from the last run:
+- Finds the most recent run directory (sorted by nanosecond timestamp)
+- Restores successful actions from previous run (copies outputs)
+- Only re-executes failed or missing actions
+- Creates a new run directory for the current execution
+- Useful for:
+  - Recovering from failures in long-running pipelines
+  - Iterative development and testing
+  - Skipping expensive unchanged actions
+
+### GitHub Actions Integration
+
+```bash
+mdl --github-actions :goal1 :goal2
+```
+
+Optimizes output for GitHub Actions CI/CD:
+
+**Features**:
+- **Collapsible groups**: Wraps each action in `::group::` / `::endgroup::` annotations
+  - Makes logs easier to navigate in GitHub Actions UI
+  - Each action can be expanded/collapsed independently
+- **Streaming output**: Real-time output to console while also writing to log files
+  - No delay in seeing action progress
+  - Still creates stdout.log and stderr.log for debugging
+
+**Example GitHub Actions workflow**:
+```yaml
+- name: Run Mudyla build
+  run: nix run .#mudyla -- --github-actions :build :test :deploy
+```
+
+**Output format**:
+```
+::group::build
+Building project...
+Build completed successfully
+::endgroup::
+::group::test
+Running tests...
+All tests passed
+::endgroup::
+```
+
+This creates collapsible sections in GitHub Actions logs, improving readability for complex build pipelines.
+
+## Testing Strategy
+
+Test project should include:
+- Simple action with no dependencies
+- Action with dependencies
+- Multi-version action with axis
+- Actions with various return types
+- Cyclic dependency detection
+- Missing dependency detection
+- Environment variable validation
+- Argument validation
+- File/directory type validation
+- Continue flag functionality (restore successful actions)
+- Meta.json creation and validation
+- Run directory ordering (nanosecond timestamps)
+
+## Type System
+
+All types are lowercase:
+- `int`
+- `string`
+- `bool`
+- `file`
+- `directory`
+
+## Parser Implementation
+
+Mudyla uses **parser combinators** (pyparsing library) for parsing Markdown syntax:
+
+### Advantages:
+- **Declarative**: Grammar rules are expressed as composable parser objects
+- **Type-safe**: Parse results are structured data, not raw regex matches
+- **Maintainable**: Easy to extend and modify grammar rules
+- **Error handling**: Better error messages with context
+
+### Parsed Elements:
+- **Arguments**: `- `args.name`: type="default"; description`
+- **Flags**: `- `flags.name`: description`
+- **Axis**: `- `axis-name`=`{value1|value2*}`
+- **Passthrough vars**: `- `VARIABLE_NAME``
+- **Vars**: `- `VARIABLE_NAME`: description`
+- **Return declarations**: `ret name:type=value`
+- **Expansions**: `${prefix.rest}`
+
+### Grammar Structure:
+Each element has a dedicated parser combinator that:
+1. Matches the specific syntax pattern
+2. Extracts named components (name, type, default, description, etc.)
+3. Returns structured results for AST construction
+
+---
+
+## Recent Improvements (November 2025)
+
+### 1. Parser Combinators Migration
+**Motivation**: Improve parsing robustness, maintainability, and error handling.
+
+**Implementation**:
+- Replaced all regex-based parsing with pyparsing combinators
+- Created `mudyla/parser/combinators.py` with declarative grammar
+- All Mudyla syntax elements have dedicated parser objects
+
+**Benefits**:
+- More maintainable and extensible grammar
+- Better error messages with parse context
+- Type-safe parse results (structured data vs. regex captures)
+- Easier to add new syntax features
+
+### 2. Nanosecond-Grained Timestamps
+**Motivation**: Ensure proper chronological ordering of run directories.
+
+**Implementation**:
+- Run ID format: `YYYYMMDD-HHMMSS-nnnnnnnnn`
+- Uses `time.time_ns()` for nanosecond precision within the current second
+
+**Benefits**:
+- Guaranteed ordering even for rapid successive runs
+- Enables reliable "last run" detection for `--continue` flag
+- Better organization of run history
+
+### 3. Execution Metadata (meta.json)
+**Motivation**: Track execution status, timing, and enable incremental builds.
+
+**Implementation**:
+- Every action execution creates `meta.json` in its run directory
+- Contains: action_name, success, start_time, end_time, duration_seconds, exit_code, error_message
+- Written for both successful and failed executions
+
+**Benefits**:
+- Audit trail of all executions
+- Debugging aid (timing information, exit codes)
+- Foundation for `--continue` flag functionality
+- Performance profiling data
+
+### 4. Continue Flag (Incremental Builds)
+**Motivation**: Enable resuming from failures without re-executing successful actions.
+
+**Implementation**:
+- `--continue` flag finds last run directory
+- Checks each action's `meta.json` for success status
+- Successful actions: copies outputs from previous run
+- Failed/missing actions: executes normally
+- Creates new run directory for current execution
+
+**Benefits**:
+- Faster iteration during development
+- Recover from failures without starting over
+- Skip expensive unchanged actions
+- Efficient CI/CD pipelines
+
+**Usage Example**:
+```bash
+# First run - fails at step 5
+mdl :deploy
+
+# Fix the issue, resume from where it failed
+mdl --continue :deploy
+# Steps 1-4 restored from cache, only 5+ execute
+```
+
+### 5. CI/CD Integration
+**Added**: GitHub Actions workflow with Determinate Nix installer
+- Automatic testing on push/PR
+- Type checking with mypy
+- Binary caching via Magic Nix Cache
+- Test artifact archiving on failure

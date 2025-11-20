@@ -36,6 +36,13 @@ class ExpansionParser:
         for match in cls.EXPANSION_PATTERN.finditer(script):
             original_text = match.group(0)
             expression = match.group(1)
+
+            # Skip bash variable expansions (no dot) - only parse Mudyla expansions
+            # Mudyla expansions always have format: ${prefix.rest}
+            # Bash variables are just: ${variable}
+            if '.' not in expression:
+                continue
+
             expansion = cls._parse_expansion(original_text, expression)
             expansions.append(expansion)
         return expansions
