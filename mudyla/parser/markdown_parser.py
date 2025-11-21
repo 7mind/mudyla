@@ -499,24 +499,26 @@ class MarkdownParser:
         lines = section.content.split("\n")
         current_conditions: list[AxisCondition] = []
         current_content = []
-        in_bash_block = False
-        bash_content = []
+        in_code_block = False
+        code_content = []
+        current_language = "bash"
 
         for i, line in enumerate(lines):
             # Check for conditional definition header
             if line.strip().startswith("##"):
                 # Save previous version if exists
-                if bash_content:
-                    bash_script = "\n".join(bash_content)
+                if code_content:
+                    script = "\n".join(code_content)
                     version = self._create_action_version(
-                        bash_script,
+                        script,
                         current_conditions,
                         action_name,
                         file_path,
                         section.line_number + i,
+                        current_language,
                     )
                     versions.append(version)
-                    bash_content = []
+                    code_content = []
 
                 # Check if this is a conditional definition
                 header_text = line.strip().lstrip("#").strip()
@@ -529,26 +531,39 @@ class MarkdownParser:
 
                 continue
 
-            # Track bash code blocks
-            if line.strip().startswith("```bash"):
-                in_bash_block = True
-                continue
-            elif line.strip() == "```" and in_bash_block:
-                in_bash_block = False
+            # Track code blocks (bash, python, etc.)
+            if line.strip().startswith("```"):
+                if not in_code_block:
+                    # Starting a code block
+                    code_fence = line.strip()[3:].strip()
+                    # Determine language
+                    if code_fence in ["bash", "python"]:
+                        current_language = code_fence
+                    elif code_fence == "" or code_fence == "sh":
+                        # Plain ``` or ```sh defaults to bash
+                        current_language = "bash"
+                    else:
+                        # Unknown language, skip this code block
+                        current_language = None
+                    in_code_block = True
+                else:
+                    # Ending a code block
+                    in_code_block = False
                 continue
 
-            if in_bash_block:
-                bash_content.append(line)
+            if in_code_block and current_language is not None:
+                code_content.append(line)
 
         # Save last version
-        if bash_content:
-            bash_script = "\n".join(bash_content)
+        if code_content:
+            script = "\n".join(code_content)
             version = self._create_action_version(
-                bash_script,
+                script,
                 current_conditions,
                 action_name,
                 file_path,
                 section.line_number,
+                current_language,
             )
             versions.append(version)
 
@@ -603,8 +618,9 @@ class MarkdownParser:
         action_name: str,
         file_path: Path,
         line_number: int,
+        language: str = "bash",
     ) -> ActionVersion:
-        """Create an action version from bash script and conditions."""
+        """Create an action version from script and conditions."""
         location = SourceLocation(
             file_path=str(file_path),
             line_number=line_number,
@@ -630,4 +646,5 @@ class MarkdownParser:
             env_dependencies=env_dependencies,
             conditions=conditions,
             location=location,
+            language=language,
         )

@@ -211,7 +211,7 @@ class CLI:
 
             # Handle --list-actions
             if args.list_actions:
-                self._list_actions(document)
+                self._list_actions(document, args.no_color)
                 return 0
 
             # Parse goals
@@ -394,18 +394,33 @@ class CLI:
 
         output.print("")  # Empty line after plan
 
-    def _list_actions(self, document: ParsedDocument) -> None:
+    def _list_actions(self, document: ParsedDocument, no_color: bool = False) -> None:
         """List all available actions."""
-        print("\nAvailable actions:\n")
+        from .utils.colors import ColorFormatter
+
+        color = ColorFormatter(no_color=no_color)
+        print(f"\n{color.info('Available actions:')}\n")
 
         for action_name in sorted(document.actions.keys()):
             action = document.actions[action_name]
-            print(f"  {action_name}")
+
+            # Check if this is a root action (no dependencies)
+            deps = action.get_action_dependencies()
+            is_root = len(deps) == 0
+
+            # Format action name
+            if is_root:
+                # Root actions are bold with goal emoji
+                formatted_name = f"🎯 {color.bold(color.highlight(action_name))}"
+            else:
+                formatted_name = f"  {color.highlight(action_name)}"
+
+            print(formatted_name)
 
             # Dependencies
-            deps = action.get_action_dependencies()
             if deps:
-                print(f"    Dependencies: {', '.join(sorted(deps))}")
+                dep_str = ', '.join(sorted(deps))
+                print(f"    {color.dim('Dependencies:')} {dep_str}")
 
             # Arguments and flags used
             args_used = set()
@@ -423,28 +438,32 @@ class CLI:
                     env_vars_used.add(expansion.variable_name)
 
             if args_used:
-                print(f"    Arguments: {', '.join(sorted(args_used))}")
+                args_str = ', '.join(sorted(args_used))
+                print(f"    {color.dim('Arguments:')} {color.warning(args_str)}")
             if flags_used:
-                print(f"    Flags: {', '.join(sorted(flags_used))}")
+                flags_str = ', '.join(sorted(flags_used))
+                print(f"    {color.dim('Flags:')} {color.warning(flags_str)}")
 
             # Env vars
             all_env_vars = set(action.required_env_vars.keys()) | env_vars_used
             if all_env_vars:
-                print(f"    Env vars: {', '.join(sorted(all_env_vars))}")
+                env_str = ', '.join(sorted(all_env_vars))
+                print(f"    {color.dim('Env vars:')} {env_str}")
 
             # Returns
             if action.versions:
                 returns = action.versions[0].return_declarations
                 if returns:
                     return_strs = [
-                        f"{r.name}:{r.return_type.value}" for r in returns
+                        f"{color.success(r.name)}:{color.dim(r.return_type.value)}" for r in returns
                     ]
-                    print(f"    Returns: {', '.join(return_strs)}")
+                    print(f"    {color.dim('Returns:')} {', '.join(return_strs)}")
 
             # Axis
             if action.is_multi_version:
                 axis_names = action.get_required_axis()
-                print(f"    Axis: {', '.join(sorted(axis_names))}")
+                axis_str = ', '.join(sorted(axis_names))
+                print(f"    {color.dim('Axis:')} {color.warning(axis_str)}")
 
             print()
 

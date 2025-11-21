@@ -114,24 +114,48 @@ class ExecutionEngine:
         self._install_runtime()
 
     def _install_runtime(self) -> None:
-        """Install runtime.sh to .mdl directory."""
+        """Install runtime files for all supported languages to .mdl directory."""
+        from mudyla.executor.bash_runtime import BashRuntime
+        from mudyla.executor.python_runtime import PythonRuntime
+
         mdl_dir = self.project_root / ".mdl"
-        runtime_dest = mdl_dir / "runtime.sh"
+        mdl_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get runtime.sh from package resources
-        try:
-            # Python 3.12+ uses importlib.resources.files
-            import importlib.resources as resources
-            runtime_content = resources.files('mudyla').joinpath('runtime.sh').read_text()
-        except (AttributeError, FileNotFoundError):
-            # Fallback for older Python or development mode
-            import mudyla
-            runtime_path = Path(mudyla.__file__).parent / 'runtime.sh'
-            runtime_content = runtime_path.read_text()
+        # Install runtime files for each language
+        for runtime_class in [BashRuntime, PythonRuntime]:
+            runtime = runtime_class()
+            for filename, content in runtime.get_runtime_files().items():
+                dest_path = mdl_dir / filename
+                dest_path.write_text(content)
+                if filename.endswith(".sh"):
+                    dest_path.chmod(0o755)
 
-        # Write runtime to .mdl/runtime.sh
-        runtime_dest.write_text(runtime_content)
-        runtime_dest.chmod(0o755)
+    def _get_language_runtime(self, language: str):
+        """Get the language runtime for the specified language.
+
+        Args:
+            language: Language name (e.g., "bash", "python")
+
+        Returns:
+            LanguageRuntime instance
+
+        Raises:
+            ValueError: If language is not supported
+        """
+        from mudyla.executor.bash_runtime import BashRuntime
+        from mudyla.executor.python_runtime import PythonRuntime
+
+        runtimes = {
+            "bash": BashRuntime,
+            "python": PythonRuntime,
+        }
+
+        if language not in runtimes:
+            raise ValueError(
+                f"Unsupported language: {language}. Supported languages: {', '.join(runtimes.keys())}"
+            )
+
+        return runtimes[language]()
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -329,65 +353,46 @@ class ExecutionEngine:
         action_dir = self.run_directory / action_name
         action_dir.mkdir(parents=True, exist_ok=True)
 
-        # Render script
-        rendered_script = self._render_script(
-            version.bash_script, action_name, action_outputs
+        # Get appropriate language runtime
+        runtime = self._get_language_runtime(version.language)
+
+        # Prepare execution context
+        from mudyla.executor.language_runtime import ExecutionContext
+
+        context = ExecutionContext(
+            system_vars={"project-root": str(self.project_root)},
+            env_vars=dict(os.environ) | self.environment_vars,
+            args=self.args,
+            flags=self.flags,
+            action_outputs=action_outputs,
         )
 
-        # Source runtime and set output path
+        # Prepare script using language runtime
         output_json_path = action_dir / "output.json"
-        runtime_path = self.project_root / ".mdl" / "runtime.sh"
-        runtime_header = f"""#!/usr/bin/env bash
-# Source Mudyla runtime
-export MDL_OUTPUT_JSON="{output_json_path}"
-source "{runtime_path}"
+        rendered = runtime.prepare_script(
+            version=version,
+            context=context,
+            output_json_path=output_json_path,
+            working_dir=action_dir,
+        )
 
-"""
-
-        # Add environment variable exports
-        env_exports = ""
-        if self.environment_vars:
-            env_exports = "# Environment variables\n"
-            for var_name, var_value in sorted(self.environment_vars.items()):
-                # Properly escape the value for bash
-                escaped_value = var_value.replace("\\", "\\\\").replace('"', '\\"')
-                env_exports += f'export {var_name}="{escaped_value}"\n'
-            env_exports += "\n"
-
-        full_script = runtime_header + env_exports + rendered_script
-
-        # Save script
-        script_path = action_dir / "script.sh"
-        script_path.write_text(full_script)
+        # Determine script extension based on language
+        script_ext = ".sh" if version.language == "bash" else ".py"
+        script_path = action_dir / f"script{script_ext}"
+        script_path.write_text(rendered.content)
         script_path.chmod(0o755)
 
         # Prepare output paths
         stdout_path = action_dir / "stdout.log"
         stderr_path = action_dir / "stderr.log"
 
+        # Get execution command from language runtime
+        base_exec_cmd = runtime.get_execution_command(script_path)
+
         # Build execution command
         if self.without_nix:
-            # Run bash directly without Nix
-            if platform.system() == "Windows":
-                # On Windows, find Git Bash (not WSL bash)
-                # Try common Git Bash locations first
-                git_bash_paths = [
-                    r"C:\Program Files\Git\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\bin\bash.exe",
-                ]
-                bash_cmd = None
-                for path in git_bash_paths:
-                    if Path(path).exists():
-                        bash_cmd = path
-                        break
-
-                # Fall back to searching PATH (but this might find WSL bash)
-                if bash_cmd is None:
-                    bash_cmd = shutil.which("bash.exe") or "bash.exe"
-            else:
-                bash_cmd = "bash"
-
-            exec_cmd = [bash_cmd, str(script_path)]
+            # Run directly without Nix
+            exec_cmd = base_exec_cmd
         else:
             # Run under Nix develop environment with clean environment
             # Collect all environment variables that should be kept
@@ -403,7 +408,7 @@ source "{runtime_path}"
             exec_cmd = ["nix", "develop", "--ignore-environment"]
             for var in sorted(env_vars_to_keep):
                 exec_cmd.extend(["--keep", var])
-            exec_cmd.extend(["--command", "bash", str(script_path)])
+            exec_cmd.extend(["--command"] + base_exec_cmd)
 
         # Execute
         if self.github_actions:
@@ -575,6 +580,10 @@ source "{runtime_path}"
                         )
 
                     path = Path(output_value)
+                    # Resolve relative paths relative to project root
+                    if not path.is_absolute():
+                        path = self.project_root / path
+
                     if not path.exists():
                         error_msg = (
                             f"{ret_decl.return_type.value.capitalize()} "

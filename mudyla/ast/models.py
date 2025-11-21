@@ -189,7 +189,7 @@ class ActionVersion:
     """Single version of an action (for multi-version actions)."""
 
     bash_script: str
-    """The bash script content"""
+    """The script content (name kept for backwards compatibility, works for all languages)"""
 
     expansions: list[Expansion]
     """All expansions found in the script"""
@@ -207,6 +207,9 @@ class ActionVersion:
     """Conditions that must be met for this version (axis and/or platform)"""
 
     location: SourceLocation
+
+    language: str = "bash"
+    """Language of the script (bash, python, etc.)"""
 
     def matches_axis_values(self, axis_values: dict[str, str]) -> bool:
         """Check if all conditions match the given axis values.

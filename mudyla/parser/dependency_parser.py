@@ -6,13 +6,19 @@ from ..ast.models import DependencyDeclaration, SourceLocation
 
 
 class DependencyParser:
-    """Parser for dep pseudo-command in bash scripts."""
+    """Parser for dep pseudo-command in bash and python scripts."""
 
-    # Pattern to match: dep action.action-name
+    # Pattern to match bash: dep action.action-name
     ACTION_DEP_PATTERN = re.compile(r"^\s*dep\s+action\.([a-zA-Z][a-zA-Z0-9_-]*)\s*$")
 
-    # Pattern to match: dep env.VARIABLE_NAME
+    # Pattern to match bash: dep env.VARIABLE_NAME
     ENV_DEP_PATTERN = re.compile(r"^\s*dep\s+env\.([A-Z_][A-Z0-9_]*)\s*$")
+
+    # Pattern to match python: mdl.dep("action.action-name")
+    ACTION_DEP_PYTHON_PATTERN = re.compile(r'^\s*mdl\.dep\s*\(\s*["\']action\.([a-zA-Z][a-zA-Z0-9_-]*)["\']')
+
+    # Pattern to match python: mdl.dep("env.VARIABLE_NAME")
+    ENV_DEP_PYTHON_PATTERN = re.compile(r'^\s*mdl\.dep\s*\(\s*["\']env\.([A-Z_][A-Z0-9_]*)["\']')
 
     @classmethod
     def find_all_dependencies(
@@ -40,7 +46,7 @@ class DependencyParser:
             if stripped.startswith("#"):
                 continue
 
-            # Try action dependency
+            # Try bash action dependency: dep action.name
             action_match = cls.ACTION_DEP_PATTERN.match(line)
             if action_match:
                 action_name = action_match.group(1)
@@ -54,10 +60,31 @@ class DependencyParser:
                 )
                 continue
 
-            # Try environment variable dependency
+            # Try python action dependency: mdl.dep("action.name")
+            action_python_match = cls.ACTION_DEP_PYTHON_PATTERN.match(line)
+            if action_python_match:
+                action_name = action_python_match.group(1)
+                location = SourceLocation(
+                    file_path=base_location.file_path,
+                    line_number=base_location.line_number + i,
+                    section_name=base_location.section_name,
+                )
+                action_dependencies.append(
+                    DependencyDeclaration(action_name=action_name, location=location)
+                )
+                continue
+
+            # Try bash environment variable dependency: dep env.VAR
             env_match = cls.ENV_DEP_PATTERN.match(line)
             if env_match:
                 env_var = env_match.group(1)
+                env_dependencies.append(env_var)
+                continue
+
+            # Try python environment variable dependency: mdl.dep("env.VAR")
+            env_python_match = cls.ENV_DEP_PYTHON_PATTERN.match(line)
+            if env_python_match:
+                env_var = env_python_match.group(1)
                 env_dependencies.append(env_var)
 
         return action_dependencies, env_dependencies
