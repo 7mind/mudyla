@@ -42,7 +42,6 @@
 
             cp $src/completions/mdl.bash $out/share/bash-completion/completions/mdl
             cp $src/completions/_mdl $out/share/zsh/site-functions/_mdl
-            cp $src/completions/init.zsh $out/share/mudyla/init.zsh
           '';
 
           meta = {
