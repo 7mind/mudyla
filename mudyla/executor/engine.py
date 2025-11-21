@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from ..ast.types import ReturnType
 from ..dag.graph import ActionGraph
+from ..utils.colors import ColorFormatter
 
 
 @dataclass
@@ -126,6 +127,8 @@ set -euo pipefail
         github_actions: bool = False,
         without_nix: bool = False,
         verbose: bool = False,
+        keep_run_dir: bool = False,
+        no_color: bool = False,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -138,6 +141,11 @@ set -euo pipefail
         self.github_actions = github_actions
         self.without_nix = without_nix
         self.verbose = verbose
+        self.keep_run_dir = keep_run_dir
+        self.no_color = no_color
+
+        # Create color formatter
+        self.color = ColorFormatter(no_color=no_color)
 
         # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
@@ -181,16 +189,17 @@ set -euo pipefail
 
             if not result.success:
                 # Action failed - stop execution
-                print(f"\nAction '{action_name}' failed!")
-                print(f"Run directory: {self.run_directory}")
-                print(f"\nStdout: {result.stdout_path}")
+                error_msg = f"Action '{action_name}' failed!"
+                print(f"\n{self.color.error(error_msg)}")
+                print(f"{self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
+                print(f"\n{self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
                 if result.stdout_path.exists():
                     print(result.stdout_path.read_text())
-                print(f"\nStderr: {result.stderr_path}")
+                print(f"\n{self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
                 if result.stderr_path.exists():
                     print(result.stderr_path.read_text())
                 if result.error_message:
-                    print(f"\nError: {result.error_message}")
+                    print(f"\n{self.color.error('Error:')} {result.error_message}")
 
                 return ExecutionResult(
                     success=False,
@@ -201,7 +210,14 @@ set -euo pipefail
             # Store outputs for dependent actions
             action_outputs[action_name] = result.outputs
 
-        # Success - clean up run directory if desired (for now keep it)
+        # Success - clean up run directory if not keeping it
+        if not self.keep_run_dir:
+            try:
+                shutil.rmtree(self.run_directory)
+            except Exception as e:
+                # Don't fail on cleanup errors, just warn
+                print(f"{self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+
         return ExecutionResult(
             success=True,
             action_results=action_results,
@@ -284,7 +300,7 @@ set -euo pipefail
         if prev_output_path.exists() and version is not None:
             outputs = self._parse_outputs(prev_output_path, version.return_declarations)
 
-        print(f"  (restored from previous run)")
+        print(f"{self.color.info('Executing action:')} {self.color.highlight(action_name)} {self.color.dim('(restored from previous run)')}")
 
         return ActionResult(
             action_name=action_name,
@@ -415,11 +431,11 @@ set -euo pipefail
         if self.github_actions:
             print(f"::group::{action_name}")
         else:
-            print(f"Executing action: {action_name}")
+            print(f"{self.color.info('Executing action:')} {self.color.highlight(action_name)}")
 
         # Print command in verbose/CI modes
         if self.github_actions or self.verbose:
-            print(f"Command: {' '.join(exec_cmd)}")
+            print(f"{self.color.dim('Command:')} {' '.join(exec_cmd)}")
 
         # Record start time
         start_time = datetime.now()

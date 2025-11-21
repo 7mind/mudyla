@@ -14,6 +14,7 @@ from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
 from .utils.project_root import find_project_root
+from .utils.colors import ColorFormatter
 
 
 class CLI:
@@ -79,6 +80,20 @@ class CLI:
         )
 
         self.parser.add_argument(
+            "--keep-run-dir",
+            dest="keep_run_dir",
+            action="store_true",
+            help="Keep the run directory after successful execution (for debugging)",
+        )
+
+        self.parser.add_argument(
+            "--no-color",
+            dest="no_color",
+            action="store_true",
+            help="Disable colored output (auto-enabled for GitHub Actions)",
+        )
+
+        self.parser.add_argument(
             "goals",
             nargs="*",
             help="Goal actions to execute (format: :action-name)",
@@ -100,6 +115,13 @@ class CLI:
         if platform.system() == "Windows" and not args.without_nix:
             args.without_nix = True
             print("Note: Running on Windows - automatically enabling --without-nix mode")
+
+        # Auto-enable --no-color for GitHub Actions
+        if args.github_actions and not args.no_color:
+            args.no_color = True
+
+        # Create color formatter
+        color = ColorFormatter(no_color=args.no_color)
 
         # Parse custom arguments, flags, and axis
         custom_args = {}
@@ -163,7 +185,7 @@ class CLI:
         try:
             # Find project root
             project_root = find_project_root()
-            print(f"Project root: {project_root}")
+            print(f"{color.dim('Project root:')} {color.highlight(str(project_root))}")
 
             # Resolve defs pattern
             defs_pattern = args.defs
@@ -176,17 +198,17 @@ class CLI:
                 md_files.append(Path(pattern_part))
 
             if not md_files:
-                print(f"Error: No markdown files found matching pattern: {args.defs}")
+                print(f"{color.error('Error:')} No markdown files found matching pattern: {args.defs}")
                 return 1
 
-            print(f"Found {len(md_files)} definition file(s)")
+            print(f"{color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s)')}")
 
             # Parse markdown files
-            print("Parsing definitions...")
+            print(color.dim("Parsing definitions..."))
             parser = MarkdownParser()
             document = parser.parse_files(md_files)
 
-            print(f"Loaded {len(document.actions)} action(s)")
+            print(f"{color.dim('Loaded')} {color.bold(str(len(document.actions)))} {color.dim('action(s)')}")
 
             # Handle --list-actions
             if args.list_actions:
@@ -199,15 +221,15 @@ class CLI:
                 if goal_spec.startswith(":"):
                     goals.append(goal_spec[1:])
                 else:
-                    print(f"Warning: Goal should start with ':', got: {goal_spec}")
+                    print(f"{color.warning('Warning:')} Goal should start with ':', got: {goal_spec}")
                     goals.append(goal_spec)
 
             if not goals:
-                print("Error: No goals specified")
+                print(f"{color.error('Error:')} No goals specified")
                 self.parser.print_help()
                 return 1
 
-            print(f"Goals: {', '.join(goals)}")
+            print(f"{color.dim('Goals:')} {color.highlight(', '.join(goals))}")
 
             # Apply default axis values
             for axis_name, axis_def in document.axis.items():
@@ -215,7 +237,7 @@ class CLI:
                     default_value = axis_def.get_default_value()
                     if default_value:
                         axis_values[axis_name] = default_value
-                        print(f"Using default axis value: {axis_name}={default_value}")
+                        print(f"{color.dim('Using default axis value:')} {color.info(axis_name + '=' + default_value)}")
 
             # Apply default argument values
             for arg_name, arg_def in document.arguments.items():
@@ -223,17 +245,17 @@ class CLI:
                     custom_args[arg_name] = arg_def.default_value
 
             # Build DAG
-            print("\nBuilding dependency graph...")
+            print(f"\n{color.dim('Building dependency graph...')}")
             builder = DAGBuilder(document)
             builder.validate_goals(goals)
             graph = builder.build_graph(goals, axis_values)
 
             # Prune to goals
             pruned_graph = graph.prune_to_goals()
-            print(f"Graph contains {len(pruned_graph.nodes)} required action(s)")
+            print(f"{color.dim('Graph contains')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
 
             # Validate
-            print("Validating...")
+            print(color.dim("Validating..."))
             validator = DAGValidator(document, pruned_graph)
 
             # Initialize flags with all defined flags
@@ -241,18 +263,18 @@ class CLI:
             all_flags.update(custom_flags)
 
             validator.validate_all(custom_args, all_flags, axis_values)
-            print("Validation passed")
+            print(color.success("Validation passed"))
 
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
-            print("\nExecution plan:")
+            print(f"\n{color.bold('Execution plan:')}")
             for i, action_name in enumerate(execution_order, 1):
                 node = pruned_graph.get_node(action_name)
                 deps = ", ".join(sorted(node.dependencies)) if node.dependencies else "none"
-                print(f"  {i}. {action_name} (depends on: {deps})")
+                print(f"  {color.dim(f'{i}.')} {color.highlight(action_name)} {color.dim(f'(depends on: {deps})')}")
 
             if args.dry_run:
-                print("\nDry run - not executing")
+                print(f"\n{color.info('Dry run - not executing')}")
                 return 0
 
             # Find previous run if --continue
@@ -264,16 +286,16 @@ class CLI:
                     run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
                     if run_dirs:
                         previous_run_dir = run_dirs[-1]  # Last run
-                        print(f"\nContinuing from previous run: {previous_run_dir.name}")
+                        print(f"\n{color.info('Continuing from previous run:')} {color.highlight(previous_run_dir.name)}")
                     else:
-                        print("\nWarning: No previous runs found, starting fresh")
+                        print(f"\n{color.warning('Warning:')} No previous runs found, starting fresh")
                 else:
-                    print("\nWarning: No runs directory found, starting fresh")
+                    print(f"\n{color.warning('Warning:')} No runs directory found, starting fresh")
 
             # Execute
-            print("\n" + "=" * 60)
-            print("Executing actions...")
-            print("=" * 60)
+            print("\n" + color.dim("=" * 60))
+            print(color.bold("Executing actions..."))
+            print(color.dim("=" * 60))
 
             engine = ExecutionEngine(
                 graph=pruned_graph,
@@ -287,43 +309,45 @@ class CLI:
                 github_actions=args.github_actions,
                 without_nix=args.without_nix,
                 verbose=args.verbose,
+                keep_run_dir=args.keep_run_dir,
+                no_color=args.no_color,
             )
 
             result = engine.execute_all()
 
             if not result.success:
-                print("\nExecution failed!")
+                print(f"\n{color.error('Execution failed!')}")
                 return 1
 
             # Get goal outputs
             goal_outputs = result.get_goal_outputs(goals)
 
             # Print outputs
-            print("\n" + "=" * 60)
-            print("Execution completed successfully!")
-            print("=" * 60)
+            print("\n" + color.dim("=" * 60))
+            print(color.success("Execution completed successfully!"))
+            print(color.dim("=" * 60))
 
             output_json = json.dumps(goal_outputs, indent=2)
-            print("\nOutputs:")
+            print(f"\n{color.bold('Outputs:')}")
             print(output_json)
 
             # Save to file if requested
             if args.out:
                 out_path = Path(args.out)
                 out_path.write_text(output_json)
-                print(f"\nOutputs saved to: {out_path}")
+                print(f"\n{color.dim('Outputs saved to:')} {color.highlight(str(out_path))}")
 
-            # Clean up run directory on success
-            # For now, keep it for debugging
-            print(f"\nRun directory: {result.run_directory}")
+            # Show run directory if keeping it
+            if args.keep_run_dir:
+                print(f"\n{color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
 
             return 0
 
         except ValidationError as e:
-            print(f"\nValidation error:\n{e}")
+            print(f"\n{color.error('Validation error:')}\n{e}")
             return 1
         except Exception as e:
-            print(f"\nError: {e}")
+            print(f"\n{color.error('Error:')} {e}")
             import traceback
 
             traceback.print_exc()
