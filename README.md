@@ -6,7 +6,7 @@
 [![Nix](https://img.shields.io/badge/Built%20with-Nix-5277C3.svg?logo=nixos&logoColor=white)](https://builtwithnix.org)
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-blue.svg)](https://nixos.wiki/wiki/Flakes)
 
-A script orchestrator that allows defining build actions in Markdown files and executing them as a dependency graph under Nix environments.
+A script orchestrator: define graphs of Python/Bash/etc actions in Markdown files and run them in parallel under Nix environments.
 
 Totally Claude'd.
 
