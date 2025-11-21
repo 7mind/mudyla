@@ -16,13 +16,6 @@ from .parser.markdown_parser import MarkdownParser
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
 
-try:
-    import networkx as nx
-    from phart import ASCIIRenderer
-    PHART_AVAILABLE = True
-except ImportError:
-    PHART_AVAILABLE = False
-
 
 class CLI:
     """Command-line interface for Mudyla."""
@@ -269,18 +262,7 @@ class CLI:
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
             print(f"\n{'📋' if not args.no_color else '▸'} {color.bold('Execution plan:')}")
-
-            if PHART_AVAILABLE and not args.no_color:
-                # Use phart to visualize the DAG
-                self._visualize_execution_plan_phart(pruned_graph, execution_order, goals, color)
-            else:
-                # Fallback to simple text output
-                for i, action_name in enumerate(execution_order, 1):
-                    node = pruned_graph.get_node(action_name)
-                    deps = ", ".join(sorted(node.dependencies)) if node.dependencies else "none"
-                    is_goal = action_name in goals
-                    goal_marker = " 🎯" if is_goal and not args.no_color else " [GOAL]" if is_goal else ""
-                    print(f"  {color.dim(f'{i}.')} {color.highlight(action_name)}{goal_marker} {color.dim(f'(depends on: {deps})')}")
+            self._visualize_execution_plan(pruned_graph, execution_order, goals, color, args.no_color)
 
             if args.dry_run:
                 print(f"\n{'ℹ️' if not args.no_color else 'i'} {color.info('Dry run - not executing')}")
@@ -367,42 +349,40 @@ class CLI:
             traceback.print_exc()
             return 1
 
-    def _visualize_execution_plan_phart(self, graph, execution_order: list[str], goals: list[str], color) -> None:
-        """Visualize execution plan using phart.
+    def _visualize_execution_plan(self, graph, execution_order: list[str], goals: list[str], color, no_color: bool) -> None:
+        """Visualize execution plan as a tree.
 
         Args:
             graph: The execution graph
             execution_order: List of actions in execution order
             goals: List of goal actions
             color: Color formatter
+            no_color: Whether to disable colors
         """
-        import networkx as nx
-        from phart import ASCIIRenderer, NodeStyle
-
-        # Create a NetworkX DiGraph
-        # Use labels as node IDs so they show up in the visualization
-        G = nx.DiGraph()
-
-        # Create a mapping from action names to labels
-        label_map = {}
-        for action_name in execution_order:
-            order_num = execution_order.index(action_name) + 1
+        # Create a tree-like visualization showing dependencies
+        for i, action_name in enumerate(execution_order, 1):
+            node = graph.get_node(action_name)
             is_goal = action_name in goals
-            goal_marker = " 🎯" if is_goal else ""
-            label = f"{order_num}. {action_name}{goal_marker}"
-            label_map[action_name] = label
-            G.add_node(label)
+            goal_marker = " 🎯" if is_goal and not no_color else " [GOAL]" if is_goal else ""
 
-        # Add edges using labels
-        for action_name in execution_order:
-            exec_node = graph.get_node(action_name)
-            for dep in exec_node.dependencies:
-                # In a dependency graph, edges go from dependency to dependent
-                G.add_edge(label_map[dep], label_map[action_name])
+            # Format the action with its number
+            action_label = f"{i}. {action_name}{goal_marker}"
 
-        # Render the graph with minimal style for compact output
-        renderer = ASCIIRenderer(G, node_style=NodeStyle.MINIMAL, node_spacing=1, layer_spacing=0)
-        print(renderer.render())
+            if not node.dependencies:
+                # No dependencies - just print the action
+                print(f"  {color.highlight(action_label)}")
+            else:
+                # Has dependencies - show them
+                dep_names = []
+                for dep in sorted(node.dependencies):
+                    dep_num = execution_order.index(dep) + 1
+                    dep_names.append(f"{dep_num}")
+
+                deps_str = ",".join(dep_names)
+                arrow = "←" if not no_color else "<-"
+                print(f"  {color.highlight(action_label)} {color.dim(f'{arrow} [{deps_str}]')}")
+
+        print()  # Empty line after plan
 
     def _list_actions(self, document: ParsedDocument) -> None:
         """List all available actions."""

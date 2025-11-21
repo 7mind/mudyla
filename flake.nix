@@ -29,7 +29,6 @@
             pyparsing
             rich
             networkx
-            phart
           ];
 
           postInstall = ''
@@ -61,7 +60,7 @@
           shellHook = ''
             # Create/activate uv virtual environment
             if [ ! -d .venv ]; then
-              echo "Creating uv virtual environment..."
+              echo "Creating uv virtual environment..." >&2
               uv venv
             fi
 
@@ -70,19 +69,22 @@
 
             # Install package in development mode
             if [ ! -f .venv/.mudyla-installed ]; then
-              echo "Installing mudyla with uv..."
+              echo "Installing mudyla with uv..." >&2
               uv pip install -e ".[dev]"
               touch .venv/.mudyla-installed
             fi
 
-            echo "Mudyla development environment (with uv)"
-            echo "Python version: $(python3 --version)"
-            echo "UV version: $(uv --version)"
-            echo ""
-            echo "Commands:"
-            echo "  uv pip install <package>  - Install a package"
-            echo "  uv pip sync               - Sync dependencies"
-            echo "  mdl --help                - Run mudyla CLI"
+            # Only show welcome message in interactive shells
+            if [ -t 0 ]; then
+              echo "Mudyla development environment (with uv)"
+              echo "Python version: $(python3 --version)"
+              echo "UV version: $(uv --version)"
+              echo ""
+              echo "Commands:"
+              echo "  uv pip install <package>  - Install a package"
+              echo "  uv pip sync               - Sync dependencies"
+              echo "  mdl --help                - Run mudyla CLI"
+            fi
           '';
         };
 
