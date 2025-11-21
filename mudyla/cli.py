@@ -14,6 +14,7 @@ from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import CLIParseError, parse_custom_inputs
+from .cli_builder import build_arg_parser
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
 from .utils.output import OutputFormatter
@@ -23,83 +24,7 @@ class CLI:
     """Command-line interface for Mudyla."""
 
     def __init__(self):
-        self.parser = argparse.ArgumentParser(
-            description="Mudyla - Multimodal Dynamic Launcher",
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-        )
-
-        self.parser.add_argument(
-            "--defs",
-            type=str,
-            default=".mdl/defs/**/*.md",
-            help="Glob pattern for markdown definition files (default: .mdl/defs/**/*.md)",
-        )
-
-        self.parser.add_argument(
-            "--out",
-            type=str,
-            help="Output JSON file path (optional, always prints to stdout)",
-        )
-
-        self.parser.add_argument(
-            "--list-actions",
-            action="store_true",
-            help="List all available actions and exit",
-        )
-
-        self.parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Show execution plan without executing",
-        )
-
-        self.parser.add_argument(
-            "--continue",
-            dest="continue_run",
-            action="store_true",
-            help="Continue from last run (skip successful actions)",
-        )
-
-        self.parser.add_argument(
-            "--github-actions",
-            dest="github_actions",
-            action="store_true",
-            help="Enable GitHub Actions integration (collapsible groups, streaming output)",
-        )
-
-        self.parser.add_argument(
-            "--without-nix",
-            dest="without_nix",
-            action="store_true",
-            help="Run without Nix (execute bash scripts directly, auto-enabled on Windows)",
-        )
-
-        self.parser.add_argument(
-            "--verbose",
-            dest="verbose",
-            action="store_true",
-            help="Stream action output to console in real-time (without GitHub Actions markers)",
-        )
-
-        self.parser.add_argument(
-            "--keep-run-dir",
-            dest="keep_run_dir",
-            action="store_true",
-            help="Keep the run directory after successful execution (for debugging)",
-        )
-
-        self.parser.add_argument(
-            "--no-color",
-            dest="no_color",
-            action="store_true",
-            help="Disable colored output (auto-enabled for GitHub Actions)",
-        )
-
-        self.parser.add_argument(
-            "goals",
-            nargs="*",
-            help="Goal actions to execute (format: :action-name)",
-        )
+        self.parser = build_arg_parser()
 
     def run(self, argv: Optional[list[str]] = None) -> int:
         """Run the CLI.
