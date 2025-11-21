@@ -2,7 +2,7 @@
 
 [![Test](https://github.com/7mind/mudyla/actions/workflows/test.yml/badge.svg)](https://github.com/7mind/mudyla/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Nix](https://img.shields.io/badge/Built%20with-Nix-5277C3.svg?logo=nixos&logoColor=white)](https://nixos.org)
 
 A shell script orchestrator that allows defining build actions in Markdown files and executing them as a dependency graph under Nix environments.
