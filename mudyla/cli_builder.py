@@ -78,6 +78,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--seq",
+        dest="sequential",
+        action="store_true",
+        help="Force sequential execution (disables parallel execution)",
+    )
+
+    parser.add_argument(
         "goals",
         nargs="*",
         help="Goal actions to execute (format: :action-name)",

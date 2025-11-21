@@ -62,6 +62,8 @@ class CLI:
         axis_values = parsed_inputs.axis_values
         goals = parsed_inputs.goals
 
+        parallel_execution = not args.sequential and not args.verbose and not args.github_actions
+
         try:
             # Find project root
             project_root = find_project_root()
@@ -133,6 +135,8 @@ class CLI:
 
             validator.validate_all(custom_args, all_flags, axis_values)
             output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
+            mode_label = "parallel" if parallel_execution else "sequential"
+            output.print(f"{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
 
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
@@ -175,6 +179,7 @@ class CLI:
                 verbose=args.verbose,
                 keep_run_dir=args.keep_run_dir,
                 no_color=args.no_color,
+                parallel_execution=parallel_execution,
             )
 
             result = engine.execute_all()

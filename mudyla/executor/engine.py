@@ -2,9 +2,11 @@
 
 import json
 import os
+import concurrent.futures
 import shutil
 import subprocess
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +81,7 @@ class ExecutionEngine:
         verbose: bool = False,
         keep_run_dir: bool = False,
         no_color: bool = False,
+        parallel_execution: bool = True,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -93,6 +96,7 @@ class ExecutionEngine:
         self.verbose = verbose
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
+        self.parallel_execution = parallel_execution
 
         # Create color formatter and output formatter
         self.color = ColorFormatter(no_color=no_color)
@@ -137,6 +141,9 @@ class ExecutionEngine:
         Returns:
             Execution result
         """
+        if self.parallel_execution:
+            return self._execute_in_parallel()
+
         # Get execution order
         try:
             execution_order = self.graph.get_execution_order()
@@ -187,6 +194,102 @@ class ExecutionEngine:
                 shutil.rmtree(self.run_directory)
             except Exception as e:
                 # Don't fail on cleanup errors, just warn
+                emoji = "!" if self.no_color else "⚠️"
+                print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+
+        return ExecutionResult(
+            success=True,
+            action_results=action_results,
+            run_directory=self.run_directory,
+        )
+
+    def _execute_in_parallel(self) -> ExecutionResult:
+        """Execute actions using a dependency-aware thread pool."""
+        pending_deps: dict[str, set[str]] = {
+            name: set(node.dependencies) for name, node in self.graph.nodes.items()
+        }
+        dependents: dict[str, set[str]] = {
+            name: set(node.dependents) for name, node in self.graph.nodes.items()
+        }
+        ready = [name for name, deps in pending_deps.items() if len(deps) == 0]
+        scheduled: set[str] = set()
+        completed: set[str] = set()
+        action_outputs: dict[str, dict[str, Any]] = {}
+        action_results: dict[str, ActionResult] = {}
+        lock = threading.Lock()
+        running: dict[concurrent.futures.Future[ActionResult], str] = {}
+        max_workers = max(1, min(32, os.cpu_count() or 1))
+
+        def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_name: str):
+            scheduled.add(action_name)
+            snapshot_outputs = dict(action_outputs)
+            future = executor.submit(self._execute_action, action_name, snapshot_outputs)
+            running[future] = action_name
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for name in ready:
+                    submit_action(executor, name)
+
+                while running:
+                    done, _ = concurrent.futures.wait(
+                        running.keys(),
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        action_name = running.pop(future)
+                        try:
+                            result = future.result()
+                        except Exception as exc:  # pragma: no cover - defensive
+                            result = ActionResult(
+                                action_name=action_name,
+                                success=False,
+                                outputs={},
+                                stdout_path=Path("/dev/null"),
+                                stderr_path=Path("/dev/null"),
+                                script_path=Path("/dev/null"),
+                                start_time="",
+                                end_time="",
+                                duration_seconds=0.0,
+                                exit_code=-1,
+                                error_message=f"Execution error: {exc}",
+                            )
+
+                        action_results[action_name] = result
+
+                        if not result.success:
+                            executor.shutdown(cancel_futures=True)
+                            return ExecutionResult(
+                                success=False,
+                                action_results=action_results,
+                                run_directory=self.run_directory,
+                            )
+
+                        with lock:
+                            action_outputs[action_name] = result.outputs
+                            completed.add(action_name)
+
+                        for dependent in dependents.get(action_name, set()):
+                            if dependent in completed or dependent in scheduled:
+                                continue
+                            pending_deps[dependent].discard(action_name)
+                            if len(pending_deps[dependent]) == 0:
+                                submit_action(executor, dependent)
+
+        except KeyboardInterrupt:
+            for future in running:
+                future.cancel()
+            return ExecutionResult(
+                success=False,
+                action_results=action_results,
+                run_directory=self.run_directory,
+            )
+
+        # Success - clean up run directory if not keeping it
+        if not self.keep_run_dir:
+            try:
+                shutil.rmtree(self.run_directory)
+            except Exception as e:
                 emoji = "!" if self.no_color else "⚠️"
                 print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
 
