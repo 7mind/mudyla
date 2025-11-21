@@ -78,7 +78,7 @@
               touch .venv/.mudyla-installed
             fi
 
-            export FPATH="''${PWD}/completions/zsh"
+            export FPATH="''${PWD}/completions"
 
             # Enable completions in dev shell without system install
             # Use PWD so we get the actual working directory, not the nix store path
@@ -91,6 +91,11 @@
         apps.default = {
           type = "app";
           program = "${mudyla}/bin/mdl";
+        };
+
+        apps.mudyla-completion = {
+          type = "app";
+          program = "${mudyla}/share/mudyla/init.sh";
         };
       }
     );
