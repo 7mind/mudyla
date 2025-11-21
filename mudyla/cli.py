@@ -401,10 +401,24 @@ class CLI:
         color = ColorFormatter(no_color=no_color)
         print(f"\n{color.info('Available actions:')}\n")
 
-        for action_name in sorted(document.actions.keys()):
-            action = document.actions[action_name]
+        # Separate actions into root (no dependencies) and non-root
+        root_actions = []
+        non_root_actions = []
 
-            # Check if this is a root action (no dependencies)
+        for action_name, action in document.actions.items():
+            deps = action.get_action_dependencies()
+            if len(deps) == 0:
+                root_actions.append(action_name)
+            else:
+                non_root_actions.append(action_name)
+
+        # Sort each group alphabetically
+        root_actions.sort()
+        non_root_actions.sort()
+
+        # Display root actions first, then non-root actions
+        for action_name in root_actions + non_root_actions:
+            action = document.actions[action_name]
             deps = action.get_action_dependencies()
             is_root = len(deps) == 0
 
