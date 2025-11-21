@@ -60,16 +60,6 @@ class LanguageRuntime(ABC):
         pass
 
     @abstractmethod
-    def get_runtime_files(self) -> dict[str, str]:
-        """
-        Get runtime support files that need to be available.
-
-        Returns:
-            Dictionary mapping filename to content
-        """
-        pass
-
-    @abstractmethod
     def get_execution_command(self, script_path: Path) -> list[str]:
         """
         Get the command to execute the script.

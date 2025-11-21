@@ -119,21 +119,45 @@ class ExecutionEngine:
 
         self.run_directory.mkdir(parents=True, exist_ok=True)
 
-        # Copy runtime.sh to .mdl directory
-        self._install_runtime()
+    def _print_action_start(self, action_name: str) -> None:
+        """Print action start message.
 
-    def _install_runtime(self) -> None:
-        """Install runtime files for all supported languages to .mdl directory."""
-        mdl_dir = self.project_root / ".mdl"
-        mdl_dir.mkdir(parents=True, exist_ok=True)
+        Args:
+            action_name: Name of the action starting
+        """
+        if not self.github_actions:
+            self.output.print(f"{self.color.dim('start:')} {self.color.highlight(action_name)}")
 
-        # Install runtime files for each language
-        for runtime in RuntimeRegistry.all():
-            for filename, content in runtime.get_runtime_files().items():
-                dest_path = mdl_dir / filename
-                dest_path.write_text(content)
-                if filename.endswith(".sh"):
-                    dest_path.chmod(0o755)
+    def _print_action_completion(self, result: ActionResult) -> None:
+        """Print action completion message with duration.
+
+        Args:
+            result: The completed action result
+        """
+        if not self.github_actions:
+            duration_str = f"{result.duration_seconds:.1f}s"
+            if result.success:
+                self.output.print(f"{self.color.dim('done:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}")
+            else:
+                self.output.print(f"{self.color.error('failed:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}")
+
+    def _print_action_failure(self, result: ActionResult) -> None:
+        """Print diagnostic information for a failed action.
+
+        Args:
+            result: The failed action result
+        """
+        error_msg = f"Action '{result.action_name}' failed!"
+        self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error(error_msg)}")
+        self.output.print(f"{self.output.emoji('📂', '▸')} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
+        self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
+        if result.stdout_path.exists():
+            self.output.print(result.stdout_path.read_text())
+        self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
+        if result.stderr_path.exists():
+            self.output.print(result.stderr_path.read_text())
+        if result.error_message:
+            self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error('Error:')} {result.error_message}")
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -143,6 +167,9 @@ class ExecutionEngine:
         """
         if self.parallel_execution:
             return self._execute_in_parallel()
+
+        # Track total execution time
+        graph_start_time = time.time()
 
         # Get execution order
         try:
@@ -161,23 +188,19 @@ class ExecutionEngine:
         for action_name in execution_order:
             node = self.graph.get_node(action_name)
 
+            # Print start message
+            self._print_action_start(action_name)
+
             # Execute action
             result = self._execute_action(node.action.name, action_outputs)
             action_results[action_name] = result
 
+            # Print completion message
+            self._print_action_completion(result)
+
             if not result.success:
                 # Action failed - stop execution
-                error_msg = f"Action '{action_name}' failed!"
-                self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error(error_msg)}")
-                self.output.print(f"{self.output.emoji('📂', '▸')} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
-                self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
-                if result.stdout_path.exists():
-                    self.output.print(result.stdout_path.read_text())
-                self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
-                if result.stderr_path.exists():
-                    self.output.print(result.stderr_path.read_text())
-                if result.error_message:
-                    self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error('Error:')} {result.error_message}")
+                self._print_action_failure(result)
 
                 return ExecutionResult(
                     success=False,
@@ -188,6 +211,9 @@ class ExecutionEngine:
             # Store outputs for dependent actions
             action_outputs[action_name] = result.outputs
 
+        # Calculate total wall time
+        graph_duration = time.time() - graph_start_time
+
         # Success - clean up run directory if not keeping it
         if not self.keep_run_dir:
             try:
@@ -197,6 +223,10 @@ class ExecutionEngine:
                 emoji = "!" if self.no_color else "⚠️"
                 print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
 
+        # Print total wall time
+        if not self.github_actions:
+            self.output.print(f"\n{self.color.dim('Total wall time:')} {self.color.highlight(f'{graph_duration:.1f}s')}")
+
         return ExecutionResult(
             success=True,
             action_results=action_results,
@@ -205,6 +235,9 @@ class ExecutionEngine:
 
     def _execute_in_parallel(self) -> ExecutionResult:
         """Execute actions using a dependency-aware thread pool."""
+        # Track total execution time
+        graph_start_time = time.time()
+
         pending_deps: dict[str, set[str]] = {
             name: set(node.dependencies) for name, node in self.graph.nodes.items()
         }
@@ -222,6 +255,8 @@ class ExecutionEngine:
 
         def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_name: str):
             scheduled.add(action_name)
+            # Print start message
+            self._print_action_start(action_name)
             snapshot_outputs = dict(action_outputs)
             future = executor.submit(self._execute_action, action_name, snapshot_outputs)
             running[future] = action_name
@@ -257,7 +292,12 @@ class ExecutionEngine:
 
                         action_results[action_name] = result
 
+                        # Print completion message
+                        self._print_action_completion(result)
+
                         if not result.success:
+                            # Action failed - print diagnostics and stop execution
+                            self._print_action_failure(result)
                             executor.shutdown(cancel_futures=True)
                             return ExecutionResult(
                                 success=False,
@@ -285,6 +325,9 @@ class ExecutionEngine:
                 run_directory=self.run_directory,
             )
 
+        # Calculate total wall time
+        graph_duration = time.time() - graph_start_time
+
         # Success - clean up run directory if not keeping it
         if not self.keep_run_dir:
             try:
@@ -292,6 +335,10 @@ class ExecutionEngine:
             except Exception as e:
                 emoji = "!" if self.no_color else "⚠️"
                 print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+
+        # Print total wall time
+        if not self.github_actions:
+            self.output.print(f"\n{self.color.dim('Total wall time:')} {self.color.highlight(f'{graph_duration:.1f}s')}")
 
         return ExecutionResult(
             success=True,
@@ -374,8 +421,6 @@ class ExecutionEngine:
         outputs = {}
         if prev_output_path.exists() and version is not None:
             outputs = self._parse_outputs(prev_output_path, version.return_declarations)
-
-        self.output.print(f"{self.output.emoji('♻️', '✓')} {self.color.info('Executing action:')} {self.color.highlight(action_name)} {self.color.dim('(restored from previous run)')}")
 
         return ActionResult(
             action_name=action_name,
@@ -490,8 +535,6 @@ class ExecutionEngine:
         # Execute
         if self.github_actions:
             print(f"::group::{action_name}")
-        else:
-            self.output.print(f"{self.output.emoji('⚡', '▸')} {self.color.info('Executing action:')} {self.color.highlight(action_name)}")
 
         # Print command in verbose/CI modes
         if self.github_actions or self.verbose:

@@ -49,11 +49,15 @@ class BashRuntime(LanguageRuntime):
             resolved_value = expansion.resolve(resolution_context)
             rendered = rendered.replace(expansion.original_text, resolved_value)
 
-        # Build runtime header
-        project_root = Path(context.system_vars["project-root"])
-        runtime_path = project_root / ".mdl" / "runtime.sh"
+        # Build runtime header - source runtime.sh directly from package
+        runtime_resource = resources.files("mudyla").joinpath("runtime.sh")
+        # Get the actual file path - resources returns a Traversable that we need to convert
+        runtime_path = str(runtime_resource)
+        if hasattr(runtime_resource, '__fspath__'):
+            runtime_path = runtime_resource.__fspath__()
+
         header = f"""#!/usr/bin/env bash
-# Source Mudyla runtime
+# Source Mudyla runtime from package
 export MDL_OUTPUT_JSON="{output_json_path}"
 source "{runtime_path}"
 
@@ -78,14 +82,6 @@ source "{runtime_path}"
             environment={},  # Environment is set via exports in script
             output_json_path=output_json_path,
         )
-
-    def get_runtime_files(self) -> dict[str, str]:
-        """
-        Get bash runtime file (runtime.sh).
-        """
-        runtime_path = resources.files("mudyla").joinpath("runtime.sh")
-        runtime_content = runtime_path.read_text()
-        return {"runtime.sh": runtime_content}
 
     def get_execution_command(self, script_path: Path) -> list[str]:
         """

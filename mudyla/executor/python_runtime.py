@@ -46,19 +46,15 @@ class PythonRuntime(LanguageRuntime):
         context_json_path.write_text(json.dumps(context_data, indent=2))
 
         # Build initialization code
-        # Add the .mdl directory to Python path so we can import runtime
-        project_root = Path(context.system_vars["project-root"])
-        mdl_dir = project_root / ".mdl"
+        # Import runtime directly from mudyla package
         init_code = f'''#!/usr/bin/env python3
-import sys
-sys.path.insert(0, {str(mdl_dir)!r})
 
-# Initialize Mudyla runtime
-import runtime as _mdl_runtime
+# Initialize Mudyla runtime from package
+from mudyla import runtime as _mdl_runtime
 _mdl_runtime._initialize_runtime({str(context_json_path)!r}, {str(output_json_path)!r})
 
 # Import mdl context object
-from runtime import mdl
+from mudyla.runtime import mdl
 
 '''
 
@@ -71,14 +67,6 @@ from runtime import mdl
             environment=context.env_vars,
             output_json_path=output_json_path,
         )
-
-    def get_runtime_files(self) -> dict[str, str]:
-        """
-        Get Python runtime file (runtime.py).
-        """
-        runtime_path = resources.files("mudyla").joinpath("runtime.py")
-        runtime_content = runtime_path.read_text()
-        return {"runtime.py": runtime_content}
 
     def get_execution_command(self, script_path: Path) -> list[str]:
         """
