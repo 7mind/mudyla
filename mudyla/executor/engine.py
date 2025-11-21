@@ -190,16 +190,17 @@ set -euo pipefail
             if not result.success:
                 # Action failed - stop execution
                 error_msg = f"Action '{action_name}' failed!"
-                print(f"\n{self.color.error(error_msg)}")
-                print(f"{self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
-                print(f"\n{self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
+                emoji = "✗" if self.no_color else "❌"
+                print(f"\n{emoji} {self.color.error(error_msg)}")
+                print(f"{'📂' if not self.no_color else '▸'} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
+                print(f"\n{'📄' if not self.no_color else '▸'} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
                 if result.stdout_path.exists():
                     print(result.stdout_path.read_text())
-                print(f"\n{self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
+                print(f"\n{'📄' if not self.no_color else '▸'} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
                 if result.stderr_path.exists():
                     print(result.stderr_path.read_text())
                 if result.error_message:
-                    print(f"\n{self.color.error('Error:')} {result.error_message}")
+                    print(f"\n{'❌' if not self.no_color else '✗'} {self.color.error('Error:')} {result.error_message}")
 
                 return ExecutionResult(
                     success=False,
@@ -216,7 +217,8 @@ set -euo pipefail
                 shutil.rmtree(self.run_directory)
             except Exception as e:
                 # Don't fail on cleanup errors, just warn
-                print(f"{self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+                emoji = "!" if self.no_color else "⚠️"
+                print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
 
         return ExecutionResult(
             success=True,
@@ -300,7 +302,8 @@ set -euo pipefail
         if prev_output_path.exists() and version is not None:
             outputs = self._parse_outputs(prev_output_path, version.return_declarations)
 
-        print(f"{self.color.info('Executing action:')} {self.color.highlight(action_name)} {self.color.dim('(restored from previous run)')}")
+        emoji = "✓" if self.no_color else "♻️"
+        print(f"{emoji} {self.color.info('Executing action:')} {self.color.highlight(action_name)} {self.color.dim('(restored from previous run)')}")
 
         return ActionResult(
             action_name=action_name,
@@ -431,7 +434,8 @@ set -euo pipefail
         if self.github_actions:
             print(f"::group::{action_name}")
         else:
-            print(f"{self.color.info('Executing action:')} {self.color.highlight(action_name)}")
+            emoji = "▸" if self.no_color else "⚡"
+            print(f"{emoji} {self.color.info('Executing action:')} {self.color.highlight(action_name)}")
 
         # Print command in verbose/CI modes
         if self.github_actions or self.verbose:

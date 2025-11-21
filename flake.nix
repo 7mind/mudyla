@@ -27,6 +27,7 @@
           propagatedBuildInputs = with pkgs.python311Packages; [
             mistune
             pyparsing
+            rich
           ];
 
           meta = {

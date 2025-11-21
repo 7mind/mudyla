@@ -101,7 +101,7 @@ rm -rf test-output .mdl/runs
 
 # First run - execute normally
 echo "First run: executing actions normally..."
-mdl :create-directory :write-message
+mdl --keep-run-dir :create-directory :write-message
 FIRST_RUN_DIR=$(ls -td .mdl/runs/* | head -1)
 echo "First run directory: $FIRST_RUN_DIR"
 
@@ -112,7 +112,7 @@ echo "Meta files created successfully"
 
 # Second run - should restore from previous
 echo "Second run: using --continue flag..."
-mdl --continue :create-directory :write-message 2>&1 | tee /tmp/continue-output.log
+mdl --keep-run-dir --continue :create-directory :write-message 2>&1 | tee /tmp/continue-output.log
 
 # Verify it says "restored from previous run"
 if grep -q "restored from previous run" /tmp/continue-output.log; then

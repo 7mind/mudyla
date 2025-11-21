@@ -16,6 +16,13 @@ from .parser.markdown_parser import MarkdownParser
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
 
+try:
+    from asciidag.graph import Graph
+    from asciidag.node import Node
+    ASCIIDAG_AVAILABLE = True
+except ImportError:
+    ASCIIDAG_AVAILABLE = False
+
 
 class CLI:
     """Command-line interface for Mudyla."""
@@ -198,17 +205,17 @@ class CLI:
                 md_files.append(Path(pattern_part))
 
             if not md_files:
-                print(f"{color.error('Error:')} No markdown files found matching pattern: {args.defs}")
+                print(f"{'❌' if not args.no_color else '✗'} {color.error('Error:')} No markdown files found matching pattern: {args.defs}")
                 return 1
 
-            print(f"{color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s)')}")
+            print(f"{'📁' if not args.no_color else '▸'} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s)')}")
 
             # Parse markdown files
-            print(color.dim("Parsing definitions..."))
+            print(f"{'📝' if not args.no_color else '▸'} {color.dim('Parsing definitions...')}")
             parser = MarkdownParser()
             document = parser.parse_files(md_files)
 
-            print(f"{color.dim('Loaded')} {color.bold(str(len(document.actions)))} {color.dim('action(s)')}")
+            print(f"{'✓' if not args.no_color else '✓'} {color.dim('Loaded')} {color.bold(str(len(document.actions)))} {color.dim('action(s)')}")
 
             # Handle --list-actions
             if args.list_actions:
@@ -221,15 +228,15 @@ class CLI:
                 if goal_spec.startswith(":"):
                     goals.append(goal_spec[1:])
                 else:
-                    print(f"{color.warning('Warning:')} Goal should start with ':', got: {goal_spec}")
+                    print(f"{'⚠️' if not args.no_color else '!'} {color.warning('Warning:')} Goal should start with ':', got: {goal_spec}")
                     goals.append(goal_spec)
 
             if not goals:
-                print(f"{color.error('Error:')} No goals specified")
+                print(f"{'❌' if not args.no_color else '✗'} {color.error('Error:')} No goals specified")
                 self.parser.print_help()
                 return 1
 
-            print(f"{color.dim('Goals:')} {color.highlight(', '.join(goals))}")
+            print(f"{'🎯' if not args.no_color else '▸'} {color.dim('Goals:')} {color.highlight(', '.join(goals))}")
 
             # Apply default axis values
             for axis_name, axis_def in document.axis.items():
@@ -245,17 +252,17 @@ class CLI:
                     custom_args[arg_name] = arg_def.default_value
 
             # Build DAG
-            print(f"\n{color.dim('Building dependency graph...')}")
+            print(f"\n{'🔨' if not args.no_color else '▸'} {color.dim('Building dependency graph...')}")
             builder = DAGBuilder(document)
             builder.validate_goals(goals)
             graph = builder.build_graph(goals, axis_values)
 
             # Prune to goals
             pruned_graph = graph.prune_to_goals()
-            print(f"{color.dim('Graph contains')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
+            print(f"{'📊' if not args.no_color else '▸'} {color.dim('Graph contains')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
 
             # Validate
-            print(color.dim("Validating..."))
+            print(f"{'🔍' if not args.no_color else '▸'} {color.dim('Validating...')}")
             validator = DAGValidator(document, pruned_graph)
 
             # Initialize flags with all defined flags
@@ -263,18 +270,26 @@ class CLI:
             all_flags.update(custom_flags)
 
             validator.validate_all(custom_args, all_flags, axis_values)
-            print(color.success("Validation passed"))
+            print(f"{'✅' if not args.no_color else '✓'} {color.success('Validation passed')}")
 
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
-            print(f"\n{color.bold('Execution plan:')}")
-            for i, action_name in enumerate(execution_order, 1):
-                node = pruned_graph.get_node(action_name)
-                deps = ", ".join(sorted(node.dependencies)) if node.dependencies else "none"
-                print(f"  {color.dim(f'{i}.')} {color.highlight(action_name)} {color.dim(f'(depends on: {deps})')}")
+            print(f"\n{'📋' if not args.no_color else '▸'} {color.bold('Execution plan:')}")
+
+            if ASCIIDAG_AVAILABLE and not args.no_color:
+                # Use asciidag to visualize the DAG
+                self._visualize_execution_plan_dag(pruned_graph, execution_order, goals, color)
+            else:
+                # Fallback to simple text output
+                for i, action_name in enumerate(execution_order, 1):
+                    node = pruned_graph.get_node(action_name)
+                    deps = ", ".join(sorted(node.dependencies)) if node.dependencies else "none"
+                    is_goal = action_name in goals
+                    goal_marker = " 🎯" if is_goal and not args.no_color else " [GOAL]" if is_goal else ""
+                    print(f"  {color.dim(f'{i}.')} {color.highlight(action_name)}{goal_marker} {color.dim(f'(depends on: {deps})')}")
 
             if args.dry_run:
-                print(f"\n{color.info('Dry run - not executing')}")
+                print(f"\n{'ℹ️' if not args.no_color else 'i'} {color.info('Dry run - not executing')}")
                 return 0
 
             # Find previous run if --continue
@@ -286,16 +301,14 @@ class CLI:
                     run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
                     if run_dirs:
                         previous_run_dir = run_dirs[-1]  # Last run
-                        print(f"\n{color.info('Continuing from previous run:')} {color.highlight(previous_run_dir.name)}")
+                        print(f"\n{'🔄' if not args.no_color else '▸'} {color.info('Continuing from previous run:')} {color.highlight(previous_run_dir.name)}")
                     else:
-                        print(f"\n{color.warning('Warning:')} No previous runs found, starting fresh")
+                        print(f"\n{'⚠️' if not args.no_color else '!'} {color.warning('Warning:')} No previous runs found, starting fresh")
                 else:
-                    print(f"\n{color.warning('Warning:')} No runs directory found, starting fresh")
+                    print(f"\n{'⚠️' if not args.no_color else '!'} {color.warning('Warning:')} No runs directory found, starting fresh")
 
             # Execute
-            print("\n" + color.dim("=" * 60))
-            print(color.bold("Executing actions..."))
-            print(color.dim("=" * 60))
+            print(f"\n{'🚀' if not args.no_color else '→'} {color.bold('Executing actions...')}")
 
             engine = ExecutionEngine(
                 graph=pruned_graph,
@@ -316,42 +329,95 @@ class CLI:
             result = engine.execute_all()
 
             if not result.success:
-                print(f"\n{color.error('Execution failed!')}")
+                print(f"\n{'❌' if not args.no_color else '✗'} {color.error('Execution failed!')}")
                 return 1
 
             # Get goal outputs
             goal_outputs = result.get_goal_outputs(goals)
 
             # Print outputs
-            print("\n" + color.dim("=" * 60))
-            print(color.success("Execution completed successfully!"))
-            print(color.dim("=" * 60))
+            print(f"\n{'✅' if not args.no_color else '✓'} {color.success('Execution completed successfully!')}")
 
             output_json = json.dumps(goal_outputs, indent=2)
-            print(f"\n{color.bold('Outputs:')}")
+            print(f"\n{'📊' if not args.no_color else '▸'} {color.bold('Outputs:')}")
             print(output_json)
 
             # Save to file if requested
             if args.out:
                 out_path = Path(args.out)
                 out_path.write_text(output_json)
-                print(f"\n{color.dim('Outputs saved to:')} {color.highlight(str(out_path))}")
+                print(f"\n{'💾' if not args.no_color else '▸'} {color.dim('Outputs saved to:')} {color.highlight(str(out_path))}")
 
             # Show run directory if keeping it
             if args.keep_run_dir:
-                print(f"\n{color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
+                print(f"\n{'📂' if not args.no_color else '▸'} {color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
 
             return 0
 
         except ValidationError as e:
-            print(f"\n{color.error('Validation error:')}\n{e}")
+            # Note: no_color not available in exception handler, use simple check
+            print(f"\n❌ {color.error('Validation error:')}\n{e}")
             return 1
         except Exception as e:
-            print(f"\n{color.error('Error:')} {e}")
+            print(f"\n❌ {color.error('Error:')} {e}")
             import traceback
 
             traceback.print_exc()
             return 1
+
+    def _visualize_execution_plan_dag(self, graph, execution_order: list[str], goals: list[str], color) -> None:
+        """Visualize execution plan using asciidag.
+
+        Args:
+            graph: The execution graph
+            execution_order: List of actions in execution order
+            goals: List of goal actions
+            color: Color formatter
+        """
+        from asciidag.graph import Graph as AsciiGraph
+        from asciidag.node import Node as AsciiNode
+
+        # Create a mapping of action names to asciidag nodes
+        node_map = {}
+
+        # Build asciidag nodes in execution order
+        for action_name in execution_order:
+            exec_node = graph.get_node(action_name)
+
+            # Get parent nodes (dependencies)
+            parent_nodes = []
+            for dep in sorted(exec_node.dependencies):
+                if dep in node_map:
+                    parent_nodes.append(node_map[dep])
+
+            # Create label with execution order number and goal marker
+            order_num = execution_order.index(action_name) + 1
+            is_goal = action_name in goals
+            goal_marker = " 🎯" if is_goal else ""
+            label = f"{order_num}. {action_name}{goal_marker}"
+
+            # Create asciidag node
+            ascii_node = AsciiNode(label, parents=parent_nodes)
+            node_map[action_name] = ascii_node
+
+        # Get goal nodes (tips of the DAG to display)
+        goal_nodes = [node_map[goal] for goal in goals if goal in node_map]
+
+        # If no specific goals or all actions shown, use actions with no dependents
+        if not goal_nodes:
+            # Find actions with no dependents (leaf nodes)
+            has_dependents = set()
+            for action_name in execution_order:
+                exec_node = graph.get_node(action_name)
+                for dep in exec_node.dependencies:
+                    has_dependents.add(dep)
+
+            goal_nodes = [node_map[action] for action in execution_order
+                         if action not in has_dependents and action in node_map]
+
+        # Render the DAG
+        ascii_graph = AsciiGraph()
+        ascii_graph.show_nodes(goal_nodes)
 
     def _list_actions(self, document: ParsedDocument) -> None:
         """List all available actions."""
