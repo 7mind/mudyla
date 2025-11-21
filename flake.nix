@@ -31,11 +31,13 @@
           ];
 
           postInstall = ''
+            cp $src/completions/init.sh $out/bin/mudyla-autocomplete
+
             cp $src/mudyla/runtime.sh $out/${python.sitePackages}/mudyla/
+
             mkdir -p $out/share/bash-completion/completions
             mkdir -p $out/share/zsh/site-functions
             mkdir -p $out/share/mudyla
-            cp $src/completions/init.sh $out/${python.sitePackages}/mudyla-autocomplete
 
             cp $src/completions/mdl.bash $out/share/bash-completion/completions/mdl
             cp $src/completions/_mdl $out/share/zsh/site-functions/_mdl
