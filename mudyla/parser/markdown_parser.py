@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import mistune
-
 from ..ast.models import (
     ActionDefinition,
     ActionVersion,
@@ -33,17 +31,16 @@ from .combinators import (
     parse_passthrough_definition,
     parse_vars_definition,
 )
+from .simple_markdown_parser import parse_sections as simple_parse_sections, extract_code_blocks
 
 
 @dataclass
 class Section:
     """Represents a section in the markdown document."""
 
-    level: int
     title: str
     content: str
     line_number: int
-    subsections: list["Section"]
 
 
 class MarkdownParser:
@@ -78,9 +75,6 @@ class MarkdownParser:
 
     # Pattern for vars definition: `VARIABLE_NAME`: description
     VARS_PATTERN = re.compile(r"^\s*`([A-Z_][A-Z0-9_]*)`:\s*(.*)$")
-
-    def __init__(self):
-        self.markdown_parser = mistune.create_markdown(renderer=None)
 
     def parse_files(self, file_paths: list[Path]) -> ParsedDocument:
         """Parse multiple markdown files into a single document.
@@ -188,84 +182,15 @@ class MarkdownParser:
 
     def _extract_sections(self, content: str) -> list[Section]:
         """Extract all top-level sections from markdown content."""
-        tokens = self.markdown_parser(content)
-        sections = []
-        current_section = None
-        current_content = []
-        line_counter = 1
-
-        for token in tokens:
-            if token["type"] == "heading":
-                level = token["attrs"]["level"]
-                title = self._extract_text_from_token(token)
-
-                # Only level 1 headings start new sections
-                if level == 1:
-                    # Save previous section
-                    if current_section is not None:
-                        current_section.content = "\n".join(current_content)
-                        sections.append(current_section)
-                        current_content = []
-
-                    # Start new section
-                    current_section = Section(
-                        level=level,
-                        title=title,
-                        content="",
-                        line_number=line_counter,
-                        subsections=[],
-                    )
-                elif current_section is not None:
-                    # Subsection - add to current section content
-                    current_content.append(f"{'#' * level} {title}")
-
-            elif current_section is not None:
-                # Add to current section content
-                if token["type"] == "paragraph":
-                    text = self._extract_text_from_token(token)
-                    current_content.append(text)
-                elif token["type"] == "list":
-                    list_text = self._extract_list_items(token)
-                    current_content.extend(list_text)
-                elif token["type"] == "block_code":
-                    code = token["raw"]
-                    lang = token.get("attrs", {}).get("info", "")
-                    current_content.append(f"```{lang}\n{code}\n```")
-
-            # Count lines
-            if "raw" in token:
-                line_counter += token["raw"].count("\n")
-
-        # Save last section
-        if current_section is not None:
-            current_section.content = "\n".join(current_content)
-            sections.append(current_section)
-
-        return sections
-
-    def _extract_text_from_token(self, token: dict) -> str:
-        """Extract text content from a token."""
-        if "children" in token:
-            texts = []
-            for child in token["children"]:
-                if child["type"] == "text":
-                    texts.append(child["raw"])
-                elif child["type"] == "codespan":
-                    texts.append(f"`{child['raw']}`")
-                elif child["type"] == "block_text":
-                    # Recursively extract from block_text
-                    texts.append(self._extract_text_from_token(child))
-            return "".join(texts)
-        return token.get("raw", "")
-
-    def _extract_list_items(self, list_token: dict) -> list[str]:
-        """Extract list items as strings."""
-        items = []
-        for item in list_token.get("children", []):
-            if item["type"] == "list_item":
-                text = self._extract_text_from_token(item)
-                items.append(text)
-        return items
+        simple_sections = simple_parse_sections(content)
+        return [
+            Section(
+                title=s.title,
+                content=s.content,
+                line_number=s.line_number
+            )
+            for s in simple_sections
+        ]
 
     def _parse_arguments_section(
         self, section: Section, file_path: Path
@@ -441,7 +366,7 @@ class MarkdownParser:
 
         if len(versions) == 0:
             raise ValueError(
-                f"{location}: Action '{action_name}' has no bash code block"
+                f"{location}: Action '{action_name}' has no code block (bash or python)"
             )
 
         # Collect environment variable dependencies from all versions
@@ -495,30 +420,23 @@ class MarkdownParser:
         """Parse all versions of an action (including conditional versions)."""
         versions = []
 
-        # Split content by subsection headers to find conditional definitions
+        # Check if there are any conditional definitions (## definition when ...)
+        # Split by ## headers to handle conditional versions
+        conditional_sections = []
         lines = section.content.split("\n")
-        current_conditions: list[AxisCondition] = []
-        current_content = []
-        in_code_block = False
-        code_content = []
-        current_language = "bash"
+        current_section_content = []
+        current_conditions = []
+        current_line_offset = 0
 
         for i, line in enumerate(lines):
-            # Check for conditional definition header
             if line.strip().startswith("##"):
-                # Save previous version if exists
-                if code_content:
-                    script = "\n".join(code_content)
-                    version = self._create_action_version(
-                        script,
+                # Save previous section if it has content
+                if current_section_content:
+                    conditional_sections.append((
                         current_conditions,
-                        action_name,
-                        file_path,
-                        section.line_number + i,
-                        current_language,
-                    )
-                    versions.append(version)
-                    code_content = []
+                        "\n".join(current_section_content),
+                        current_line_offset
+                    ))
 
                 # Check if this is a conditional definition
                 header_text = line.strip().lstrip("#").strip()
@@ -529,43 +447,45 @@ class MarkdownParser:
                 else:
                     current_conditions = []
 
-                continue
+                current_section_content = []
+                current_line_offset = i
+            else:
+                current_section_content.append(line)
 
-            # Track code blocks (bash, python, etc.)
-            if line.strip().startswith("```"):
-                if not in_code_block:
-                    # Starting a code block
-                    code_fence = line.strip()[3:].strip()
-                    # Determine language
-                    if code_fence in ["bash", "python"]:
-                        current_language = code_fence
-                    elif code_fence == "" or code_fence == "sh":
-                        # Plain ``` or ```sh defaults to bash
-                        current_language = "bash"
-                    else:
-                        # Unknown language, skip this code block
-                        current_language = None
-                    in_code_block = True
-                else:
-                    # Ending a code block
-                    in_code_block = False
-                continue
-
-            if in_code_block and current_language is not None:
-                code_content.append(line)
-
-        # Save last version
-        if code_content:
-            script = "\n".join(code_content)
-            version = self._create_action_version(
-                script,
+        # Save last section
+        if current_section_content or not conditional_sections:
+            conditional_sections.append((
                 current_conditions,
-                action_name,
-                file_path,
-                section.line_number,
-                current_language,
-            )
-            versions.append(version)
+                "\n".join(current_section_content),
+                current_line_offset
+            ))
+
+        # Extract code blocks from each conditional section
+        for conditions, content, line_offset in conditional_sections:
+            code_blocks = extract_code_blocks(content)
+
+            # Create a version for each code block
+            for language, code in code_blocks:
+                # Normalize language
+                if language == "" or language == "sh":
+                    language = "bash"
+
+                # Skip unsupported languages
+                if language not in ["bash", "python"]:
+                    continue
+
+                # Remove trailing newline if present
+                code = code.rstrip('\n')
+
+                version = self._create_action_version(
+                    code,
+                    conditions,
+                    action_name,
+                    file_path,
+                    section.line_number + line_offset,
+                    language,
+                )
+                versions.append(version)
 
         return versions
 
