@@ -11,24 +11,30 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        python = pkgs.python311;
+        python = pkgs.python312;
 
         # Build package using Python build tools
-        mudyla = pkgs.python311Packages.buildPythonApplication {
+        mudyla = pkgs.python312Packages.buildPythonApplication {
           pname = "mudyla";
           version = "0.1.0";
           src = ./.;
           format = "pyproject";
 
-          nativeBuildInputs = with pkgs.python311Packages; [
+          nativeBuildInputs = with pkgs.python312Packages; [
             hatchling
           ];
 
-          propagatedBuildInputs = with pkgs.python311Packages; [
+          propagatedBuildInputs = with pkgs.python312Packages; [
             mistune
             pyparsing
             rich
+            networkx
+            phart
           ];
+
+          postInstall = ''
+            cp $src/mudyla/runtime.sh $out/lib/python3.12/site-packages/mudyla/
+          '';
 
           meta = {
             description = "Multimodal Dynamic Launcher - Shell script orchestrator";

@@ -17,11 +17,11 @@ from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
 
 try:
-    from asciidag.graph import Graph
-    from asciidag.node import Node
-    ASCIIDAG_AVAILABLE = True
+    import networkx as nx
+    from phart import ASCIIRenderer
+    PHART_AVAILABLE = True
 except ImportError:
-    ASCIIDAG_AVAILABLE = False
+    PHART_AVAILABLE = False
 
 
 class CLI:
@@ -208,14 +208,11 @@ class CLI:
                 print(f"{'❌' if not args.no_color else '✗'} {color.error('Error:')} No markdown files found matching pattern: {args.defs}")
                 return 1
 
-            print(f"{'📁' if not args.no_color else '▸'} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s)')}")
-
             # Parse markdown files
-            print(f"{'📝' if not args.no_color else '▸'} {color.dim('Parsing definitions...')}")
             parser = MarkdownParser()
             document = parser.parse_files(md_files)
 
-            print(f"{'✓' if not args.no_color else '✓'} {color.dim('Loaded')} {color.bold(str(len(document.actions)))} {color.dim('action(s)')}")
+            print(f"{'📚' if not args.no_color else '▸'} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
 
             # Handle --list-actions
             if args.list_actions:
@@ -252,17 +249,14 @@ class CLI:
                     custom_args[arg_name] = arg_def.default_value
 
             # Build DAG
-            print(f"\n{'🔨' if not args.no_color else '▸'} {color.dim('Building dependency graph...')}")
             builder = DAGBuilder(document)
             builder.validate_goals(goals)
             graph = builder.build_graph(goals, axis_values)
 
             # Prune to goals
             pruned_graph = graph.prune_to_goals()
-            print(f"{'📊' if not args.no_color else '▸'} {color.dim('Graph contains')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
 
             # Validate
-            print(f"{'🔍' if not args.no_color else '▸'} {color.dim('Validating...')}")
             validator = DAGValidator(document, pruned_graph)
 
             # Initialize flags with all defined flags
@@ -270,15 +264,15 @@ class CLI:
             all_flags.update(custom_flags)
 
             validator.validate_all(custom_args, all_flags, axis_values)
-            print(f"{'✅' if not args.no_color else '✓'} {color.success('Validation passed')}")
+            print(f"{'✅' if not args.no_color else '✓'} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
 
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
             print(f"\n{'📋' if not args.no_color else '▸'} {color.bold('Execution plan:')}")
 
-            if ASCIIDAG_AVAILABLE and not args.no_color:
-                # Use asciidag to visualize the DAG
-                self._visualize_execution_plan_dag(pruned_graph, execution_order, goals, color)
+            if PHART_AVAILABLE and not args.no_color:
+                # Use phart to visualize the DAG
+                self._visualize_execution_plan_phart(pruned_graph, execution_order, goals, color)
             else:
                 # Fallback to simple text output
                 for i, action_name in enumerate(execution_order, 1):
@@ -365,8 +359,8 @@ class CLI:
             traceback.print_exc()
             return 1
 
-    def _visualize_execution_plan_dag(self, graph, execution_order: list[str], goals: list[str], color) -> None:
-        """Visualize execution plan using asciidag.
+    def _visualize_execution_plan_phart(self, graph, execution_order: list[str], goals: list[str], color) -> None:
+        """Visualize execution plan using phart.
 
         Args:
             graph: The execution graph
@@ -374,50 +368,33 @@ class CLI:
             goals: List of goal actions
             color: Color formatter
         """
-        from asciidag.graph import Graph as AsciiGraph
-        from asciidag.node import Node as AsciiNode
+        import networkx as nx
+        from phart import ASCIIRenderer
 
-        # Create a mapping of action names to asciidag nodes
-        node_map = {}
+        # Create a NetworkX DiGraph
+        # Use labels as node IDs so they show up in the visualization
+        G = nx.DiGraph()
 
-        # Build asciidag nodes in execution order
+        # Create a mapping from action names to labels
+        label_map = {}
         for action_name in execution_order:
-            exec_node = graph.get_node(action_name)
-
-            # Get parent nodes (dependencies)
-            parent_nodes = []
-            for dep in sorted(exec_node.dependencies):
-                if dep in node_map:
-                    parent_nodes.append(node_map[dep])
-
-            # Create label with execution order number and goal marker
             order_num = execution_order.index(action_name) + 1
             is_goal = action_name in goals
             goal_marker = " 🎯" if is_goal else ""
             label = f"{order_num}. {action_name}{goal_marker}"
+            label_map[action_name] = label
+            G.add_node(label)
 
-            # Create asciidag node
-            ascii_node = AsciiNode(label, parents=parent_nodes)
-            node_map[action_name] = ascii_node
+        # Add edges using labels
+        for action_name in execution_order:
+            exec_node = graph.get_node(action_name)
+            for dep in exec_node.dependencies:
+                # In a dependency graph, edges go from dependency to dependent
+                G.add_edge(label_map[dep], label_map[action_name])
 
-        # Get goal nodes (tips of the DAG to display)
-        goal_nodes = [node_map[goal] for goal in goals if goal in node_map]
-
-        # If no specific goals or all actions shown, use actions with no dependents
-        if not goal_nodes:
-            # Find actions with no dependents (leaf nodes)
-            has_dependents = set()
-            for action_name in execution_order:
-                exec_node = graph.get_node(action_name)
-                for dep in exec_node.dependencies:
-                    has_dependents.add(dep)
-
-            goal_nodes = [node_map[action] for action in execution_order
-                         if action not in has_dependents and action in node_map]
-
-        # Render the DAG
-        ascii_graph = AsciiGraph()
-        ascii_graph.show_nodes(goal_nodes)
+        # Render the graph with better spacing
+        renderer = ASCIIRenderer(G, node_spacing=1, layer_spacing=1)
+        print(renderer.render())
 
     def _list_actions(self, document: ParsedDocument) -> None:
         """List all available actions."""

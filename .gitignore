@@ -1,3 +1,4 @@
+*.whl
 task-*.txt
 test-output/
 

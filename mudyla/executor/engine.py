@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+import importlib.resources
 
 from ..ast.types import ReturnType
 from ..dag.graph import ActionGraph
@@ -60,59 +61,6 @@ class ExecutionResult:
 class ExecutionEngine:
     """Engine for executing actions in a DAG."""
 
-    RET_FUNCTION_TEMPLATE = """
-# Mudyla pseudo-commands
-MDL_OUTPUT_JSON="{output_json}"
-MDL_OUTPUT_LINES=()
-
-# dep pseudo-command (no-op, used for dependency declaration)
-dep() {{
-    # Dependencies are extracted at parse time, this is a no-op at runtime
-    :
-}}
-
-# ret pseudo-command (captures return values)
-ret() {{
-    local declaration="$1"
-    local name="${{declaration%%:*}}"
-    local rest="${{declaration#*:}}"
-    local type="${{rest%%=*}}"
-    local value="${{rest#*=}}"
-
-    # Store as JSON line
-    MDL_OUTPUT_LINES+=("$(printf '%s' "$name:$type:$value")")
-}}
-
-# Trap to write JSON on exit
-trap 'mudyla_write_outputs' EXIT
-
-mudyla_write_outputs() {{
-    echo "{{" > "$MDL_OUTPUT_JSON"
-    local first=true
-    for line in "${{MDL_OUTPUT_LINES[@]}}"; do
-        local name="${{line%%:*}}"
-        local rest="${{line#*:}}"
-        local type="${{rest%%:*}}"
-        local value="${{rest#*:}}"
-
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo "," >> "$MDL_OUTPUT_JSON"
-        fi
-
-        # Escape value for JSON
-        local json_value=$(printf '%s' "$value" | python3 -c 'import sys, json; print(json.dumps(sys.stdin.read().strip()))')
-        printf '  "%s": {{"type": "%s", "value": %s}}' "$name" "$type" "$json_value" >> "$MDL_OUTPUT_JSON"
-    done
-    echo "" >> "$MDL_OUTPUT_JSON"
-    echo "}}" >> "$MDL_OUTPUT_JSON"
-}}
-
-set -euo pipefail
-
-"""
-
     def __init__(
         self,
         graph: ActionGraph,
@@ -159,6 +107,29 @@ set -euo pipefail
             self.run_directory = run_directory
 
         self.run_directory.mkdir(parents=True, exist_ok=True)
+
+        # Copy runtime.sh to .mdl directory
+        self._install_runtime()
+
+    def _install_runtime(self) -> None:
+        """Install runtime.sh to .mdl directory."""
+        mdl_dir = self.project_root / ".mdl"
+        runtime_dest = mdl_dir / "runtime.sh"
+
+        # Get runtime.sh from package resources
+        try:
+            # Python 3.12+ uses importlib.resources.files
+            import importlib.resources as resources
+            runtime_content = resources.files('mudyla').joinpath('runtime.sh').read_text()
+        except (AttributeError, FileNotFoundError):
+            # Fallback for older Python or development mode
+            import mudyla
+            runtime_path = Path(mudyla.__file__).parent / 'runtime.sh'
+            runtime_content = runtime_path.read_text()
+
+        # Write runtime to .mdl/runtime.sh
+        runtime_dest.write_text(runtime_content)
+        runtime_dest.chmod(0o755)
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -363,11 +334,15 @@ set -euo pipefail
             version.bash_script, action_name, action_outputs
         )
 
-        # Add ret function
+        # Source runtime and set output path
         output_json_path = action_dir / "output.json"
-        ret_function = self.RET_FUNCTION_TEMPLATE.format(
-            output_json=str(output_json_path)
-        )
+        runtime_path = self.project_root / ".mdl" / "runtime.sh"
+        runtime_header = f"""#!/usr/bin/env bash
+# Source Mudyla runtime
+export MDL_OUTPUT_JSON="{output_json_path}"
+source "{runtime_path}"
+
+"""
 
         # Add environment variable exports
         env_exports = ""
@@ -379,7 +354,7 @@ set -euo pipefail
                 env_exports += f'export {var_name}="{escaped_value}"\n'
             env_exports += "\n"
 
-        full_script = ret_function + env_exports + rendered_script
+        full_script = runtime_header + env_exports + rendered_script
 
         # Save script
         script_path = action_dir / "script.sh"
