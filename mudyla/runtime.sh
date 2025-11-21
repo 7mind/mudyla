@@ -38,8 +38,26 @@ mudyla_write_outputs() {
             echo "," >> "$MDL_OUTPUT_JSON"
         fi
 
-        # Escape value for JSON
-        local json_value=$(printf '%s' "$value" | python3 -c 'import sys, json; print(json.dumps(sys.stdin.read().strip()))')
+        # Format value for JSON based on type
+        local json_value
+        case "$type" in
+            int|float)
+                # Numeric types - output without quotes
+                json_value="$value"
+                ;;
+            bool)
+                # Boolean type - output as JSON boolean
+                if [ "$value" = "true" ] || [ "$value" = "1" ]; then
+                    json_value="true"
+                else
+                    json_value="false"
+                fi
+                ;;
+            *)
+                # String types (string, file, directory, etc.) - escape and quote
+                json_value=$(printf '%s' "$value" | python3 -c 'import sys, json; print(json.dumps(sys.stdin.read().strip()))')
+                ;;
+        esac
         printf '  "%s": {"type": "%s", "value": %s}' "$name" "$type" "$json_value" >> "$MDL_OUTPUT_JSON"
     done
     echo "" >> "$MDL_OUTPUT_JSON"
