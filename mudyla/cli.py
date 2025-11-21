@@ -201,6 +201,7 @@ class CLI:
                 verbose=args.verbose,
                 keep_run_dir=args.keep_run_dir,
                 no_color=args.no_color,
+                simple_log=args.simple_log,
                 parallel_execution=parallel_execution,
             )
 

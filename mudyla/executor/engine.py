@@ -81,6 +81,7 @@ class ExecutionEngine:
         verbose: bool = False,
         keep_run_dir: bool = False,
         no_color: bool = False,
+        simple_log: bool = False,
         parallel_execution: bool = True,
     ):
         self.graph = graph
@@ -96,7 +97,12 @@ class ExecutionEngine:
         self.verbose = verbose
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
+        self.simple_log = simple_log
         self.parallel_execution = parallel_execution
+
+        # Determine if we should use rich table
+        # Use simple log if: --simple-log, --no-color, --github-actions, --verbose, or not a TTY
+        self.use_rich_table = not (simple_log or no_color or github_actions or verbose)
 
         # Create color formatter and output formatter
         self.color = ColorFormatter(no_color=no_color)
@@ -181,35 +187,58 @@ class ExecutionEngine:
                 run_directory=self.run_directory,
             )
 
-        # Execute actions in order
-        action_outputs: dict[str, dict[str, Any]] = {}
-        action_results: dict[str, ActionResult] = {}
+        # Setup rich table if enabled
+        table_manager = None
+        if self.use_rich_table:
+            from .task_table import TaskTableManager
+            table_manager = TaskTableManager(execution_order, no_color=self.no_color)
+            table_manager.start()
 
-        for action_name in execution_order:
-            node = self.graph.get_node(action_name)
+        try:
+            # Execute actions in order
+            action_outputs: dict[str, dict[str, Any]] = {}
+            action_results: dict[str, ActionResult] = {}
 
-            # Print start message
-            self._print_action_start(action_name)
+            for action_name in execution_order:
+                node = self.graph.get_node(action_name)
 
-            # Execute action
-            result = self._execute_action(node.action.name, action_outputs)
-            action_results[action_name] = result
+                # Update table or print start message
+                if table_manager:
+                    table_manager.mark_running(action_name)
+                else:
+                    self._print_action_start(action_name)
 
-            # Print completion message
-            self._print_action_completion(result)
+                # Execute action
+                result = self._execute_action(node.action.name, action_outputs)
+                action_results[action_name] = result
 
-            if not result.success:
-                # Action failed - stop execution
-                self._print_action_failure(result)
+                # Update table or print completion message
+                if table_manager:
+                    if result.success:
+                        table_manager.mark_done(action_name, result.duration_seconds)
+                    else:
+                        table_manager.mark_failed(action_name, result.duration_seconds)
+                else:
+                    self._print_action_completion(result)
 
-                return ExecutionResult(
-                    success=False,
-                    action_results=action_results,
-                    run_directory=self.run_directory,
-                )
+                if not result.success:
+                    # Action failed - stop execution
+                    if table_manager:
+                        table_manager.stop()
+                    self._print_action_failure(result)
 
-            # Store outputs for dependent actions
-            action_outputs[action_name] = result.outputs
+                    return ExecutionResult(
+                        success=False,
+                        action_results=action_results,
+                        run_directory=self.run_directory,
+                    )
+
+                # Store outputs for dependent actions
+                action_outputs[action_name] = result.outputs
+
+        finally:
+            if table_manager:
+                table_manager.stop()
 
         # Calculate total wall time
         graph_duration = time.time() - graph_start_time
@@ -253,10 +282,26 @@ class ExecutionEngine:
         running: dict[concurrent.futures.Future[ActionResult], str] = {}
         max_workers = max(1, min(32, os.cpu_count() or 1))
 
+        # Setup rich table if enabled
+        # Get execution order for table display
+        table_manager = None
+        if self.use_rich_table:
+            try:
+                execution_order = self.graph.get_execution_order()
+                from .task_table import TaskTableManager
+                table_manager = TaskTableManager(execution_order, no_color=self.no_color)
+                table_manager.start()
+            except ValueError:
+                # If we can't get execution order, skip table
+                pass
+
         def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_name: str):
             scheduled.add(action_name)
-            # Print start message
-            self._print_action_start(action_name)
+            # Update table or print start message
+            if table_manager:
+                table_manager.mark_running(action_name)
+            else:
+                self._print_action_start(action_name)
             snapshot_outputs = dict(action_outputs)
             future = executor.submit(self._execute_action, action_name, snapshot_outputs)
             running[future] = action_name
@@ -292,11 +337,19 @@ class ExecutionEngine:
 
                         action_results[action_name] = result
 
-                        # Print completion message
-                        self._print_action_completion(result)
+                        # Update table or print completion message
+                        if table_manager:
+                            if result.success:
+                                table_manager.mark_done(action_name, result.duration_seconds)
+                            else:
+                                table_manager.mark_failed(action_name, result.duration_seconds)
+                        else:
+                            self._print_action_completion(result)
 
                         if not result.success:
-                            # Action failed - print diagnostics and stop execution
+                            # Action failed - stop execution
+                            if table_manager:
+                                table_manager.stop()
                             self._print_action_failure(result)
                             executor.shutdown(cancel_futures=True)
                             return ExecutionResult(
@@ -319,11 +372,16 @@ class ExecutionEngine:
         except KeyboardInterrupt:
             for future in running:
                 future.cancel()
+            if table_manager:
+                table_manager.stop()
             return ExecutionResult(
                 success=False,
                 action_results=action_results,
                 run_directory=self.run_directory,
             )
+        finally:
+            if table_manager:
+                table_manager.stop()
 
         # Calculate total wall time
         graph_duration = time.time() - graph_start_time

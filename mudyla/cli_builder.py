@@ -84,6 +84,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--simple-log",
+        dest="simple_log",
+        action="store_true",
+        help="Use simple text logging instead of dynamic rich table",
+    )
+
+    parser.add_argument(
         "--seq",
         dest="sequential",
         action="store_true",
