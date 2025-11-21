@@ -3,7 +3,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-${(%):-%N}}")" >/dev/null 2
 COMPLETION_DIR="${SCRIPT_DIR}/../share/mudyla"
 
 if [ -n "$ZSH_VERSION" ]; then
-  export FPATH="${COMPLETION_DIR}":$FPATH
   . "${COMPLETION_DIR}/init.zsh"
 elif [ -n "$BASH_VERSION" ]; then
   . "${COMPLETION_DIR}/mdl.bash"
