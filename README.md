@@ -21,6 +21,7 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 ## Features
 
 - **Markdown-based action definitions**: Define actions in readable Markdown files
+- **Multi-language support**: Write actions in Bash or Python
 - **Dependency graph execution**: Automatic dependency resolution and execution
 - **Multi-version actions**: Different implementations based on axis values (e.g., build-mode)
 - **Type-safe returns**: Actions return typed values (int, string, bool, file, directory)
@@ -100,7 +101,7 @@ mdl :hello-world
 
 ## Action Definition Format
 
-### Basic Action
+### Basic Action (Bash)
 
 ```markdown
 # action: action-name
@@ -111,8 +112,21 @@ ret output-value:string=success
 \```
 ```
 
+### Basic Action (Python)
+
+```markdown
+# action: python-action
+
+```python
+# Python actions use the mdl object
+mdl.ret("output-value", "success", "string")
+mdl.ret("count", 42, "int")
+\```
+```
+
 ### Action with Dependencies
 
+**Bash:**
 ```markdown
 # action: dependent-action
 
@@ -120,6 +134,19 @@ ret output-value:string=success
 INPUT="${action.previous-action.output-value}"
 echo "Using: $INPUT"
 ret result:string=done
+\```
+```
+
+**Python:**
+```markdown
+# action: python-dependent
+
+```python
+# Declare dependency and access outputs
+mdl.dep("action.previous-action")
+input_value = mdl.actions["previous-action"]["output-value"]
+print(f"Using: {input_value}")
+mdl.ret("result", "done", "string")
 \```
 ```
 
@@ -147,13 +174,114 @@ ret mode:string=development
 \```
 ```
 
+### Python Actions
+
+Mudyla supports Python code blocks alongside Bash. Python actions use the `mdl` object for interacting with the Mudyla runtime.
+
+**Available Python API:**
+
+```python
+# Return values
+mdl.ret(name: str, value: Any, type: str)
+
+# Declare dependencies
+mdl.dep(dependency: str)  # e.g., "action.build" or "env.API_KEY"
+
+# Access system variables
+mdl.sys["project-root"]  # Project root directory
+
+# Access environment variables
+mdl.env.get("VARIABLE_NAME", default)
+mdl.env["VARIABLE_NAME"]  # Without default
+
+# Access command-line arguments
+mdl.args.get("arg-name", default)
+mdl.args["arg-name"]  # Without default
+
+# Access command-line flags
+mdl.flags.get("flag-name", False)
+
+# Access outputs from other actions
+mdl.actions["action-name"]["output-variable"]
+```
+
+**Example: Python action with file operations**
+
+```markdown
+# action: process-data
+
+```python
+import pathlib
+import json
+
+# Access context
+project_root = mdl.sys["project-root"]
+output_dir = mdl.args.get("output-dir", "output")
+
+# Create output file
+output_path = pathlib.Path(project_root) / output_dir / "results.json"
+output_path.parent.mkdir(parents=True, exist_ok=True)
+
+# Process data
+data = {"status": "success", "count": 42}
+
+with output_path.open("w") as f:
+    json.dump(data, f, indent=2)
+
+mdl.ret("output-file", str(output_path), "file")
+mdl.ret("count", data["count"], "int")
+\```
+```
+
+**Example: Mixed Bash and Python workflow**
+
+```markdown
+# action: prepare-env
+
+```bash
+# Bash action creates directory structure
+mkdir -p build/artifacts
+echo "Environment prepared"
+ret status:string=ready
+\```
+
+# action: build-artifacts
+
+```python
+# Python action uses the prepared environment
+mdl.dep("action.prepare-env")
+
+import pathlib
+import shutil
+
+project_root = mdl.sys["project-root"]
+build_dir = pathlib.Path(project_root) / "build" / "artifacts"
+
+# Create multiple artifacts
+for i in range(3):
+    artifact_file = build_dir / f"artifact-{i}.txt"
+    artifact_file.write_text(f"Artifact {i} content")
+
+mdl.ret("artifacts-dir", str(build_dir), "directory")
+mdl.ret("count", 3, "int")
+\```
+```
+
 ## Expansion Syntax
+
+### Bash Actions
+
+Bash actions use `${...}` expansion syntax:
 
 - `${sys.project-root}`: Project root directory
 - `${env.VARIABLE_NAME}`: Environment variable
 - `${args.argument-name}`: Command-line argument
 - `${flags.flag-name}`: Command-line flag (1 if present, 0 otherwise)
 - `${action.action-name.variable-name}`: Output from another action
+
+### Python Actions
+
+Python actions use the `mdl` object (see [Python Actions](#python-actions) section for details)
 
 ## Return Types
 
@@ -202,14 +330,6 @@ The test script uses `nix run . --` to test the actual built package, ensuring t
 
 - [Full Specification](docs/drafts/20251120-final-spec.md)
 - [Example Actions](example.md)
-
-## Architecture
-
-- **AST Module** (`mudyla/ast/`): Data model for actions and expansions
-- **Parser Module** (`mudyla/parser/`): Markdown and expression parsing
-- **DAG Module** (`mudyla/dag/`): Dependency graph building and validation
-- **Executor Module** (`mudyla/executor/`): Action execution engine
-- **CLI Module** (`mudyla/cli.py`): Command-line interface
 
 ## License
 
