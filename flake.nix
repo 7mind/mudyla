@@ -32,6 +32,7 @@
 
           postInstall = ''
             cp $src/completions/init.sh $out/bin/mudyla-autocomplete
+            chmod +x $out/bin/mudyla-autocomplete
 
             cp $src/mudyla/runtime.sh $out/${python.sitePackages}/mudyla/
 
