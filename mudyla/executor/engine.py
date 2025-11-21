@@ -15,6 +15,7 @@ import importlib.resources
 from ..ast.types import ReturnType
 from ..dag.graph import ActionGraph
 from ..utils.colors import ColorFormatter
+from ..utils.output import OutputFormatter
 
 
 @dataclass
@@ -92,8 +93,9 @@ class ExecutionEngine:
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
 
-        # Create color formatter
+        # Create color formatter and output formatter
         self.color = ColorFormatter(no_color=no_color)
+        self.output = OutputFormatter(self.color)
 
         # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
@@ -161,17 +163,16 @@ class ExecutionEngine:
             if not result.success:
                 # Action failed - stop execution
                 error_msg = f"Action '{action_name}' failed!"
-                emoji = "✗" if self.no_color else "❌"
-                print(f"\n{emoji} {self.color.error(error_msg)}")
-                print(f"{'📂' if not self.no_color else '▸'} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
-                print(f"\n{'📄' if not self.no_color else '▸'} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
+                self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error(error_msg)}")
+                self.output.print(f"{self.output.emoji('📂', '▸')} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
+                self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
                 if result.stdout_path.exists():
-                    print(result.stdout_path.read_text())
-                print(f"\n{'📄' if not self.no_color else '▸'} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
+                    self.output.print(result.stdout_path.read_text())
+                self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
                 if result.stderr_path.exists():
-                    print(result.stderr_path.read_text())
+                    self.output.print(result.stderr_path.read_text())
                 if result.error_message:
-                    print(f"\n{'❌' if not self.no_color else '✗'} {self.color.error('Error:')} {result.error_message}")
+                    self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error('Error:')} {result.error_message}")
 
                 return ExecutionResult(
                     success=False,
@@ -273,8 +274,7 @@ class ExecutionEngine:
         if prev_output_path.exists() and version is not None:
             outputs = self._parse_outputs(prev_output_path, version.return_declarations)
 
-        emoji = "✓" if self.no_color else "♻️"
-        print(f"{emoji} {self.color.info('Executing action:')} {self.color.highlight(action_name)} {self.color.dim('(restored from previous run)')}")
+        self.output.print(f"{self.output.emoji('♻️', '✓')} {self.color.info('Executing action:')} {self.color.highlight(action_name)} {self.color.dim('(restored from previous run)')}")
 
         return ActionResult(
             action_name=action_name,
@@ -409,8 +409,7 @@ source "{runtime_path}"
         if self.github_actions:
             print(f"::group::{action_name}")
         else:
-            emoji = "▸" if self.no_color else "⚡"
-            print(f"{emoji} {self.color.info('Executing action:')} {self.color.highlight(action_name)}")
+            self.output.print(f"{self.output.emoji('⚡', '▸')} {self.color.info('Executing action:')} {self.color.highlight(action_name)}")
 
         # Print command in verbose/CI modes
         if self.github_actions or self.verbose:
