@@ -45,8 +45,9 @@ class CLI:
             if not quiet_mode:
                 print("Note: Running on Windows - automatically enabling --without-nix mode")
 
-        # Auto-enable --no-color for GitHub Actions
-        if args.github_actions and not args.no_color:
+        # Auto-enable --no-color for GitHub Actions on Windows only
+        # GitHub Actions supports ANSI colors on Linux and macOS
+        if args.github_actions and platform.system() == "Windows" and not args.no_color:
             args.no_color = True
 
         try:
