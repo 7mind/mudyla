@@ -222,7 +222,9 @@ class ExecutionEngine:
 
                 # Update table or print completion message
                 if table_manager:
-                    if result.success:
+                    if result.restored:
+                        table_manager.mark_restored(action_name, result.duration_seconds)
+                    elif result.success:
                         table_manager.mark_done(action_name, result.duration_seconds)
                     else:
                         table_manager.mark_failed(action_name, result.duration_seconds)
@@ -360,7 +362,9 @@ class ExecutionEngine:
 
                         # Update table or print completion message
                         if table_manager:
-                            if result.success:
+                            if result.restored:
+                                table_manager.mark_restored(action_name, result.duration_seconds)
+                            elif result.success:
                                 table_manager.mark_done(action_name, result.duration_seconds)
                             else:
                                 table_manager.mark_failed(action_name, result.duration_seconds)

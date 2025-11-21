@@ -16,6 +16,7 @@ class TaskStatus(Enum):
     TBD = "tbd"
     RUNNING = "running"
     DONE = "done"
+    RESTORED = "restored"
     FAILED = "failed"
 
 
@@ -60,6 +61,7 @@ class TaskTableManager:
             TaskStatus.TBD: "dim",
             TaskStatus.RUNNING: "cyan",
             TaskStatus.DONE: "green",
+            TaskStatus.RESTORED: "green",
             TaskStatus.FAILED: "red",
         }[status]
 
@@ -113,7 +115,7 @@ class TaskTableManager:
                 if status == TaskStatus.RUNNING and task_name in self.task_start_times:
                     elapsed = time.time() - self.task_start_times[task_name]
                     time_str = self._format_duration(elapsed)
-                elif status in (TaskStatus.DONE, TaskStatus.FAILED) and task_name in self.task_durations:
+                elif status in (TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.FAILED) and task_name in self.task_durations:
                     time_str = self._format_duration(self.task_durations[task_name])
                 else:
                     time_str = "-"
@@ -171,6 +173,17 @@ class TaskTableManager:
         """
         with self.lock:
             self.task_status[task_name] = TaskStatus.DONE
+            self.task_durations[task_name] = duration
+
+    def mark_restored(self, task_name: str, duration: float) -> None:
+        """Mark a task as restored from previous run.
+
+        Args:
+            task_name: Task name
+            duration: Task duration in seconds
+        """
+        with self.lock:
+            self.task_status[task_name] = TaskStatus.RESTORED
             self.task_durations[task_name] = duration
 
     def mark_failed(self, task_name: str, duration: float) -> None:
