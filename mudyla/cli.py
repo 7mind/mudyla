@@ -15,6 +15,7 @@ from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
+from .utils.output import OutputFormatter
 
 
 class CLI:
@@ -122,6 +123,7 @@ class CLI:
 
         # Create color formatter
         color = ColorFormatter(no_color=args.no_color)
+        output = OutputFormatter(color)
 
         # Parse custom arguments, flags, and axis
         custom_args = {}
@@ -198,14 +200,14 @@ class CLI:
                 md_files.append(Path(pattern_part))
 
             if not md_files:
-                print(f"{'❌' if not args.no_color else '✗'} {color.error('Error:')} No markdown files found matching pattern: {args.defs}")
+                output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} No markdown files found matching pattern: {args.defs}")
                 return 1
 
             # Parse markdown files
             parser = MarkdownParser()
             document = parser.parse_files(md_files)
 
-            print(f"{'📚' if not args.no_color else '▸'} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
+            output.print(f"{output.emoji('📚', '▸')} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
 
             # Handle --list-actions
             if args.list_actions:
@@ -218,15 +220,15 @@ class CLI:
                 if goal_spec.startswith(":"):
                     goals.append(goal_spec[1:])
                 else:
-                    print(f"{'⚠️' if not args.no_color else '!'} {color.warning('Warning:')} Goal should start with ':', got: {goal_spec}")
+                    output.print(f"{output.emoji('⚠️', '!')} {color.warning('Warning:')} Goal should start with ':', got: {goal_spec}")
                     goals.append(goal_spec)
 
             if not goals:
-                print(f"{'❌' if not args.no_color else '✗'} {color.error('Error:')} No goals specified")
+                output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} No goals specified")
                 self.parser.print_help()
                 return 1
 
-            print(f"{'🎯' if not args.no_color else '▸'} {color.dim('Goals:')} {color.highlight(', '.join(goals))}")
+            output.print(f"{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(', '.join(goals))}")
 
             # Apply default axis values
             for axis_name, axis_def in document.axis.items():
@@ -257,15 +259,15 @@ class CLI:
             all_flags.update(custom_flags)
 
             validator.validate_all(custom_args, all_flags, axis_values)
-            print(f"{'✅' if not args.no_color else '✓'} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
+            output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
 
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
-            print(f"\n{'📋' if not args.no_color else '▸'} {color.bold('Execution plan:')}")
-            self._visualize_execution_plan(pruned_graph, execution_order, goals, color, args.no_color)
+            output.print(f"\n{output.emoji('📋', '▸')} {color.bold('Execution plan:')}")
+            self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output)
 
             if args.dry_run:
-                print(f"\n{'ℹ️' if not args.no_color else 'i'} {color.info('Dry run - not executing')}")
+                output.print(f"\n{output.emoji('ℹ️', 'i')} {color.info('Dry run - not executing')}")
                 return 0
 
             # Find previous run if --continue
@@ -277,14 +279,14 @@ class CLI:
                     run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
                     if run_dirs:
                         previous_run_dir = run_dirs[-1]  # Last run
-                        print(f"\n{'🔄' if not args.no_color else '▸'} {color.info('Continuing from previous run:')} {color.highlight(previous_run_dir.name)}")
+                        output.print(f"\n{output.emoji('🔄', '▸')} {color.info('Continuing from previous run:')} {color.highlight(previous_run_dir.name)}")
                     else:
-                        print(f"\n{'⚠️' if not args.no_color else '!'} {color.warning('Warning:')} No previous runs found, starting fresh")
+                        output.print(f"\n{output.emoji('⚠️', '!')} {color.warning('Warning:')} No previous runs found, starting fresh")
                 else:
-                    print(f"\n{'⚠️' if not args.no_color else '!'} {color.warning('Warning:')} No runs directory found, starting fresh")
+                    output.print(f"\n{output.emoji('⚠️', '!')} {color.warning('Warning:')} No runs directory found, starting fresh")
 
             # Execute
-            print(f"\n{'🚀' if not args.no_color else '→'} {color.bold('Executing actions...')}")
+            output.print(f"\n{output.emoji('🚀', '→')} {color.bold('Executing actions...')}")
 
             engine = ExecutionEngine(
                 graph=pruned_graph,
@@ -305,17 +307,17 @@ class CLI:
             result = engine.execute_all()
 
             if not result.success:
-                print(f"\n{'❌' if not args.no_color else '✗'} {color.error('Execution failed!')}")
+                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Execution failed!')}")
                 return 1
 
             # Get goal outputs
             goal_outputs = result.get_goal_outputs(goals)
 
             # Print outputs
-            print(f"\n{'✅' if not args.no_color else '✓'} {color.success('Execution completed successfully!')}")
+            output.print(f"\n{output.emoji('✅', '✓')} {color.success('Execution completed successfully!')}")
 
             output_json = json.dumps(goal_outputs, indent=2)
-            print(f"\n{'📊' if not args.no_color else '▸'} {color.bold('Outputs:')}")
+            output.print(f"\n{output.emoji('📊', '▸')} {color.bold('Outputs:')}")
 
             # Print colorized JSON if colors are enabled
             if not args.no_color:
@@ -324,32 +326,40 @@ class CLI:
                 console = Console()
                 console.print(JSON(output_json))
             else:
-                print(output_json)
+                output.print(output_json)
 
             # Save to file if requested
             if args.out:
                 out_path = Path(args.out)
                 out_path.write_text(output_json)
-                print(f"\n{'💾' if not args.no_color else '▸'} {color.dim('Outputs saved to:')} {color.highlight(str(out_path))}")
+                output.print(f"\n{output.emoji('💾', '▸')} {color.dim('Outputs saved to:')} {color.highlight(str(out_path))}")
 
             # Show run directory if keeping it
             if args.keep_run_dir:
-                print(f"\n{'📂' if not args.no_color else '▸'} {color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
+                output.print(f"\n{output.emoji('📂', '▸')} {color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
 
             return 0
 
         except ValidationError as e:
-            # Note: no_color not available in exception handler, use simple check
-            print(f"\n❌ {color.error('Validation error:')}\n{e}")
+            # Use safe printing for errors
+            try:
+                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Validation error:')}\n{e}")
+            except (NameError, UnicodeEncodeError):
+                # Fallback if output not defined or encoding fails
+                print(f"\n[!] Validation error:\n{e}")
             return 1
         except Exception as e:
-            print(f"\n❌ {color.error('Error:')} {e}")
+            try:
+                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
+            except (NameError, UnicodeEncodeError):
+                # Fallback if output not defined or encoding fails
+                print(f"\n[!] Error: {e}")
             import traceback
 
             traceback.print_exc()
             return 1
 
-    def _visualize_execution_plan(self, graph, execution_order: list[str], goals: list[str], color, no_color: bool) -> None:
+    def _visualize_execution_plan(self, graph, execution_order: list[str], goals: list[str], color, output: OutputFormatter) -> None:
         """Visualize execution plan as a tree.
 
         Args:
@@ -357,20 +367,20 @@ class CLI:
             execution_order: List of actions in execution order
             goals: List of goal actions
             color: Color formatter
-            no_color: Whether to disable colors
+            output: Output formatter
         """
         # Create a tree-like visualization showing dependencies
         for i, action_name in enumerate(execution_order, 1):
             node = graph.get_node(action_name)
             is_goal = action_name in goals
-            goal_marker = " 🎯" if is_goal and not no_color else " [GOAL]" if is_goal else ""
+            goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""
 
             # Format the action with its number
             action_label = f"{i}. {action_name}{goal_marker}"
 
             if not node.dependencies:
                 # No dependencies - just print the action
-                print(f"  {color.highlight(action_label)}")
+                output.print(f"  {color.highlight(action_label)}")
             else:
                 # Has dependencies - show them
                 dep_names = []
@@ -379,10 +389,10 @@ class CLI:
                     dep_names.append(f"{dep_num}")
 
                 deps_str = ",".join(dep_names)
-                arrow = "←" if not no_color else "<-"
-                print(f"  {color.highlight(action_label)} {color.dim(f'{arrow} [{deps_str}]')}")
+                arrow = output.emoji("←", "<-")
+                output.print(f"  {color.highlight(action_label)} {color.dim(f'{arrow} [{deps_str}]')}")
 
-        print()  # Empty line after plan
+        output.print("")  # Empty line after plan
 
     def _list_actions(self, document: ParsedDocument) -> None:
         """List all available actions."""
