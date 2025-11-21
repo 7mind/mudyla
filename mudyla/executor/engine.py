@@ -36,6 +36,7 @@ class ActionResult:
     duration_seconds: float
     exit_code: int = 0
     error_message: Optional[str] = None
+    restored: bool = False
 
 
 @dataclass
@@ -142,10 +143,12 @@ class ExecutionEngine:
         """
         if not self.github_actions:
             duration_str = f"{result.duration_seconds:.1f}s"
+            restored_str = " (restored from previous run)" if result.restored else ""
             if result.success:
-                self.output.print(f"{self.color.dim('done:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}")
+                emoji = self.output.emoji('♻️', '✓') if result.restored else ""
+                self.output.print(f"{emoji} {self.color.dim('done:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
             else:
-                self.output.print(f"{self.color.error('failed:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}")
+                self.output.print(f"{self.color.error('failed:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
 
     def _print_action_failure(self, result: ActionResult) -> None:
         """Print diagnostic information for a failed action.
@@ -198,6 +201,7 @@ class ExecutionEngine:
             # Execute actions in order
             action_outputs: dict[str, dict[str, Any]] = {}
             action_results: dict[str, ActionResult] = {}
+            restored_actions: list[str] = []
 
             for action_name in execution_order:
                 node = self.graph.get_node(action_name)
@@ -211,6 +215,10 @@ class ExecutionEngine:
                 # Execute action
                 result = self._execute_action(node.action.name, action_outputs)
                 action_results[action_name] = result
+
+                # Track restored actions
+                if result.restored:
+                    restored_actions.append(action_name)
 
                 # Update table or print completion message
                 if table_manager:
@@ -242,6 +250,11 @@ class ExecutionEngine:
 
         # Calculate total wall time
         graph_duration = time.time() - graph_start_time
+
+        # Print summary of restored actions
+        if restored_actions and not self.github_actions:
+            restored_list = ", ".join(restored_actions)
+            self.output.print(f"\n{self.output.emoji('♻️', '▸')} {self.color.dim('restored from previous run:')} {self.color.highlight(restored_list)}")
 
         # Success - clean up run directory if not keeping it
         if not self.keep_run_dir:
@@ -295,6 +308,9 @@ class ExecutionEngine:
                 # If we can't get execution order, skip table
                 pass
 
+        # Track restored actions
+        restored_actions: list[str] = []
+
         def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_name: str):
             scheduled.add(action_name)
             # Update table or print start message
@@ -336,6 +352,11 @@ class ExecutionEngine:
                             )
 
                         action_results[action_name] = result
+
+                        # Track restored actions
+                        if result.restored:
+                            with lock:
+                                restored_actions.append(action_name)
 
                         # Update table or print completion message
                         if table_manager:
@@ -385,6 +406,11 @@ class ExecutionEngine:
 
         # Calculate total wall time
         graph_duration = time.time() - graph_start_time
+
+        # Print summary of restored actions
+        if restored_actions and not self.github_actions:
+            restored_list = ", ".join(restored_actions)
+            self.output.print(f"\n{self.output.emoji('♻️', '▸')} {self.color.dim('restored from previous run:')} {self.color.highlight(restored_list)}")
 
         # Success - clean up run directory if not keeping it
         if not self.keep_run_dir:
@@ -491,6 +517,7 @@ class ExecutionEngine:
             end_time=meta.get("end_time", ""),
             duration_seconds=meta.get("duration_seconds", 0.0),
             exit_code=meta.get("exit_code", 0),
+            restored=True,
         )
 
     def _execute_action(
