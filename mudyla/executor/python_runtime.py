@@ -1,6 +1,7 @@
 """Python language runtime implementation."""
 
 import json
+from importlib import resources
 from pathlib import Path
 
 from mudyla.ast.models import ActionVersion
@@ -75,11 +76,8 @@ from runtime import mdl
         """
         Get Python runtime file (runtime.py).
         """
-        # Read the runtime.py from package
-        import mudyla
-        runtime_path = Path(mudyla.__file__).parent / "runtime.py"
+        runtime_path = resources.files("mudyla").joinpath("runtime.py")
         runtime_content = runtime_path.read_text()
-
         return {"runtime.py": runtime_content}
 
     def get_execution_command(self, script_path: Path) -> list[str]:

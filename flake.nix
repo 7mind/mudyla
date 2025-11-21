@@ -28,7 +28,6 @@
             mistune
             pyparsing
             rich
-            networkx
           ];
 
           postInstall = ''

@@ -21,7 +21,6 @@ dependencies = [
     "mistune>=3.0.0",
     "pyparsing>=3.0.0",
     "rich>=13.0.0",
-    "networkx>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +39,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
     "mudyla/*.sh",
+    "mudyla/executor/runtime_registry.py",
+    "mudyla/cli_args.py",
 ]
 
 [tool.hatch.build.targets.wheel]

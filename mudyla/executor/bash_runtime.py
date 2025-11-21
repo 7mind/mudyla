@@ -3,6 +3,7 @@
 import os
 import platform
 import shutil
+from importlib import resources
 from pathlib import Path
 
 from mudyla.ast.models import ActionVersion
@@ -82,60 +83,8 @@ source "{runtime_path}"
         """
         Get bash runtime file (runtime.sh).
         """
-        runtime_content = '''#!/usr/bin/env bash
-# Mudyla Runtime - Sourced by all generated scripts
-# This provides the ret() and dep() pseudo-commands
-
-# dep pseudo-command (no-op, used for dependency declaration)
-dep() {
-    # Dependencies are extracted at parse time, this is a no-op at runtime
-    :
-}
-
-# ret pseudo-command (captures return values)
-ret() {
-    local declaration="$1"
-    local name="${declaration%%:*}"
-    local rest="${declaration#*:}"
-    local type="${rest%%=*}"
-    local value="${rest#*=}"
-
-    # Store as JSON line
-    MDL_OUTPUT_LINES+=("$(printf '%s' "$name:$type:$value")")
-}
-
-# Trap to write JSON on exit
-trap 'mudyla_write_outputs' EXIT
-
-mudyla_write_outputs() {
-    echo "{" > "$MDL_OUTPUT_JSON"
-    local first=true
-    for line in "${MDL_OUTPUT_LINES[@]}"; do
-        local name="${line%%:*}"
-        local rest="${line#*:}"
-        local type="${rest%%:*}"
-        local value="${rest#*:}"
-
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo "," >> "$MDL_OUTPUT_JSON"
-        fi
-
-        # Escape value for JSON
-        local json_value=$(printf '%s' "$value" | python3 -c 'import sys, json; print(json.dumps(sys.stdin.read().strip()))')
-        printf '  "%s": {"type": "%s", "value": %s}' "$name" "$type" "$json_value" >> "$MDL_OUTPUT_JSON"
-    done
-    echo "" >> "$MDL_OUTPUT_JSON"
-    echo "}" >> "$MDL_OUTPUT_JSON"
-}
-
-# Initialize output tracking
-MDL_OUTPUT_LINES=()
-
-# Fail on errors
-set -euo pipefail
-'''
+        runtime_path = resources.files("mudyla").joinpath("runtime.sh")
+        runtime_content = runtime_path.read_text()
         return {"runtime.sh": runtime_content}
 
     def get_execution_command(self, script_path: Path) -> list[str]:

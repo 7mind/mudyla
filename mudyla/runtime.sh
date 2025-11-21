@@ -30,7 +30,7 @@ mudyla_write_outputs() {
         local name="${line%%:*}"
         local rest="${line#*:}"
         local type="${rest%%:*}"
-        local value="${rest#*=}"
+        local value="${rest#*:}"
 
         if [ "$first" = true ]; then
             first=false

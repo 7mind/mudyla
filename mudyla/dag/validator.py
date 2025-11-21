@@ -106,6 +106,10 @@ class DAGValidator:
         """Validate that all required environment variables are present."""
         missing_vars = []
 
+        # Build the effective environment: start with the real env and merge in
+        # any explicitly configured values from the document.
+        available_env = dict(os.environ) | self.document.environment_vars
+
         # Get pruned graph (only required actions)
         pruned_graph = self.graph.prune_to_goals()
 
@@ -116,16 +120,25 @@ class DAGValidator:
             # Check environment variables from expansions
             for expansion in node.selected_version.expansions:
                 if isinstance(expansion, EnvExpansion):
-                    if expansion.variable_name not in os.environ:
+                    if expansion.variable_name not in available_env:
                         missing_vars.append(
                             f"Action '{node.action.name}' requires environment "
                             f"variable '{expansion.variable_name}' which is not set "
                             f"(at {node.selected_version.location})"
                         )
 
+            # Check explicit dep env.VAR declarations
+            for env_dep in node.selected_version.env_dependencies:
+                if env_dep not in available_env:
+                    missing_vars.append(
+                        f"Action '{node.action.name}' declares dependency on environment "
+                        f"variable '{env_dep}' which is not set "
+                        f"(at {node.selected_version.location})"
+                    )
+
             # Check documented env vars
             for var_name in node.action.required_env_vars:
-                if var_name not in os.environ:
+                if var_name not in available_env:
                     missing_vars.append(
                         f"Action '{node.action.name}' requires environment "
                         f"variable '{var_name}' which is not set "

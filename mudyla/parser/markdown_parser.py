@@ -182,128 +182,88 @@ class MarkdownParser:
         return actions, arguments, flags, axis, environment_vars, passthrough
 
     def _extract_sections(self, content: str) -> list[Section]:
-        """Extract all top-level sections from markdown content using mistune AST."""
-        # Create mistune parser with AST renderer
-        ast_parser = mistune.create_markdown(renderer='ast')
-        ast = ast_parser(content)
+        """Extract all top-level (# ...) sections with accurate source lines."""
+        sections: list[Section] = []
+        current_title: Optional[str] = None
+        current_lines: list[str] = []
+        current_start_line = 0
+        in_code_block = False
 
-        sections = []
-        current_section_title = None
-        current_section_content = []
-        current_section_line = 0
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
 
-        for node in ast:
-            if node['type'] == 'heading' and node.get('attrs', {}).get('level') == 1:
-                # Save previous section if exists
-                if current_section_title is not None:
-                    sections.append(Section(
-                        title=current_section_title,
-                        content=''.join(current_section_content),
-                        line_number=current_section_line
-                    ))
+            if not in_code_block and line.startswith("# "):
+                if current_title is not None:
+                    sections.append(
+                        Section(
+                            title=current_title,
+                            content="\n".join(current_lines).strip() + "\n",
+                            line_number=current_start_line,
+                        )
+                    )
+                current_title = line[2:].strip()
+                current_lines = []
+                current_start_line = idx
+                continue
 
-                # Start new section
-                current_section_title = self._extract_text_from_node(node)
-                current_section_content = []
-                current_section_line = 1  # mistune doesn't provide line numbers in AST
-            elif current_section_title is not None:
-                # Add node content to current section
-                current_section_content.append(self._render_node_to_markdown(node))
+            if current_title is not None:
+                current_lines.append(line)
 
-        # Save last section
-        if current_section_title is not None:
-            sections.append(Section(
-                title=current_section_title,
-                content=''.join(current_section_content),
-                line_number=current_section_line
-            ))
+        if current_title is not None:
+            sections.append(
+                Section(
+                    title=current_title,
+                    content="\n".join(current_lines).strip() + "\n",
+                    line_number=current_start_line,
+                )
+            )
 
         return sections
 
-    def _extract_text_from_node(self, node: dict) -> str:
-        """Extract plain text from an AST node."""
-        if node['type'] == 'text':
-            return node.get('raw', '')
+    def _extract_code_blocks_from_content(
+        self, content: str, base_offset: int
+    ) -> list[tuple[str, str, int]]:
+        """Extract code blocks with line offsets relative to the full file.
 
-        # For heading or other container nodes, recursively extract text from children
-        children = node.get('children', [])
-        if children:
-            return ''.join(self._extract_text_from_node(child) for child in children)
-
-        # For inline code or other inline elements
-        if 'raw' in node:
-            return node['raw']
-
-        return ''
-
-    def _render_node_to_markdown(self, node: dict) -> str:
-        """Render an AST node back to markdown."""
-        node_type = node['type']
-
-        if node_type == 'paragraph':
-            children_text = ''.join(self._render_node_to_markdown(child) for child in node.get('children', []))
-            return children_text + '\n\n'
-
-        elif node_type == 'heading':
-            level = node.get('attrs', {}).get('level', 1)
-            # Render children to preserve inline formatting (like codespan)
-            text = ''.join(self._render_node_to_markdown(child) for child in node.get('children', []))
-            return f"{'#' * level} {text}\n\n"
-
-        elif node_type == 'block_code':
-            language = node.get('attrs', {}).get('info', '')
-            code = node.get('raw', '')
-            return f"```{language}\n{code}```\n\n"
-
-        elif node_type == 'list':
-            items = []
-            for child in node.get('children', []):
-                if child['type'] == 'list_item':
-                    item_content = ''.join(self._render_node_to_markdown(c) for c in child.get('children', []))
-                    items.append(f"- {item_content.strip()}\n")
-            return ''.join(items) + '\n'
-
-        elif node_type == 'text':
-            return node.get('raw', '')
-
-        elif node_type == 'codespan':
-            return f"`{node.get('raw', '')}`"
-
-        elif node_type == 'softbreak' or node_type == 'linebreak':
-            return '\n'
-
-        # Default: try to render children if present
-        children = node.get('children', [])
-        if children:
-            return ''.join(self._render_node_to_markdown(child) for child in children)
-
-        return ''
-
-    def _extract_code_blocks_from_content(self, content: str) -> list[tuple[str, str]]:
-        """Extract code blocks from markdown content using mistune AST.
+        Args:
+            content: Section content (without the top-level heading line).
+            base_offset: Line offset of this content relative to the H1 line (0-based).
 
         Returns:
-            List of (language, code) tuples
+            List of tuples: (language, code, absolute_offset_from_h1)
         """
-        ast_parser = mistune.create_markdown(renderer='ast')
-        ast = ast_parser(content)
+        blocks: list[tuple[str, str, int]] = []
+        lines = content.splitlines()
+        in_block = False
+        block_lang = ""
+        block_lines: list[str] = []
+        block_start_offset = 0
 
-        code_blocks = []
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not in_block and stripped.startswith("```"):
+                in_block = True
+                block_lang = stripped[3:].strip() or "bash"
+                block_lines = []
+                block_start_offset = idx
+                continue
 
-        def walk_ast(nodes):
-            for node in nodes:
-                if node['type'] == 'block_code':
-                    language = node.get('attrs', {}).get('info', 'bash')
-                    code = node.get('raw', '')
-                    code_blocks.append((language, code))
+            if in_block and stripped.startswith("```"):
+                code = "\n".join(block_lines)
+                blocks.append(
+                    (block_lang, code, base_offset + block_start_offset)
+                )
+                in_block = False
+                block_lang = ""
+                block_lines = []
+                continue
 
-                # Recursively walk children
-                children = node.get('children', [])
-                if children:
-                    walk_ast(children)
+            if in_block:
+                block_lines.append(line)
 
-        walk_ast(ast)
-        return code_blocks
+        return blocks
 
     def _parse_arguments_section(
         self, section: Section, file_path: Path
@@ -539,7 +499,9 @@ class MarkdownParser:
         lines = section.content.split("\n")
         current_section_content = []
         current_conditions = []
-        current_line_offset = 0
+        # Lines in section.content start immediately after the H1 line, so the
+        # first content line is offset +1 from the section heading.
+        current_line_offset = 1
 
         for i, line in enumerate(lines):
             if line.strip().startswith("##"):
@@ -561,7 +523,9 @@ class MarkdownParser:
                     current_conditions = []
 
                 current_section_content = []
-                current_line_offset = i
+                # Content after this header starts on the next line (+1), and
+                # section.content starts right after the H1 (+1), so add 2.
+                current_line_offset = i + 2
             else:
                 current_section_content.append(line)
 
@@ -575,10 +539,10 @@ class MarkdownParser:
 
         # Extract code blocks from each conditional section
         for conditions, content, line_offset in conditional_sections:
-            code_blocks = self._extract_code_blocks_from_content(content)
+            code_blocks = self._extract_code_blocks_from_content(content, line_offset)
 
             # Create a version for each code block
-            for language, code in code_blocks:
+            for language, code, block_offset in code_blocks:
                 # Normalize language
                 if language == "" or language == "sh":
                     language = "bash"
@@ -591,12 +555,12 @@ class MarkdownParser:
                 code = code.rstrip('\n')
 
                 version = self._create_action_version(
-                    code,
-                    conditions,
-                    action_name,
-                    file_path,
-                    section.line_number + line_offset,
-                    language,
+                    bash_script=code,
+                    conditions=conditions,
+                    action_name=action_name,
+                    file_path=file_path,
+                    line_number=section.line_number + block_offset,
+                    language=language,
                 )
                 versions.append(version)
 

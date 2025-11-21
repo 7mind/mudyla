@@ -13,6 +13,7 @@ from .dag.builder import DAGBuilder
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
+from .cli_args import CLIParseError, parse_custom_inputs
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
 from .utils.output import OutputFormatter
@@ -125,64 +126,16 @@ class CLI:
         color = ColorFormatter(no_color=args.no_color)
         output = OutputFormatter(color)
 
-        # Parse custom arguments, flags, and axis
-        custom_args = {}
-        custom_flags = {}
-        axis_values = {}
+        try:
+            parsed_inputs = parse_custom_inputs(args.goals, unknown)
+        except CLIParseError as e:
+            output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
+            return 1
 
-        i = 0
-        while i < len(unknown):
-            arg = unknown[i]
-
-            if arg.startswith("--axis"):
-                # Format: --axis name=value or --axis=name=value
-                # The value part may be in args.goals, so we handle it there
-                # If it's --axis=name=value format, handle it here
-                if "=" in arg:
-                    rest = arg[6:]  # Remove "--axis"
-                    if rest.startswith("="):
-                        rest = rest[1:]
-                    if "=" in rest:
-                        axis_name, axis_value = rest.split("=", 1)
-                        axis_values[axis_name.strip()] = axis_value.strip()
-                # Otherwise, the value (name=value) will be in args.goals and handled below
-
-            elif arg.startswith("--"):
-                # Could be flag or argument
-                arg_name = arg[2:]
-                if "=" in arg_name:
-                    # Argument: --name=value
-                    name, value = arg_name.split("=", 1)
-                    custom_args[name] = value
-                else:
-                    # Flag: --name
-                    custom_flags[arg_name] = True
-
-            i += 1
-
-        # Filter out axis specifications and misplaced arguments from goals
-        # (they might have been consumed by argparse as positional args)
-        filtered_goals = []
-        for goal in args.goals:
-            if goal.startswith("--"):
-                # This is an argument or flag that ended up in goals
-                if "=" in goal:
-                    # Argument: --name=value
-                    arg_name = goal[2:].split("=", 1)[0]
-                    arg_value = goal[2:].split("=", 1)[1]
-                    custom_args[arg_name] = arg_value
-                else:
-                    # Flag: --name
-                    flag_name = goal[2:]
-                    custom_flags[flag_name] = True
-            elif "=" in goal and not goal.startswith(":"):
-                # Axis specification (format: name=value without leading : or --)
-                axis_name, axis_value = goal.split("=", 1)
-                axis_values[axis_name.strip()] = axis_value.strip()
-            else:
-                # Actual goal
-                filtered_goals.append(goal)
-        args.goals = filtered_goals
+        custom_args = parsed_inputs.custom_args
+        custom_flags = parsed_inputs.custom_flags
+        axis_values = parsed_inputs.axis_values
+        goals = parsed_inputs.goals
 
         try:
             # Find project root
@@ -214,14 +167,9 @@ class CLI:
                 self._list_actions(document, args.no_color)
                 return 0
 
-            # Parse goals
-            goals = []
-            for goal_spec in args.goals:
-                if goal_spec.startswith(":"):
-                    goals.append(goal_spec[1:])
-                else:
-                    output.print(f"{output.emoji('⚠️', '!')} {color.warning('Warning:')} Goal should start with ':', got: {goal_spec}")
-                    goals.append(goal_spec)
+            # Surface goal formatting warnings (if any)
+            for warning in parsed_inputs.goal_warnings:
+                output.print(f"{output.emoji('⚠️', '!')} {color.warning('Warning:')} {warning}")
 
             if not goals:
                 output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} No goals specified")

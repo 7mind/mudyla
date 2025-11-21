@@ -2,20 +2,21 @@
 
 import json
 import os
-import platform
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-import importlib.resources
 
 from ..ast.types import ReturnType
 from ..dag.graph import ActionGraph
 from ..utils.colors import ColorFormatter
 from ..utils.output import OutputFormatter
+from .runtime_registry import RuntimeRegistry
+from .bash_runtime import BashRuntime
+from .python_runtime import PythonRuntime
 
 
 @dataclass
@@ -97,6 +98,10 @@ class ExecutionEngine:
         self.color = ColorFormatter(no_color=no_color)
         self.output = OutputFormatter(self.color)
 
+        # Register built-in runtimes once.
+        for runtime_cls in (BashRuntime, PythonRuntime):
+            RuntimeRegistry.register(runtime_cls)
+
         # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
             # Use nanosecond timestamp for ordering
@@ -115,47 +120,16 @@ class ExecutionEngine:
 
     def _install_runtime(self) -> None:
         """Install runtime files for all supported languages to .mdl directory."""
-        from mudyla.executor.bash_runtime import BashRuntime
-        from mudyla.executor.python_runtime import PythonRuntime
-
         mdl_dir = self.project_root / ".mdl"
         mdl_dir.mkdir(parents=True, exist_ok=True)
 
         # Install runtime files for each language
-        for runtime_class in [BashRuntime, PythonRuntime]:
-            runtime = runtime_class()
+        for runtime in RuntimeRegistry.all():
             for filename, content in runtime.get_runtime_files().items():
                 dest_path = mdl_dir / filename
                 dest_path.write_text(content)
                 if filename.endswith(".sh"):
                     dest_path.chmod(0o755)
-
-    def _get_language_runtime(self, language: str):
-        """Get the language runtime for the specified language.
-
-        Args:
-            language: Language name (e.g., "bash", "python")
-
-        Returns:
-            LanguageRuntime instance
-
-        Raises:
-            ValueError: If language is not supported
-        """
-        from mudyla.executor.bash_runtime import BashRuntime
-        from mudyla.executor.python_runtime import PythonRuntime
-
-        runtimes = {
-            "bash": BashRuntime,
-            "python": PythonRuntime,
-        }
-
-        if language not in runtimes:
-            raise ValueError(
-                f"Unsupported language: {language}. Supported languages: {', '.join(runtimes.keys())}"
-            )
-
-        return runtimes[language]()
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -354,7 +328,7 @@ class ExecutionEngine:
         action_dir.mkdir(parents=True, exist_ok=True)
 
         # Get appropriate language runtime
-        runtime = self._get_language_runtime(version.language)
+        runtime = RuntimeRegistry.get(version.language)
 
         # Prepare execution context
         from mudyla.executor.language_runtime import ExecutionContext
@@ -723,48 +697,6 @@ class ExecutionEngine:
                 exit_code=-1,
                 error_message=error_msg,
             )
-
-    def _render_script(
-        self, script: str, action_name: str, action_outputs: dict[str, dict[str, Any]]
-    ) -> str:
-        """Render script with all expansions resolved.
-
-        Args:
-            script: Original script
-            action_name: Name of the action being rendered
-            action_outputs: Outputs from previous actions
-
-        Returns:
-            Rendered script
-        """
-        node = self.graph.get_node(action_name)
-        version = node.selected_version
-
-        if version is None:
-            return script
-
-        rendered = script
-
-        # Build resolution context
-        context = {
-            "sys": {"project-root": str(self.project_root)},
-            "env": dict(os.environ),
-            "args": self.args,
-            "flags": self.flags,
-            "actions": action_outputs,
-        }
-
-        # Resolve all expansions
-        for expansion in version.expansions:
-            try:
-                resolved_value = expansion.resolve(context)
-                rendered = rendered.replace(expansion.original_text, resolved_value)
-            except ValueError as e:
-                raise ValueError(
-                    f"Error resolving expansion in action '{action_name}': {e}"
-                )
-
-        return rendered
 
     def _parse_outputs(
         self, output_json_path: Path, return_declarations
