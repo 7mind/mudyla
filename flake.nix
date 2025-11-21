@@ -64,13 +64,11 @@
           ];
 
           shellHook = ''
-            # Create/activate uv virtual environment
             if [ ! -d .venv ]; then
               echo "Creating uv virtual environment..." >&2
               uv venv
             fi
 
-            # Activate virtual environment
             source .venv/bin/activate
 
             # Install package in development mode
@@ -80,24 +78,12 @@
               touch .venv/.mudyla-installed
             fi
 
+            export FPATH="''${PWD}/completions/zsh"
+
             # Enable completions in dev shell without system install
             # Use PWD so we get the actual working directory, not the nix store path
             if [ -n "''${BASH_VERSION}" ]; then
-              if [ -f "''${PWD}/completions/mdl.bash" ]; then
-                source "''${PWD}/completions/mdl.bash"
-              fi
-            elif [ -n "''${ZSH_VERSION}" ]; then
-              # Ensure project completions are on fpath before compinit
-              if [ -d "''${PWD}/completions" ]; then
-                typeset -U fpath
-                fpath=("''${PWD}/completions" ''${fpath})
-                export FPATH="''${PWD}/completions''${FPATH:+:''${FPATH}}"
-                autoload -Uz compinit
-                compinit -i >/dev/null 2>&1 || true
-                # Explicitly load the completion function and bind it
-                autoload -Uz _mdl 2>/dev/null || true
-                compdef _mdl mdl 2>/dev/null || true
-              fi
+              source "''${PWD}/completions/mdl.bash"
             fi
           '';
         };
