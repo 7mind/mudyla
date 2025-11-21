@@ -1,0 +1,185 @@
+"""Rich table manager for displaying task execution status."""
+
+import threading
+import time
+from enum import Enum
+from typing import Optional
+
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+
+
+class TaskStatus(Enum):
+    """Task execution status."""
+
+    TBD = "tbd"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class TaskTableManager:
+    """Manages a dynamic rich table showing task execution status."""
+
+    def __init__(self, task_names: list[str], no_color: bool = False):
+        """Initialize the task table manager.
+
+        Args:
+            task_names: List of task names in execution order
+            no_color: Whether colors are disabled
+        """
+        self.task_names = task_names
+        self.no_color = no_color
+        self.console = Console()
+
+        # Task state
+        self.task_status: dict[str, TaskStatus] = {name: TaskStatus.TBD for name in task_names}
+        self.task_start_times: dict[str, float] = {}
+        self.task_durations: dict[str, float] = {}
+
+        # Threading
+        self.lock = threading.Lock()
+        self.live: Optional[Live] = None
+        self.stop_updating = False
+        self.update_thread: Optional[threading.Thread] = None
+
+    def _get_status_style(self, status: TaskStatus) -> str:
+        """Get the rich style for a status.
+
+        Args:
+            status: Task status
+
+        Returns:
+            Rich style string
+        """
+        if self.no_color:
+            return ""
+
+        return {
+            TaskStatus.TBD: "dim",
+            TaskStatus.RUNNING: "cyan",
+            TaskStatus.DONE: "green",
+            TaskStatus.FAILED: "red",
+        }[status]
+
+    def _get_status_text(self, status: TaskStatus) -> str:
+        """Get the display text for a status.
+
+        Args:
+            status: Task status
+
+        Returns:
+            Status text
+        """
+        return status.value
+
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration for display.
+
+        Args:
+            seconds: Duration in seconds
+
+        Returns:
+            Formatted duration string
+        """
+        if seconds < 1.0:
+            return f"{seconds:.1f}s"
+        elif seconds < 60.0:
+            return f"{seconds:.1f}s"
+        else:
+            minutes = int(seconds // 60)
+            secs = seconds % 60
+            return f"{minutes}m {secs:.0f}s"
+
+    def _build_table(self) -> Table:
+        """Build the current state of the table.
+
+        Returns:
+            Rich Table object
+        """
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Task", style="", no_wrap=True)
+        table.add_column("Time", justify="right", no_wrap=True)
+        table.add_column("Status", justify="center", no_wrap=True)
+
+        with self.lock:
+            for task_name in self.task_names:
+                status = self.task_status[task_name]
+                style = self._get_status_style(status)
+                status_text = self._get_status_text(status)
+
+                # Calculate time
+                if status == TaskStatus.RUNNING and task_name in self.task_start_times:
+                    elapsed = time.time() - self.task_start_times[task_name]
+                    time_str = self._format_duration(elapsed)
+                elif status in (TaskStatus.DONE, TaskStatus.FAILED) and task_name in self.task_durations:
+                    time_str = self._format_duration(self.task_durations[task_name])
+                else:
+                    time_str = "-"
+
+                table.add_row(
+                    f"[{style}]{task_name}[/{style}]" if style else task_name,
+                    f"[{style}]{time_str}[/{style}]" if style else time_str,
+                    f"[{style}]{status_text}[/{style}]" if style else status_text,
+                )
+
+        return table
+
+    def _update_loop(self) -> None:
+        """Background thread that updates the table display."""
+        while not self.stop_updating:
+            if self.live:
+                self.live.update(self._build_table())
+            time.sleep(0.1)  # Update 10 times per second
+
+    def start(self) -> None:
+        """Start the live table display."""
+        self.stop_updating = False
+        self.live = Live(self._build_table(), console=self.console, refresh_per_second=10)
+        self.live.start()
+
+        # Start background update thread
+        self.update_thread = threading.Thread(target=self._update_loop, daemon=True)
+        self.update_thread.start()
+
+    def stop(self) -> None:
+        """Stop the live table display."""
+        self.stop_updating = True
+        if self.update_thread:
+            self.update_thread.join(timeout=1.0)
+        if self.live:
+            self.live.update(self._build_table())  # Final update
+            self.live.stop()
+
+    def mark_running(self, task_name: str) -> None:
+        """Mark a task as running.
+
+        Args:
+            task_name: Task name
+        """
+        with self.lock:
+            self.task_status[task_name] = TaskStatus.RUNNING
+            self.task_start_times[task_name] = time.time()
+
+    def mark_done(self, task_name: str, duration: float) -> None:
+        """Mark a task as done.
+
+        Args:
+            task_name: Task name
+            duration: Task duration in seconds
+        """
+        with self.lock:
+            self.task_status[task_name] = TaskStatus.DONE
+            self.task_durations[task_name] = duration
+
+    def mark_failed(self, task_name: str, duration: float) -> None:
+        """Mark a task as failed.
+
+        Args:
+            task_name: Task name
+            duration: Task duration in seconds
+        """
+        with self.lock:
+            self.task_status[task_name] = TaskStatus.FAILED
+            self.task_durations[task_name] = duration
