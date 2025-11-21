@@ -334,7 +334,15 @@ class CLI:
 
             output_json = json.dumps(goal_outputs, indent=2)
             print(f"\n{'📊' if not args.no_color else '▸'} {color.bold('Outputs:')}")
-            print(output_json)
+
+            # Print colorized JSON if colors are enabled
+            if not args.no_color:
+                from rich.console import Console
+                from rich.json import JSON
+                console = Console()
+                console.print(JSON(output_json))
+            else:
+                print(output_json)
 
             # Save to file if requested
             if args.out:
@@ -369,7 +377,7 @@ class CLI:
             color: Color formatter
         """
         import networkx as nx
-        from phart import ASCIIRenderer
+        from phart import ASCIIRenderer, NodeStyle
 
         # Create a NetworkX DiGraph
         # Use labels as node IDs so they show up in the visualization
@@ -392,8 +400,8 @@ class CLI:
                 # In a dependency graph, edges go from dependency to dependent
                 G.add_edge(label_map[dep], label_map[action_name])
 
-        # Render the graph with better spacing
-        renderer = ASCIIRenderer(G, node_spacing=1, layer_spacing=1)
+        # Render the graph with minimal style for compact output
+        renderer = ASCIIRenderer(G, node_style=NodeStyle.MINIMAL, node_spacing=1, layer_spacing=0)
         print(renderer.render())
 
     def _list_actions(self, document: ParsedDocument) -> None:
