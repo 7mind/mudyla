@@ -2,7 +2,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-${(%):-%N}}")" >/dev/null 2
 
 echo $SHELL
 COMPLETION_DIR="${SCRIPT_DIR}/../share/mudyla"
+echo $COMPLETION_DIR
 COMPLETION_DIR="${COMPLETION_DIR:A}"
+echo $COMPLETION_DIR
 
 if [ -n "$ZSH_VERSION" ]; then
   . "${COMPLETION_DIR}/init.zsh"
