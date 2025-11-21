@@ -1,6 +1,8 @@
 """Bash language runtime implementation."""
 
 import os
+import platform
+import shutil
 from pathlib import Path
 
 from mudyla.ast.models import ActionVersion
@@ -139,5 +141,26 @@ set -euo pipefail
     def get_execution_command(self, script_path: Path) -> list[str]:
         """
         Get the bash execution command.
+
+        On Windows, tries to find Git Bash instead of WSL bash.
         """
-        return ["bash", str(script_path)]
+        if platform.system() == "Windows":
+            # On Windows, find Git Bash (not WSL bash)
+            # Try common Git Bash locations first
+            git_bash_paths = [
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            ]
+            bash_cmd = None
+            for path in git_bash_paths:
+                if Path(path).exists():
+                    bash_cmd = path
+                    break
+
+            # Fall back to searching PATH (but this might find WSL bash)
+            if bash_cmd is None:
+                bash_cmd = shutil.which("bash.exe") or "bash.exe"
+
+            return [bash_cmd, str(script_path)]
+        else:
+            return ["bash", str(script_path)]
