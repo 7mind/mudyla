@@ -30,6 +30,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--autocomplete",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show execution plan without executing",

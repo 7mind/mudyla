@@ -32,6 +32,13 @@
 
           postInstall = ''
             cp $src/mudyla/runtime.sh $out/${python.sitePackages}/mudyla/
+            mkdir -p $out/share/bash-completion/completions
+            mkdir -p $out/share/zsh/site-functions
+            mkdir -p $out/share/mudyla
+            cp $src/completions/init.sh $out/share/mudyla/init.sh
+            cp $src/completions/mdl.bash $out/share/bash-completion/completions/mdl
+            cp $src/completions/_mdl $out/share/zsh/site-functions/_mdl
+            cp $src/completions/init.zsh $out/share/mudyla/init.zsh
           '';
 
           meta = {
@@ -83,6 +90,22 @@
               echo "  uv pip install <package>  - Install a package"
               echo "  uv pip sync               - Sync dependencies"
               echo "  mdl --help                - Run mudyla CLI"
+              echo "  Tab completion            - auto-enabled for bash/zsh in this shell"
+            fi
+
+            # Enable completions in dev shell without system install
+            export FPATH="${toString ./.}/completions''${FPATH:+:''${FPATH}}"
+            if [ -n "$BASH_VERSION" ]; then
+              source "${toString ./.}/completions/mdl.bash" >/dev/null 2>&1 || true
+            elif [ -n "$ZSH_VERSION" ]; then
+              # Ensure project completions are on fpath before compinit
+              typeset -U fpath
+              fpath=("${toString ./.}/completions" $fpath)
+              autoload -Uz compinit
+              compinit -i >/dev/null 2>&1 || true
+              # Explicitly load the completion function and bind it
+              autoload -Uz _mdl 2>/dev/null || true
+              compdef _mdl mdl 2>/dev/null || true
             fi
           '';
         };

@@ -37,34 +37,54 @@ class CLI:
         """
         # Parse known args first to separate goals from flags/args
         args, unknown = self.parser.parse_known_args(argv)
+        quiet_mode = args.autocomplete
 
         # Auto-enable --without-nix on Windows
         if platform.system() == "Windows" and not args.without_nix:
             args.without_nix = True
-            print("Note: Running on Windows - automatically enabling --without-nix mode")
+            if not quiet_mode:
+                print("Note: Running on Windows - automatically enabling --without-nix mode")
 
         # Auto-enable --no-color for GitHub Actions
         if args.github_actions and not args.no_color:
             args.no_color = True
 
-        # Create color formatter
-        color = ColorFormatter(no_color=args.no_color)
-        output = OutputFormatter(color)
-
         try:
-            parsed_inputs = parse_custom_inputs(args.goals, unknown)
-        except CLIParseError as e:
-            output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
-            return 1
+            # Auto-complete mode: quiet, returns only action names.
+            if args.autocomplete:
+                try:
+                    project_root = find_project_root()
+                    defs_pattern = args.defs
+                    if not Path(defs_pattern).is_absolute():
+                        defs_pattern = str(Path(project_root) / defs_pattern)
+                    md_files = [Path(p) for p in glob(defs_pattern, recursive=True)]
+                    if not md_files:
+                        return 1
+                    parser = MarkdownParser()
+                    document = parser.parse_files(md_files)
+                    for name in self._list_action_names_ordered(document):
+                        print(name)
+                    return 0
+                except Exception:
+                    return 1
 
-        custom_args = parsed_inputs.custom_args
-        custom_flags = parsed_inputs.custom_flags
-        axis_values = parsed_inputs.axis_values
-        goals = parsed_inputs.goals
+            # Create color formatter
+            color = ColorFormatter(no_color=args.no_color)
+            output = OutputFormatter(color)
 
-        parallel_execution = not args.sequential and not args.verbose and not args.github_actions
+            try:
+                parsed_inputs = parse_custom_inputs(args.goals, unknown)
+            except CLIParseError as e:
+                output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
+                return 1
 
-        try:
+            custom_args = parsed_inputs.custom_args
+            custom_flags = parsed_inputs.custom_flags
+            axis_values = parsed_inputs.axis_values
+            goals = parsed_inputs.goals
+
+            parallel_execution = not args.sequential and not args.verbose and not args.github_actions
+
             # Find project root
             project_root = find_project_root()
             print(f"{color.dim('Project root:')} {color.highlight(str(project_root))}")
@@ -87,12 +107,12 @@ class CLI:
             parser = MarkdownParser()
             document = parser.parse_files(md_files)
 
-            output.print(f"{output.emoji('📚', '▸')} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
-
             # Handle --list-actions
             if args.list_actions:
                 self._list_actions(document, args.no_color)
                 return 0
+
+            output.print(f"{output.emoji('📚', '▸')} {color.dim('Found')} {color.bold(str(len(md_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
 
             # Surface goal formatting warnings (if any)
             for warning in parsed_inputs.goal_warnings:
@@ -134,14 +154,16 @@ class CLI:
             all_flags.update(custom_flags)
 
             validator.validate_all(custom_args, all_flags, axis_values)
-            output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
-            mode_label = "parallel" if parallel_execution else "sequential"
-            output.print(f"{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
+            if not quiet_mode:
+                output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
+                mode_label = "parallel" if parallel_execution else "sequential"
+                output.print(f"{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
 
             # Show execution plan
             execution_order = pruned_graph.get_execution_order()
-            output.print(f"\n{output.emoji('📋', '▸')} {color.bold('Execution plan:')}")
-            self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output)
+            if not quiet_mode:
+                output.print(f"\n{output.emoji('📋', '▸')} {color.bold('Execution plan:')}")
+                self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output)
 
             if args.dry_run:
                 output.print(f"\n{output.emoji('ℹ️', 'i')} {color.info('Dry run - not executing')}")
@@ -358,6 +380,22 @@ class CLI:
                 print(f"    {color.dim('Axis:')} {color.warning(axis_str)}")
 
             print()
+
+    def _list_action_names_ordered(self, document: ParsedDocument) -> list[str]:
+        """Return action names in the same order as _list_actions prints them."""
+        root_actions = []
+        non_root_actions = []
+
+        for action_name, action in document.actions.items():
+            deps = action.get_action_dependencies()
+            if len(deps) == 0:
+                root_actions.append(action_name)
+            else:
+                non_root_actions.append(action_name)
+
+        root_actions.sort()
+        non_root_actions.sort()
+        return root_actions + non_root_actions
 
 
 def main() -> int:

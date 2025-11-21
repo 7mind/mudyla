@@ -1,0 +1,15 @@
+#compdef mdl
+
+_mdl() {
+  local -a actions
+  local context state state_descr line
+  actions=(${(f)"$(mdl --autocomplete 2>/dev/null)"})
+
+  _arguments '*:goal:->actions'
+
+  case $state in
+    actions)
+      compadd -P ":" -a actions
+      ;;
+  esac
+}
