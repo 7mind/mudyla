@@ -1,0 +1,9 @@
+#compdef mdl
+
+_mdl() {
+  local -a actions
+  actions=(${(f)"$(mdl --autocomplete 2>/dev/null)"})
+
+  # Complete actions with colon prefix
+  _describe -t actions 'mudyla action' actions -P ':'
+}

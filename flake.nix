@@ -31,7 +31,17 @@
           ];
 
           postInstall = ''
+            cp $src/completions/init.sh $out/bin/mudyla-autocomplete
+            chmod +x $out/bin/mudyla-autocomplete
+
             cp $src/mudyla/runtime.sh $out/${python.sitePackages}/mudyla/
+
+            mkdir -p $out/share/bash-completion/completions
+            mkdir -p $out/share/zsh/site-functions
+            mkdir -p $out/share/mudyla
+
+            cp $src/completions/mdl.bash $out/share/bash-completion/completions/mdl
+            cp $src/completions/_mdl $out/share/zsh/site-functions/_mdl
           '';
 
           meta = {
@@ -57,13 +67,11 @@
           ];
 
           shellHook = ''
-            # Create/activate uv virtual environment
             if [ ! -d .venv ]; then
               echo "Creating uv virtual environment..." >&2
               uv venv
             fi
 
-            # Activate virtual environment
             source .venv/bin/activate
 
             # Install package in development mode
@@ -73,16 +81,12 @@
               touch .venv/.mudyla-installed
             fi
 
-            # Only show welcome message in interactive shells
-            if [ -t 0 ]; then
-              echo "Mudyla development environment (with uv)"
-              echo "Python version: $(python3 --version)"
-              echo "UV version: $(uv --version)"
-              echo ""
-              echo "Commands:"
-              echo "  uv pip install <package>  - Install a package"
-              echo "  uv pip sync               - Sync dependencies"
-              echo "  mdl --help                - Run mudyla CLI"
+            export FPATH="''${PWD}/completions"
+
+            # Enable completions in dev shell without system install
+            # Use PWD so we get the actual working directory, not the nix store path
+            if [ -n "''${BASH_VERSION}" ]; then
+              source "''${PWD}/completions/mdl.bash"
             fi
           '';
         };
