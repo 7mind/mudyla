@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import mistune
+
 from ..ast.models import (
     ActionDefinition,
     ActionVersion,
@@ -31,7 +33,6 @@ from .combinators import (
     parse_passthrough_definition,
     parse_vars_definition,
 )
-from .simple_markdown_parser import parse_sections as simple_parse_sections, extract_code_blocks
 
 
 @dataclass
@@ -181,16 +182,128 @@ class MarkdownParser:
         return actions, arguments, flags, axis, environment_vars, passthrough
 
     def _extract_sections(self, content: str) -> list[Section]:
-        """Extract all top-level sections from markdown content."""
-        simple_sections = simple_parse_sections(content)
-        return [
-            Section(
-                title=s.title,
-                content=s.content,
-                line_number=s.line_number
-            )
-            for s in simple_sections
-        ]
+        """Extract all top-level sections from markdown content using mistune AST."""
+        # Create mistune parser with AST renderer
+        ast_parser = mistune.create_markdown(renderer='ast')
+        ast = ast_parser(content)
+
+        sections = []
+        current_section_title = None
+        current_section_content = []
+        current_section_line = 0
+
+        for node in ast:
+            if node['type'] == 'heading' and node.get('attrs', {}).get('level') == 1:
+                # Save previous section if exists
+                if current_section_title is not None:
+                    sections.append(Section(
+                        title=current_section_title,
+                        content=''.join(current_section_content),
+                        line_number=current_section_line
+                    ))
+
+                # Start new section
+                current_section_title = self._extract_text_from_node(node)
+                current_section_content = []
+                current_section_line = 1  # mistune doesn't provide line numbers in AST
+            elif current_section_title is not None:
+                # Add node content to current section
+                current_section_content.append(self._render_node_to_markdown(node))
+
+        # Save last section
+        if current_section_title is not None:
+            sections.append(Section(
+                title=current_section_title,
+                content=''.join(current_section_content),
+                line_number=current_section_line
+            ))
+
+        return sections
+
+    def _extract_text_from_node(self, node: dict) -> str:
+        """Extract plain text from an AST node."""
+        if node['type'] == 'text':
+            return node.get('raw', '')
+
+        # For heading or other container nodes, recursively extract text from children
+        children = node.get('children', [])
+        if children:
+            return ''.join(self._extract_text_from_node(child) for child in children)
+
+        # For inline code or other inline elements
+        if 'raw' in node:
+            return node['raw']
+
+        return ''
+
+    def _render_node_to_markdown(self, node: dict) -> str:
+        """Render an AST node back to markdown."""
+        node_type = node['type']
+
+        if node_type == 'paragraph':
+            children_text = ''.join(self._render_node_to_markdown(child) for child in node.get('children', []))
+            return children_text + '\n\n'
+
+        elif node_type == 'heading':
+            level = node.get('attrs', {}).get('level', 1)
+            # Render children to preserve inline formatting (like codespan)
+            text = ''.join(self._render_node_to_markdown(child) for child in node.get('children', []))
+            return f"{'#' * level} {text}\n\n"
+
+        elif node_type == 'block_code':
+            language = node.get('attrs', {}).get('info', '')
+            code = node.get('raw', '')
+            return f"```{language}\n{code}```\n\n"
+
+        elif node_type == 'list':
+            items = []
+            for child in node.get('children', []):
+                if child['type'] == 'list_item':
+                    item_content = ''.join(self._render_node_to_markdown(c) for c in child.get('children', []))
+                    items.append(f"- {item_content.strip()}\n")
+            return ''.join(items) + '\n'
+
+        elif node_type == 'text':
+            return node.get('raw', '')
+
+        elif node_type == 'codespan':
+            return f"`{node.get('raw', '')}`"
+
+        elif node_type == 'softbreak' or node_type == 'linebreak':
+            return '\n'
+
+        # Default: try to render children if present
+        children = node.get('children', [])
+        if children:
+            return ''.join(self._render_node_to_markdown(child) for child in children)
+
+        return ''
+
+    def _extract_code_blocks_from_content(self, content: str) -> list[tuple[str, str]]:
+        """Extract code blocks from markdown content using mistune AST.
+
+        Returns:
+            List of (language, code) tuples
+        """
+        ast_parser = mistune.create_markdown(renderer='ast')
+        ast = ast_parser(content)
+
+        code_blocks = []
+
+        def walk_ast(nodes):
+            for node in nodes:
+                if node['type'] == 'block_code':
+                    language = node.get('attrs', {}).get('info', 'bash')
+                    code = node.get('raw', '')
+                    code_blocks.append((language, code))
+
+                # Recursively walk children
+                children = node.get('children', [])
+                if children:
+                    walk_ast(children)
+
+        walk_ast(ast)
+        return code_blocks
 
     def _parse_arguments_section(
         self, section: Section, file_path: Path
@@ -462,7 +575,7 @@ class MarkdownParser:
 
         # Extract code blocks from each conditional section
         for conditions, content, line_offset in conditional_sections:
-            code_blocks = extract_code_blocks(content)
+            code_blocks = self._extract_code_blocks_from_content(content)
 
             # Create a version for each code block
             for language, code in code_blocks:
