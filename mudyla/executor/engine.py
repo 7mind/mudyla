@@ -540,7 +540,11 @@ class ExecutionEngine:
         from mudyla.executor.language_runtime import ExecutionContext
 
         context = ExecutionContext(
-            system_vars={"project-root": str(self.project_root)},
+            system_vars={
+                "project-root": str(self.project_root),
+                "run-dir": str(self.run_directory),
+                "action-dir": str(action_dir),
+            },
             env_vars=dict(os.environ) | self.environment_vars,
             args=self.args,
             flags=self.flags,
