@@ -12,5 +12,5 @@ if [ -n "$ZSH_VERSION" ]; then
   autoload -Uz _mdl 2>/dev/null || true
   compdef _mdl mdl 2>/dev/null || true
 elif [ -n "$BASH_VERSION" ]; then
-  . "${COMPLETION_DIR}/mdl.bash"
+  . "${COMPLETION_DIR}/../bash-completion/completions/mdl/mdl.bash"
 fi
