@@ -84,15 +84,7 @@
             # Use PWD so we get the actual working directory, not the nix store path
             if [ -n "''${BASH_VERSION}" ]; then
               if [ -f "''${PWD}/completions/mdl.bash" ]; then
-                echo "Loading bash completion for mdl..." >&2
                 source "''${PWD}/completions/mdl.bash"
-                if complete -p mdl >/dev/null 2>&1; then
-                  echo "✓ Bash completion loaded successfully" >&2
-                else
-                  echo "✗ Bash completion failed to load" >&2
-                fi
-              else
-                echo "✗ Completion file not found: ''${PWD}/completions/mdl.bash" >&2
               fi
             elif [ -n "''${ZSH_VERSION}" ]; then
               # Ensure project completions are on fpath before compinit
