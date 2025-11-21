@@ -10,21 +10,21 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-
         python = pkgs.python312;
+        pythonPackages = python.pkgs;
 
         # Build package using Python build tools
-        mudyla = pkgs.python312Packages.buildPythonApplication {
+        mudyla = pythonPackages.buildPythonApplication {
           pname = "mudyla";
           version = "0.1.0";
           src = ./.;
           format = "pyproject";
 
-          nativeBuildInputs = with pkgs.python312Packages; [
+          nativeBuildInputs = with pythonPackages; [
             hatchling
           ];
 
-          propagatedBuildInputs = with pkgs.python312Packages; [
+          propagatedBuildInputs = with pythonPackages; [
             mistune
             pyparsing
             rich
@@ -33,7 +33,7 @@
           ];
 
           postInstall = ''
-            cp $src/mudyla/runtime.sh $out/lib/python3.12/site-packages/mudyla/
+            cp $src/mudyla/runtime.sh $out/${python.sitePackages}/mudyla/
           '';
 
           meta = {
