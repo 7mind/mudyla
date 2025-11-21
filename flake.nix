@@ -94,18 +94,21 @@
             fi
 
             # Enable completions in dev shell without system install
-            export FPATH="${toString ./.}/completions''${FPATH:+:''${FPATH}}"
-            if [ -n "$BASH_VERSION" ]; then
-              source "${toString ./.}/completions/mdl.bash" >/dev/null 2>&1 || true
-            elif [ -n "$ZSH_VERSION" ]; then
+            # Use PWD so we get the actual working directory, not the nix store path
+            if [ -n "''${BASH_VERSION}" ]; then
+              [ -f "''${PWD}/completions/mdl.bash" ] && source "''${PWD}/completions/mdl.bash" >/dev/null 2>&1 || true
+            elif [ -n "''${ZSH_VERSION}" ]; then
               # Ensure project completions are on fpath before compinit
-              typeset -U fpath
-              fpath=("${toString ./.}/completions" $fpath)
-              autoload -Uz compinit
-              compinit -i >/dev/null 2>&1 || true
-              # Explicitly load the completion function and bind it
-              autoload -Uz _mdl 2>/dev/null || true
-              compdef _mdl mdl 2>/dev/null || true
+              if [ -d "''${PWD}/completions" ]; then
+                typeset -U fpath
+                fpath=("''${PWD}/completions" ''${fpath})
+                export FPATH="''${PWD}/completions''${FPATH:+:''${FPATH}}"
+                autoload -Uz compinit
+                compinit -i >/dev/null 2>&1 || true
+                # Explicitly load the completion function and bind it
+                autoload -Uz _mdl 2>/dev/null || true
+                compdef _mdl mdl 2>/dev/null || true
+              fi
             fi
           '';
         };

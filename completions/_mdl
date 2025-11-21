@@ -7,5 +7,3 @@ _mdl() {
   # Complete actions with colon prefix
   _describe -t actions 'mudyla action' actions -P ':'
 }
-
-_mdl "$@"
