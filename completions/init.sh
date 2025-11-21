@@ -1,4 +1,4 @@
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-${(%):-%N}}")" >/dev/null 2>&1 && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-${(%):-%N}}")" >/dev/null 2>&1 && pwd)"/../share/mudyla
 
 if [ -n "$ZSH_VERSION" ]; then
   . "${SCRIPT_DIR}/init.zsh"

@@ -35,7 +35,8 @@
             mkdir -p $out/share/bash-completion/completions
             mkdir -p $out/share/zsh/site-functions
             mkdir -p $out/share/mudyla
-            cp $src/completions/init.sh $out/share/mudyla/init.sh
+            cp $src/completions/init.sh $out/${python.sitePackages}/mudyla-autocomplete
+
             cp $src/completions/mdl.bash $out/share/bash-completion/completions/mdl
             cp $src/completions/_mdl $out/share/zsh/site-functions/_mdl
             cp $src/completions/init.zsh $out/share/mudyla/init.zsh
@@ -91,11 +92,6 @@
         apps.default = {
           type = "app";
           program = "${mudyla}/bin/mdl";
-        };
-
-        apps.mudyla-completion = {
-          type = "app";
-          program = "${mudyla}/share/mudyla/init.sh";
         };
       }
     );
