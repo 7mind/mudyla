@@ -246,6 +246,9 @@ class ActionDefinition:
 
     location: SourceLocation
 
+    description: str = ""
+    """Human-readable description extracted from Markdown"""
+
     _dependency_cache: Optional[set[str]] = field(default=None, init=False, repr=False)
     """Cached set of action dependencies"""
 

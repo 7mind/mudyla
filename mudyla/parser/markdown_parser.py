@@ -431,6 +431,8 @@ class MarkdownParser:
             section_name=section.title,
         )
 
+        description = self._extract_action_description(section)
+
         # Parse vars subsection if present
         required_env_vars = self._parse_vars_subsection(section, file_path)
 
@@ -454,6 +456,7 @@ class MarkdownParser:
             versions=versions,
             required_env_vars=required_env_vars,
             location=location,
+            description=description,
         )
 
     def _parse_vars_subsection(
@@ -486,6 +489,17 @@ class MarkdownParser:
                     vars_dict[parsed["var_name"]] = parsed["description"]
 
         return vars_dict
+
+    def _extract_action_description(self, section: Section) -> str:
+        """Extract description text before code blocks or subsections."""
+        description_lines: list[str] = []
+        for line in section.content.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("```") or stripped.startswith("##"):
+                break
+            description_lines.append(line)
+
+        return "\n".join(description_lines).strip()
 
     def _parse_action_versions(
         self, section: Section, action_name: str, file_path: Path

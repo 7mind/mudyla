@@ -382,6 +382,12 @@ class CLI:
 
             print(formatted_name)
 
+            if action.description:
+                for line in action.description.splitlines():
+                    stripped_line = line.strip()
+                    if stripped_line:
+                        print(f"    {color.dim(stripped_line)}")
+
             if deps:
                 dep_str = ', '.join(sorted(deps))
                 print(f"    {color.dim('Dependencies:')} {dep_str}")
