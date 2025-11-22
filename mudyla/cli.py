@@ -313,19 +313,20 @@ class CLI:
             if arg_def.default_value is not None:
                 custom_args[arg_name] = arg_def.default_value
 
-    def _visualize_execution_plan(self, graph, execution_order: list[str], goals: list[str], color, output: OutputFormatter) -> None:
+    def _visualize_execution_plan(self, graph, execution_order, goals: list[str], color, output: OutputFormatter) -> None:
         """Visualize execution plan as a tree.
 
         Args:
             graph: The execution graph
-            execution_order: List of actions in execution order
-            goals: List of goal actions
+            execution_order: List of action keys in execution order
+            goals: List of goal action names
             color: Color formatter
             output: Output formatter
         """
         # Create a tree-like visualization showing dependencies
-        for i, action_name in enumerate(execution_order, 1):
-            node = graph.get_node(action_name)
+        for i, action_key in enumerate(execution_order, 1):
+            action_name = str(action_key)
+            node = graph.get_node(action_key)
             is_goal = action_name in goals
             goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""
 
@@ -338,8 +339,10 @@ class CLI:
             else:
                 # Has dependencies - show them
                 dep_names = []
-                for dep in sorted(node.dependencies):
-                    dep_num = execution_order.index(dep) + 1
+                # Sort dependencies by their action name for deterministic output
+                sorted_deps = sorted(node.dependencies, key=lambda k: k.id.name)
+                for dep_key in sorted_deps:
+                    dep_num = execution_order.index(dep_key) + 1
                     dep_names.append(f"{dep_num}")
 
                 deps_str = ",".join(dep_names)

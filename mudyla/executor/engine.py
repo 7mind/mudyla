@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from ..ast.types import ReturnType
 from ..ast.models import ActionDefinition, ActionVersion
-from ..dag.graph import ActionGraph
+from ..dag.graph import ActionGraph, ActionKey
 from ..utils.colors import ColorFormatter
 from ..utils.output import OutputFormatter
 from .runtime_registry import RuntimeRegistry
@@ -215,7 +215,9 @@ class ExecutionEngine:
         table_manager = None
         if self.use_rich_table:
             from .task_table import TaskTableManager
-            table_manager = TaskTableManager(execution_order, no_color=self.no_color)
+            # Convert ActionKey list to action names for table display
+            action_names = [str(key) for key in execution_order]
+            table_manager = TaskTableManager(action_names, no_color=self.no_color)
             table_manager.start()
 
         # Store table manager for access by _execute_action
@@ -227,8 +229,9 @@ class ExecutionEngine:
             action_results: dict[str, ActionResult] = {}
             restored_actions: list[str] = []
 
-            for action_name in execution_order:
-                node = self.graph.get_node(action_name)
+            for action_key in execution_order:
+                action_name = str(action_key)
+                node = self.graph.get_node(action_key)
 
                 # Update table or print start message
                 if table_manager:
@@ -284,15 +287,16 @@ class ExecutionEngine:
         # Track total execution time
         graph_start_time = time.time()
 
-        pending_deps: dict[str, set[str]] = {
-            name: set(node.dependencies) for name, node in self.graph.nodes.items()
+        # Use ActionKey throughout for type safety
+        pending_deps: dict[ActionKey, set[ActionKey]] = {
+            key: set(node.dependencies) for key, node in self.graph.nodes.items()
         }
-        dependents: dict[str, set[str]] = {
-            name: set(node.dependents) for name, node in self.graph.nodes.items()
+        dependents: dict[ActionKey, set[ActionKey]] = {
+            key: set(node.dependents) for key, node in self.graph.nodes.items()
         }
-        ready = [name for name, deps in pending_deps.items() if len(deps) == 0]
-        scheduled: set[str] = set()
-        completed: set[str] = set()
+        ready = [key for key, deps in pending_deps.items() if len(deps) == 0]
+        scheduled: set[ActionKey] = set()
+        completed: set[ActionKey] = set()
         action_outputs: dict[str, dict[str, Any]] = {}
         action_results: dict[str, ActionResult] = {}
         lock = threading.Lock()
@@ -306,7 +310,9 @@ class ExecutionEngine:
             try:
                 execution_order = self.graph.get_execution_order()
                 from .task_table import TaskTableManager
-                table_manager = TaskTableManager(execution_order, no_color=self.no_color)
+                # Convert ActionKey list to action names for table display
+                action_names = [str(key) for key in execution_order]
+                table_manager = TaskTableManager(action_names, no_color=self.no_color)
                 table_manager.start()
             except ValueError:
                 # If we can't get execution order, skip table
@@ -318,8 +324,9 @@ class ExecutionEngine:
         # Track restored actions
         restored_actions: list[str] = []
 
-        def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_name: str):
-            scheduled.add(action_name)
+        def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_key: ActionKey):
+            action_name = str(action_key)
+            scheduled.add(action_key)
             # Update table or print start message
             if table_manager:
                 table_manager.mark_running(action_name)
@@ -331,8 +338,8 @@ class ExecutionEngine:
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for name in ready:
-                    submit_action(executor, name)
+                for key in ready:
+                    submit_action(executor, key)
 
                 while running:
                     done, _ = concurrent.futures.wait(
@@ -391,16 +398,17 @@ class ExecutionEngine:
                                 run_directory=self.run_directory,
                             )
 
+                        action_key = ActionKey.from_name(action_name)
                         with lock:
                             action_outputs[action_name] = result.outputs
-                            completed.add(action_name)
+                            completed.add(action_key)
 
-                        for dependent in dependents.get(action_name, set()):
-                            if dependent in completed or dependent in scheduled:
+                        for dependent_key in dependents.get(action_key, set()):
+                            if dependent_key in completed or dependent_key in scheduled:
                                 continue
-                            pending_deps[dependent].discard(action_name)
-                            if len(pending_deps[dependent]) == 0:
-                                submit_action(executor, dependent)
+                            pending_deps[dependent_key].discard(action_key)
+                            if len(pending_deps[dependent_key]) == 0:
+                                submit_action(executor, dependent_key)
 
         except KeyboardInterrupt:
             for future in running:
@@ -448,7 +456,7 @@ class ExecutionEngine:
     def _prepare_action_execution(
         self, action_name: str, action_outputs: dict[str, dict[str, Any]]
     ) -> PreparedAction:
-        node = self.graph.get_node(action_name)
+        node = self.graph.get_node_by_name(action_name)
         action = node.action
         version = node.selected_version
 
@@ -929,7 +937,7 @@ class ExecutionEngine:
         shutil.copytree(prev_action_dir, current_action_dir)
 
         # Parse outputs
-        node = self.graph.get_node(action_name)
+        node = self.graph.get_node_by_name(action_name)
         version = node.selected_version
         outputs = {}
         if prev_output_path.exists() and version is not None:

@@ -6,6 +6,40 @@ from typing import Optional
 from ..ast.models import ActionDefinition, ActionVersion
 
 
+@dataclass(frozen=True)
+class ActionId:
+    """Unique identifier for an action (wrapper around action name)."""
+
+    name: str
+    """The action name"""
+
+    def __str__(self) -> str:
+        return self.name
+
+
+@dataclass(frozen=True)
+class ActionKey:
+    """Key for identifying action nodes in the dependency graph."""
+
+    id: ActionId
+    """The action identifier"""
+
+    def __str__(self) -> str:
+        return str(self.id)
+
+    @classmethod
+    def from_name(cls, name: str) -> "ActionKey":
+        """Create an ActionKey from an action name string.
+
+        Args:
+            name: Action name
+
+        Returns:
+            ActionKey instance
+        """
+        return cls(id=ActionId(name=name))
+
+
 @dataclass
 class ActionNode:
     """Node in the action dependency graph."""
@@ -16,32 +50,53 @@ class ActionNode:
     selected_version: Optional[ActionVersion] = None
     """The selected version based on axis values"""
 
-    dependencies: set[str] = field(default_factory=set)
-    """Names of actions this node depends on"""
+    dependencies: set[ActionKey] = field(default_factory=set)
+    """Keys of actions this node depends on"""
 
-    dependents: set[str] = field(default_factory=set)
-    """Names of actions that depend on this node"""
+    dependents: set[ActionKey] = field(default_factory=set)
+    """Keys of actions that depend on this node"""
+
+    @property
+    def key(self) -> ActionKey:
+        """Get the key for this node."""
+        return ActionKey.from_name(self.action.name)
 
     def __hash__(self) -> int:
-        return hash(self.action.name)
+        return hash(self.key)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ActionNode):
             return False
-        return self.action.name == other.action.name
+        return self.key == other.key
 
 
 @dataclass
 class ActionGraph:
     """Dependency graph of actions."""
 
-    nodes: dict[str, ActionNode]
-    """All nodes in the graph indexed by action name"""
+    nodes: dict[ActionKey, ActionNode]
+    """All nodes in the graph indexed by action key"""
 
-    goals: set[str]
-    """Goal action names (roots of the graph)"""
+    goals: set[ActionKey]
+    """Goal action keys (roots of the graph)"""
 
-    def get_node(self, action_name: str) -> ActionNode:
+    def get_node(self, key: ActionKey) -> ActionNode:
+        """Get node by action key.
+
+        Args:
+            key: Action key
+
+        Returns:
+            Action node
+
+        Raises:
+            KeyError: If action not found
+        """
+        if key not in self.nodes:
+            raise KeyError(f"Action '{key}' not found in graph")
+        return self.nodes[key]
+
+    def get_node_by_name(self, action_name: str) -> ActionNode:
         """Get node by action name.
 
         Args:
@@ -53,108 +108,120 @@ class ActionGraph:
         Raises:
             KeyError: If action not found
         """
-        if action_name not in self.nodes:
-            raise KeyError(f"Action '{action_name}' not found in graph")
-        return self.nodes[action_name]
+        key = ActionKey.from_name(action_name)
+        return self.get_node(key)
 
-    def get_all_dependencies(self, action_name: str) -> set[str]:
+    def get_all_dependencies(self, key: ActionKey) -> set[ActionKey]:
         """Get all transitive dependencies of an action.
+
+        Args:
+            key: Action key
+
+        Returns:
+            Set of all dependency action keys
+        """
+        visited: set[ActionKey] = set()
+        self._collect_dependencies(key, visited)
+        visited.discard(key)  # Don't include the action itself
+        return visited
+
+    def get_all_dependencies_by_name(self, action_name: str) -> set[ActionKey]:
+        """Get all transitive dependencies of an action by name.
 
         Args:
             action_name: Action name
 
         Returns:
-            Set of all dependency action names
+            Set of all dependency action keys
         """
-        visited = set()
-        self._collect_dependencies(action_name, visited)
-        visited.discard(action_name)  # Don't include the action itself
-        return visited
+        key = ActionKey.from_name(action_name)
+        return self.get_all_dependencies(key)
 
-    def _collect_dependencies(self, action_name: str, visited: set[str]) -> None:
+    def _collect_dependencies(self, key: ActionKey, visited: set[ActionKey]) -> None:
         """Recursively collect dependencies."""
-        if action_name in visited:
+        if key in visited:
             return
 
-        visited.add(action_name)
-        node = self.get_node(action_name)
+        visited.add(key)
+        node = self.get_node(key)
 
-        for dep_name in node.dependencies:
-            self._collect_dependencies(dep_name, visited)
+        for dep_key in node.dependencies:
+            self._collect_dependencies(dep_key, visited)
 
-    def topological_sort(self) -> list[str]:
+    def topological_sort(self) -> list[ActionKey]:
         """Get topological sort of the graph.
 
         Returns:
-            List of action names in execution order
+            List of action keys in execution order
 
         Raises:
             ValueError: If graph contains cycles
         """
         # Kahn's algorithm
-        in_degree = {name: 0 for name in self.nodes}
+        in_degree = {key: 0 for key in self.nodes}
 
         for node in self.nodes.values():
-            for dep_name in node.dependencies:
-                in_degree[node.action.name] += 1
+            for dep_key in node.dependencies:
+                in_degree[node.key] += 1
 
-        queue = [name for name, degree in in_degree.items() if degree == 0]
-        result = []
+        queue = [key for key, degree in in_degree.items() if degree == 0]
+        result: list[ActionKey] = []
 
         while queue:
-            # Sort to make order deterministic
-            queue.sort()
-            action_name = queue.pop(0)
-            result.append(action_name)
+            # Sort to make order deterministic (by action name)
+            queue.sort(key=lambda k: k.id.name)
+            action_key = queue.pop(0)
+            result.append(action_key)
 
-            node = self.nodes[action_name]
-            for dependent_name in node.dependents:
-                in_degree[dependent_name] -= 1
-                if in_degree[dependent_name] == 0:
-                    queue.append(dependent_name)
+            node = self.nodes[action_key]
+            for dependent_key in node.dependents:
+                in_degree[dependent_key] -= 1
+                if in_degree[dependent_key] == 0:
+                    queue.append(dependent_key)
 
         if len(result) != len(self.nodes):
             # Graph has a cycle
             remaining = set(self.nodes.keys()) - set(result)
+            remaining_names = sorted(str(k) for k in remaining)
             raise ValueError(
-                f"Dependency graph contains cycles. Actions involved: {', '.join(sorted(remaining))}"
+                f"Dependency graph contains cycles. Actions involved: {', '.join(remaining_names)}"
             )
 
         return result
 
-    def find_cycle(self) -> Optional[list[str]]:
+    def find_cycle(self) -> Optional[list[ActionKey]]:
         """Find a cycle in the graph if one exists.
 
         Returns:
-            List of action names forming a cycle, or None if no cycle
+            List of action keys forming a cycle, or None if no cycle
         """
-        visited = set()
-        rec_stack = set()
-        path = []
+        visited: set[ActionKey] = set()
+        rec_stack: set[ActionKey] = set()
+        path: list[ActionKey] = []
 
-        def dfs(action_name: str) -> Optional[list[str]]:
-            visited.add(action_name)
-            rec_stack.add(action_name)
-            path.append(action_name)
+        def dfs(key: ActionKey) -> Optional[list[ActionKey]]:
+            visited.add(key)
+            rec_stack.add(key)
+            path.append(key)
 
-            node = self.nodes[action_name]
-            for dep_name in node.dependencies:
-                if dep_name not in visited:
-                    cycle = dfs(dep_name)
+            node = self.nodes[key]
+            for dep_key in node.dependencies:
+                if dep_key not in visited:
+                    cycle = dfs(dep_key)
                     if cycle:
                         return cycle
-                elif dep_name in rec_stack:
+                elif dep_key in rec_stack:
                     # Found a cycle
-                    cycle_start = path.index(dep_name)
-                    return path[cycle_start:] + [dep_name]
+                    cycle_start = path.index(dep_key)
+                    return path[cycle_start:] + [dep_key]
 
             path.pop()
-            rec_stack.remove(action_name)
+            rec_stack.remove(key)
             return None
 
-        for action_name in self.nodes:
-            if action_name not in visited:
-                cycle = dfs(action_name)
+        for key in self.nodes:
+            if key not in visited:
+                cycle = dfs(key)
                 if cycle:
                     return cycle
 
@@ -166,22 +233,22 @@ class ActionGraph:
         Returns:
             New pruned graph
         """
-        required_actions = set()
+        required_actions: set[ActionKey] = set()
 
         # Collect all dependencies of goals
         for goal in self.goals:
             required_actions.add(goal)
             required_actions.update(self.get_all_dependencies(goal))
 
-        pruned_nodes: dict[str, ActionNode] = {}
+        pruned_nodes: dict[ActionKey, ActionNode] = {}
 
         # Create deep copies of the nodes we keep so that pruning never mutates
         # the original graph (validator relies on this multiple times).
-        for name, node in self.nodes.items():
-            if name not in required_actions:
+        for key, node in self.nodes.items():
+            if key not in required_actions:
                 continue
 
-            pruned_nodes[name] = ActionNode(
+            pruned_nodes[key] = ActionNode(
                 action=node.action,
                 selected_version=node.selected_version,
                 dependencies=set(node.dependencies) & required_actions,
@@ -191,11 +258,11 @@ class ActionGraph:
         pruned_goals = {goal for goal in self.goals if goal in pruned_nodes}
         return ActionGraph(nodes=pruned_nodes, goals=pruned_goals)
 
-    def get_execution_order(self) -> list[str]:
+    def get_execution_order(self) -> list[ActionKey]:
         """Get execution order (topological sort of pruned graph).
 
         Returns:
-            List of action names in execution order
+            List of action keys in execution order
         """
         pruned = self.prune_to_goals()
         return pruned.topological_sort()

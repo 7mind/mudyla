@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..ast.expansions import ArgsExpansion, EnvExpansion, FlagsExpansion, ActionExpansion
 from ..ast.models import ParsedDocument
-from .graph import ActionGraph
+from .graph import ActionGraph, ActionKey
 
 
 class ValidationError(Exception):
@@ -93,17 +93,17 @@ class DAGValidator:
         """Validate that the graph is acyclic."""
         cycle = self.graph.find_cycle()
         if cycle:
-            cycle_str = " -> ".join(cycle)
+            cycle_str = " -> ".join(str(key) for key in cycle)
             raise ValidationError(f"Circular dependency detected: {cycle_str}")
 
     def _validate_dependencies_exist(self) -> None:
         """Validate that all action dependencies exist."""
         errors = []
         for node in self.graph.nodes.values():
-            for dep_name in node.dependencies:
-                if dep_name not in self.graph.nodes:
+            for dep_key in node.dependencies:
+                if dep_key not in self.graph.nodes:
                     errors.append(
-                        f"Action '{node.action.name}' depends on '{dep_name}' "
+                        f"Action '{node.action.name}' depends on '{dep_key}' "
                         f"which does not exist (at {node.action.location})"
                     )
 
@@ -291,10 +291,11 @@ class DAGValidator:
 
             # Check each dependency provides the required outputs
             for dep_action, output_names in required_outputs.items():
-                if dep_action not in pruned_graph.nodes:
+                dep_key = ActionKey.from_name(dep_action)
+                if dep_key not in pruned_graph.nodes:
                     continue  # This will be caught by dependency validation
 
-                dep_node = pruned_graph.nodes[dep_action]
+                dep_node = pruned_graph.nodes[dep_key]
                 if not dep_node.selected_version:
                     continue
 
