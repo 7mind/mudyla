@@ -63,8 +63,11 @@ Format:
 ```markdown
 # arguments
 
-- `args.arg-name`: type="default-value"; Description text
-- `args.mandatory-arg`: type; Description text
+- `args.arg-name`: Description text
+  - type: `string`
+  - default: `"default-value"`
+- `args.mandatory-arg`: Description text
+  - type: `string`
 ```
 
 Types: `int`, `string`, `file`, `directory`
@@ -838,7 +841,9 @@ Mudyla uses **parser combinators** (pyparsing library) for parsing Markdown synt
 - **Error handling**: Better error messages with context
 
 ### Parsed Elements:
-- **Arguments**: `- `args.name`: type="default"; description`
+- **Arguments**: 
+  - `- `args.name`: description`
+  - nested `- type: \`...\`` and optional `- default: \`"..."\``
 - **Flags**: `- `flags.name`: description`
 - **Axis**: `- `axis-name`=`{value1|value2*}`
 - **Passthrough vars**: `- `VARIABLE_NAME``
@@ -1249,4 +1254,3 @@ nix develop --ignore-environment \
 - Defining build modes or configurations
 - Setting tool-specific variables with known values
 - CI/CD pipelines needing exact environment state
-

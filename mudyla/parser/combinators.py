@@ -7,15 +7,11 @@ from pyparsing import (
     nums,
     Literal,
     Optional,
-    QuotedString,
     Regex,
     Suppress,
     ZeroOrMore,
     oneOf,
-    alphas8bit,
-    LineEnd,
     restOfLine,
-    pyparsing_common,
 )
 
 from ..ast.types import ReturnType
@@ -30,28 +26,9 @@ class MudylaGrammar:
         self.dot_separated = Word(alphas + "_", alphanums + "_-.")
         self.uppercase_identifier = Word(alphas.upper() + "_", alphas.upper() + nums + "_")
 
-        # Argument definition: - `args.name`: type="value"; description
-        # Example: - `args.output-dir`: directory="test-output"; Output directory
         backtick = Suppress("`")
-        args_prefix = Suppress("args.")
         colon = Suppress(":")
-        semicolon = Suppress(";")
         equals = Suppress("=")
-
-        arg_name = self.identifier
-        arg_type = oneOf(["int", "string", "bool", "file", "directory"], caseless=True)
-        arg_default = Optional(equals + QuotedString('"', escChar="\\"))
-        arg_description = restOfLine
-
-        self.argument_def = (
-            Suppress("-") +
-            backtick + args_prefix + arg_name("name") + backtick +
-            colon +
-            arg_type("type") +
-            arg_default("default") +
-            semicolon +
-            arg_description("description")
-        )
 
         # Flag definition: - `flags.name`: description
         # Example: - `flags.verbose`: Enable verbose output
@@ -146,33 +123,6 @@ class MudylaGrammar:
 
 
 GRAMMAR = MudylaGrammar()
-
-
-def parse_argument_definition(line: str) -> dict:
-    """Parse argument definition line.
-
-    Args:
-        line: Line containing argument definition
-
-    Returns:
-        Dict with keys: name, type, default (optional), description
-    """
-    grammar = GRAMMAR
-    try:
-        result = grammar.argument_def.parseString(line, parseAll=True)
-        # Extract default value string if present
-        default_value = None
-        if result.default:
-            default_value = str(result.default[0]) if len(result.default) > 0 else None
-
-        return {
-            "name": result.name,
-            "type": result.type.lower(),
-            "default": default_value,
-            "description": result.description.strip(),
-        }
-    except Exception:
-        return None
 
 
 def parse_flag_definition(line: str) -> dict:

@@ -1,7 +1,10 @@
 # arguments
 
-- `args.output-directory`: file="default-value"; text description
-- `args.mandatory-argument`: file; text description
+- `args.output-directory`: text description
+  - type: `file`
+  - default: `"default-value"`
+- `args.mandatory-argument`: text description
+  - type: `file`
 
 # flags
 
@@ -66,5 +69,4 @@ ret success: Bool=$?
       "+publishSigned"
     ret success: Bool=$?
 ```
-
 

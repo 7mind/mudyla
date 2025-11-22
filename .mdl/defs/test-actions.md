@@ -1,7 +1,11 @@
 # arguments
 
-- `args.output-dir`: directory="test-output"; Output directory for test results
-- `args.message`: string="Hello, Mudyla!"; Message to use in tests
+- `args.output-dir`: Output directory for test results
+  - type: `directory`
+  - default: `"test-output"`
+- `args.message`: Message to use in tests
+  - type: `string`
+  - default: `"Hello, Mudyla!"`
 
 # flags
 

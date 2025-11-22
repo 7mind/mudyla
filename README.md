@@ -88,7 +88,9 @@ Create `.mdl/defs/actions.md`:
 ```markdown
 # arguments
 
-- `args.output-dir`: directory="output"; Output directory
+- `args.output-dir`: Output directory for test results
+  - type: `directory`
+  - default: `"test-output"`
 
 # action: hello-world
 

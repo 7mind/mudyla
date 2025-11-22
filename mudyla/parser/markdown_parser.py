@@ -26,7 +26,6 @@ from .dependency_parser import DependencyParser
 from .expansion_parser import ExpansionParser
 from .return_parser import ReturnParser
 from .combinators import (
-    parse_argument_definition,
     parse_flag_definition,
     parse_axis_definition,
     parse_environment_definition,
@@ -55,10 +54,18 @@ class MarkdownParser:
     # Examples: `build-mode: release` or `build-mode: release, sys.platform: windows`
     CONDITION_PATTERN = re.compile(r"^definition\s+when\s+`([^`]+)`$")
 
-    # Pattern for argument definition: `args.name`: type="value"; description
-    # Note: List items are extracted without the leading "- "
-    ARG_PATTERN = re.compile(
-        r"^\s*`args\.([a-zA-Z][a-zA-Z0-9_-]*)`:\s*([a-zA-Z]+)(?:=\"([^\"]*)\")?\s*;\s*(.*)$"
+    # Pattern for argument definition (new multi-line syntax):
+    # - `args.name`: Description
+    #   - type: `directory`
+    #   - default: `"value"`
+    ARG_HEADER_PATTERN = re.compile(
+        r"^\s*-\s*`args\.([a-zA-Z][a-zA-Z0-9_-]*)`\s*:\s*(.+)$"
+    )
+    ARG_TYPE_PATTERN = re.compile(
+        r"^\s*-\s*type:\s*`?([a-zA-Z]+)`?\s*$"
+    )
+    ARG_DEFAULT_PATTERN = re.compile(
+        r"^\s*-\s*default:\s*`?(.+?)`?\s*$"
     )
 
     # Pattern for flag definition: `flags.name`: description
@@ -268,35 +275,117 @@ class MarkdownParser:
     def _parse_arguments_section(
         self, section: Section, file_path: Path
     ) -> dict[str, ArgumentDefinition]:
-        """Parse arguments section using parser combinators."""
-        arguments = {}
-        for line in section.content.split("\n"):
-            # Add leading "- " since markdown parser extracts list items without it
-            if line.strip() and not line.strip().startswith("-"):
-                line = "- " + line
-            parsed = parse_argument_definition(line)
-            if parsed:
-                try:
-                    arg_type = ReturnType.from_string(parsed["type"])
-                except ValueError as e:
-                    raise ValueError(
-                        f"{file_path}:{section.line_number}: {e}"
-                    )
+        """Parse arguments section using the new structured syntax."""
+        arguments: dict[str, ArgumentDefinition] = {}
+        current_block: dict[str, str | int | None] | None = None
 
-                arg_def = ArgumentDefinition(
-                    name=parsed["name"],
-                    arg_type=arg_type,
-                    default_value=parsed["default"],
-                    description=parsed["description"],
-                    location=SourceLocation(
-                        file_path=str(file_path),
-                        line_number=section.line_number,
-                        section_name=section.title,
-                    ),
+        def finalize_current() -> None:
+            nonlocal current_block
+            if current_block is None:
+                return
+
+            if current_block.get("type") is None:
+                raise ValueError(
+                    f"{file_path}:{current_block['line_number']}: "
+                    f"Argument 'args.{current_block['name']}' is missing a type declaration"
                 )
-                arguments[parsed["name"]] = arg_def
 
+            try:
+                arg_type = ReturnType.from_string(str(current_block["type"]))
+            except ValueError as exc:
+                type_line = current_block.get("type_line") or current_block["line_number"]
+                raise ValueError(f"{file_path}:{type_line}: {exc}")
+
+            name = str(current_block["name"])
+            if name in arguments:
+                existing = arguments[name]
+                raise ValueError(
+                    f"Duplicate argument 'args.{name}': first at {existing.location}, "
+                    f"second at {file_path}:{current_block['line_number']}"
+                )
+
+            description = str(current_block.get("description") or "").strip()
+            default_value = current_block.get("default")
+            if isinstance(default_value, str):
+                default_value = self._normalize_default_value(default_value)
+
+            arguments[name] = ArgumentDefinition(
+                name=name,
+                arg_type=arg_type,
+                default_value=default_value,  # Optional[str]
+                description=description,
+                location=SourceLocation(
+                    file_path=str(file_path),
+                    line_number=int(current_block["line_number"]),
+                    section_name=section.title,
+                ),
+            )
+            current_block = None
+
+        for offset, raw_line in enumerate(section.content.splitlines(), start=section.line_number + 1):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+
+            header_match = self.ARG_HEADER_PATTERN.match(stripped)
+            if header_match:
+                finalize_current()
+                current_block = {
+                    "name": header_match.group(1),
+                    "description": header_match.group(2).strip(),
+                    "type": None,
+                    "type_line": None,
+                    "default": None,
+                    "line_number": offset,
+                }
+                continue
+
+            type_match = self.ARG_TYPE_PATTERN.match(stripped)
+            default_match = self.ARG_DEFAULT_PATTERN.match(stripped)
+
+            if type_match:
+                if current_block is None:
+                    raise ValueError(
+                        f"{file_path}:{offset}: Type declaration must follow an argument header"
+                    )
+                if current_block.get("type") is not None:
+                    raise ValueError(
+                        f"{file_path}:{offset}: Duplicate type for argument 'args.{current_block['name']}'"
+                    )
+                current_block["type"] = type_match.group(1)
+                current_block["type_line"] = offset
+                continue
+
+            if default_match:
+                if current_block is None:
+                    raise ValueError(
+                        f"{file_path}:{offset}: Default declaration must follow an argument header"
+                    )
+                if current_block.get("default") is not None:
+                    raise ValueError(
+                        f"{file_path}:{offset}: Duplicate default for argument 'args.{current_block['name']}'"
+                    )
+                current_block["default"] = default_match.group(1)
+                continue
+
+            if stripped.startswith("-"):
+                target = f"args.{current_block['name']}" if current_block else "arguments"
+                raise ValueError(
+                    f"{file_path}:{offset}: Unexpected arguments line '{stripped}' for {target}"
+                )
+
+        finalize_current()
         return arguments
+
+    @staticmethod
+    def _normalize_default_value(raw_value: str) -> str:
+        """Strip Markdown/code fences and quotes from default values."""
+        value = raw_value.strip()
+        if value.startswith("`") and value.endswith("`") and len(value) >= 2:
+            value = value[1:-1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        return value
 
     def _parse_flags_section(
         self, section: Section, file_path: Path

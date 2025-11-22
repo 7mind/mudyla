@@ -71,18 +71,85 @@ object parser:
       buffer.toSeq
 
     private def parseArgumentsSection(section: Section, file: Path): Map[String, ArgumentDefinition] =
+      final case class ArgumentBlock(
+          name: String,
+          description: String,
+          lineNumber: Int,
+          argType: Option[String] = None,
+          typeLine: Option[Int] = None,
+          defaultValue: Option[String] = None,
+      ):
+        def withType(value: String, line: Int): ArgumentBlock =
+          if argType.nonEmpty then
+            throw new IllegalArgumentException(s"${file.toString}:$line: Duplicate type for argument 'args.$name'")
+          copy(argType = Some(value), typeLine = Some(line))
+
+        def withDefault(value: String, line: Int): ArgumentBlock =
+          if defaultValue.nonEmpty then
+            throw new IllegalArgumentException(s"${file.toString}:$line: Duplicate default for argument 'args.$name'")
+          copy(defaultValue = Some(value))
+
+      def normalizeDefault(raw: String): String =
+        val trimmed = raw.trim
+        val withoutTicks =
+          if trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length >= 2 then trimmed.slice(1, trimmed.length - 1).trim else trimmed
+        if withoutTicks.length >= 2 && withoutTicks.head == withoutTicks.last && (withoutTicks.head == '"' || withoutTicks.head == '\'') then
+          withoutTicks.slice(1, withoutTicks.length - 1)
+        else withoutTicks
+
+      val ArgHeader = "- `args.([a-zA-Z][a-zA-Z0-9_-]*)`: (.+)".r
+      val TypePattern = "-\\s*type:\\s*`?([a-zA-Z]+)`?".r
+      val DefaultPattern = "-\\s*default:\\s*`?(.+?)`?".r
+
       val result = mutable.LinkedHashMap.empty[String, ArgumentDefinition]
-      section.content.split("\n").foreach { line =>
+      var current: Option[ArgumentBlock] = None
+
+      def finalizeCurrent(): Unit =
+        current.foreach { block =>
+          val argTypeStr = block.argType.getOrElse {
+            throw new IllegalArgumentException(s"${file.toString}:${block.lineNumber}: Argument 'args.${block.name}' is missing a type declaration")
+          }
+          val typeLine = block.typeLine.getOrElse(block.lineNumber)
+          val argType =
+            try ReturnType.fromString(argTypeStr)
+            catch
+              case e: IllegalArgumentException =>
+                throw new IllegalArgumentException(s"${file.toString}:$typeLine: ${e.getMessage}")
+          if result.contains(block.name) then
+            val existing = result(block.name)
+            throw new IllegalArgumentException(
+              s"Duplicate argument 'args.${block.name}': first at ${existing.location}, second at ${SourceLocation(file.toString, block.lineNumber, section.title)}",
+            )
+          val defaultVal = block.defaultValue.map(normalizeDefault)
+          result(block.name) = ArgumentDefinition(block.name, argType, defaultVal, block.description, SourceLocation(file.toString, block.lineNumber, section.title))
+        }
+        current = None
+
+      for ((line, idx) <- section.content.split("\n").zipWithIndex) {
+        val lineNumber = section.lineNumber + idx + 1
         val trimmed = line.trim
         if trimmed.nonEmpty then
-          val normalized = if trimmed.startsWith("-") then trimmed else s"- $trimmed"
-          val ArgPattern = "- `args.([a-zA-Z][a-zA-Z0-9_-]*)`: ([a-zA-Z]+)(?:=\"([^\"]*)\")?; (.*)".r
-          normalized match
-            case ArgPattern(name, typ, default, desc) =>
-              val rt = ReturnType.fromString(typ)
-              result(name) = ArgumentDefinition(name, rt, Option(default), desc.trim, SourceLocation(file.toString, section.lineNumber, section.title))
+          trimmed match
+            case ArgHeader(name, desc) =>
+              finalizeCurrent()
+              current = Some(ArgumentBlock(name, desc.trim, lineNumber))
+            case TypePattern(tpe) =>
+              current match
+                case Some(block) => current = Some(block.withType(tpe, lineNumber))
+                case None => throw new IllegalArgumentException(s"${file.toString}:$lineNumber: Type declaration must follow an argument header")
+            case DefaultPattern(rawDefault) =>
+              current match
+                case Some(block) => current = Some(block.withDefault(rawDefault, lineNumber))
+                case None => throw new IllegalArgumentException(s"${file.toString}:$lineNumber: Default declaration must follow an argument header")
+            case other if other.startsWith("-") =>
+              current match
+                case Some(block) =>
+                  throw new IllegalArgumentException(s"${file.toString}:$lineNumber: Unexpected arguments line '$other' for args.${block.name}")
+                case None =>
+                  throw new IllegalArgumentException(s"${file.toString}:$lineNumber: Unexpected arguments line '$other'")
             case _ => ()
       }
+      finalizeCurrent()
       result.toMap
 
     private def parseFlagsSection(section: Section, file: Path): Map[String, FlagDefinition] =
