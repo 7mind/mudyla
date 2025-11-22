@@ -401,6 +401,24 @@ class CLI:
                 axis_str = ', '.join(sorted(axis_names))
                 print(f"    {color.dim('Axis:')} {color.warning(axis_str)}")
 
+            # Debug: show version count and conditions
+            if len(action.versions) > 1:
+                version_info = []
+                for i, version in enumerate(action.versions):
+                    cond_strs = []
+                    for cond in version.conditions:
+                        from .ast.models import AxisCondition, PlatformCondition
+                        if isinstance(cond, AxisCondition):
+                            cond_strs.append(f"{cond.axis_name}={cond.axis_value}")
+                        elif isinstance(cond, PlatformCondition):
+                            cond_strs.append(f"platform={cond.platform_value}")
+                    if cond_strs:
+                        version_info.append(f"v{i+1}[{', '.join(cond_strs)}]")
+                    else:
+                        version_info.append(f"v{i+1}[no conditions]")
+                if version_info:
+                    print(f"    {color.dim('Versions:')} {', '.join(version_info)}")
+
             print()
 
     def _list_action_names_ordered(self, document: ParsedDocument) -> list[str]:
