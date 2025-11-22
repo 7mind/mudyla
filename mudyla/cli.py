@@ -439,6 +439,24 @@ class CLI:
                 platform_str = ', '.join(sorted(platform_values))
                 print(f"    {color.dim('Platforms:')} {color.warning(platform_str)}")
 
+            # Show versions if action has multiple versions
+            if len(action.versions) > 1:
+                version_strs = []
+                for i, version in enumerate(action.versions, 1):
+                    cond_parts = []
+                    for cond in version.conditions:
+                        if isinstance(cond, AxisCondition):
+                            cond_parts.append(f"{cond.axis_name}: {cond.axis_value}")
+                        elif isinstance(cond, PlatformCondition):
+                            cond_parts.append(f"platform: {cond.platform_value}")
+
+                    if cond_parts:
+                        version_strs.append(f"{i} ({', '.join(cond_parts)})")
+                    else:
+                        version_strs.append(str(i))
+
+                print(f"    {color.dim('Versions:')} {', '.join(version_strs)}")
+
             print()
 
     def _list_action_names_ordered(self, document: ParsedDocument) -> list[str]:
