@@ -307,7 +307,6 @@ class CLI:
             print(f"\n{color.info('Available axes:')}\n")
             for axis_name in sorted(document.axis.keys()):
                 axis_def = document.axis[axis_name]
-                default_value = axis_def.get_default_value()
 
                 # Format values with default marked
                 value_strs = []
@@ -319,8 +318,6 @@ class CLI:
 
                 values_str = ', '.join(value_strs)
                 print(f"  {color.highlight(axis_name)}: {values_str}")
-                if default_value:
-                    print(f"    {color.dim(f'Default: {default_value}')}")
             print()
 
         print(f"{color.info('Available actions:')}\n")
