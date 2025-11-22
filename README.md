@@ -22,6 +22,7 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 
 - Parallel build: [![asciicast](https://asciinema.org/a/757430.svg)](https://asciinema.org/a/757430)
 - Checkpoint recovery: [![asciicast](https://asciinema.org/a/757433.svg)](https://asciinema.org/a/757433)
+- Weak dependencies: [![asciicast](https://asciinema.org/a/757574.svg)](https://asciinema.org/a/757574)
 
 ## Features
 
