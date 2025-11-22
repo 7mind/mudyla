@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Mudyla Runtime - Sourced by all generated scripts
-# This provides the ret() and dep() pseudo-commands
+# This provides the ret(), dep(), and weak() pseudo-commands
 
 # dep pseudo-command (no-op, used for dependency declaration)
 dep() {
     # Dependencies are extracted at parse time, this is a no-op at runtime
+    :
+}
+
+# weak pseudo-command (no-op, used for weak dependency declaration)
+weak() {
+    # Weak dependencies are extracted at parse time, this is a no-op at runtime
     :
 }
 

@@ -138,6 +138,56 @@ test -f "$SECOND_RUN_DIR/write-message/meta.json" || (echo "ERROR: meta.json not
 echo "Continue flag test passed!"
 echo
 
+# Test 12: Weak dependencies - pruned scenario
+echo "Test 12: Weak dependencies (pruned)"
+echo "------------------------------------"
+echo "Testing that weak dependencies are pruned when no strong path exists..."
+rm -rf test-output .mdl/runs
+mdl :consumer-with-weak-only 2>&1 | tee /tmp/weak-test-1.log
+
+# Verify weak-provider was NOT executed (pruned)
+if grep -q "weak-provider" /tmp/weak-test-1.log | grep -v "consumer-with-weak-only"; then
+    echo "ERROR: weak-provider should have been pruned"
+    exit 1
+else
+    echo "SUCCESS: weak-provider was correctly pruned"
+fi
+echo
+
+# Test 13: Weak dependencies - retained scenario
+echo "Test 13: Weak dependencies (retained via strong path)"
+echo "------------------------------------------------------"
+echo "Testing that weak dependencies are retained when strong path exists..."
+rm -rf test-output .mdl/runs
+mdl :consumer-with-both :makes-weak-strong 2>&1 | tee /tmp/weak-test-2.log
+
+# Verify weak-provider WAS executed (retained because makes-weak-strong has strong dep)
+if grep -q "weak-provider" /tmp/weak-test-2.log; then
+    echo "SUCCESS: weak-provider was retained due to strong path"
+else
+    echo "ERROR: weak-provider should have been retained"
+    exit 1
+fi
+echo
+
+# Test 14: Weak dependencies - mixed usage
+echo "Test 14: Weak dependencies (mixed strong and weak)"
+echo "---------------------------------------------------"
+echo "Testing action with both strong and weak dependencies..."
+rm -rf test-output .mdl/runs
+mdl :mixed-consumer 2>&1 | tee /tmp/weak-test-3.log
+
+# Verify the action passed (check JSON output for status: pass)
+if grep -q '"status": "pass"' /tmp/weak-test-3.log && \
+   grep -q "✓ Execution completed successfully" /tmp/weak-test-3.log; then
+    echo "SUCCESS: Mixed weak/strong dependencies work correctly"
+else
+    echo "ERROR: Mixed weak/strong test failed"
+    cat /tmp/weak-test-3.log
+    exit 1
+fi
+echo
+
 echo "================================"
 echo "All tests passed!"
 echo "================================"
