@@ -395,29 +395,27 @@ class CLI:
                 ]
                 print(f"    {color.dim('Returns:')} {', '.join(return_strs)}")
 
-            # Axis (show if any version has axis conditions)
-            axis_names = action.get_required_axis()
+            # Collect all axis and platform conditions across versions
+            from .ast.models import AxisCondition, PlatformCondition
+            axis_names = set()
+            platform_values = set()
+
+            for version in action.versions:
+                for cond in version.conditions:
+                    if isinstance(cond, AxisCondition):
+                        axis_names.add(cond.axis_name)
+                    elif isinstance(cond, PlatformCondition):
+                        platform_values.add(cond.platform_value)
+
+            # Show axis if present
             if axis_names:
                 axis_str = ', '.join(sorted(axis_names))
                 print(f"    {color.dim('Axis:')} {color.warning(axis_str)}")
 
-            # Debug: show version count and conditions
-            if len(action.versions) > 1:
-                version_info = []
-                for i, version in enumerate(action.versions):
-                    cond_strs = []
-                    for cond in version.conditions:
-                        from .ast.models import AxisCondition, PlatformCondition
-                        if isinstance(cond, AxisCondition):
-                            cond_strs.append(f"{cond.axis_name}={cond.axis_value}")
-                        elif isinstance(cond, PlatformCondition):
-                            cond_strs.append(f"platform={cond.platform_value}")
-                    if cond_strs:
-                        version_info.append(f"v{i+1}[{', '.join(cond_strs)}]")
-                    else:
-                        version_info.append(f"v{i+1}[no conditions]")
-                if version_info:
-                    print(f"    {color.dim('Versions:')} {', '.join(version_info)}")
+            # Show platforms if present
+            if platform_values:
+                platform_str = ', '.join(sorted(platform_values))
+                print(f"    {color.dim('Platforms:')} {color.warning(platform_str)}")
 
             print()
 
