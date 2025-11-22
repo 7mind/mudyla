@@ -40,10 +40,10 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 
 ```bash
 # Run directly
-nix run github:yourusername/mudyla -- :your-action
+nix run github:7mind/mudyla -- :your-action
 
 # Install to profile
-nix profile install github:yourusername/mudyla
+nix profile install github:7mind/mudyla
 
 # Development environment (with uv)
 nix develop
@@ -52,7 +52,7 @@ nix develop
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/mudyla
+git clone https://github.com/7mind/mudyla
 cd mudyla
 
 # Option 1: With direnv (automatic)
@@ -69,7 +69,7 @@ nix develop  # Sets up uv environment manually
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and install
-git clone https://github.com/yourusername/mudyla
+git clone https://github.com/7mind/mudyla
 cd mudyla
 uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
