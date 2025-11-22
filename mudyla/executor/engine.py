@@ -667,85 +667,75 @@ class ExecutionEngine:
             if hasattr(self, '_current_table_manager'):
                 table_manager = self._current_table_manager
 
-            if self.github_actions or self.verbose:
-                # Stream output to console AND write to files
-                import sys
-                import threading
+            # Always use streaming to enable real-time size updates
+            import sys
+            import threading
 
-                with open(stdout_path, "w") as stdout_file, open(
-                    stderr_path, "w"
-                ) as stderr_file:
-                    process = subprocess.Popen(
-                        exec_cmd,
-                        cwd=str(self.project_root),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        env=os.environ.copy(),
-                        text=True,
-                        bufsize=1,
-                    )
+            with open(stdout_path, "w") as stdout_file, open(
+                stderr_path, "w"
+            ) as stderr_file:
+                process = subprocess.Popen(
+                    exec_cmd,
+                    cwd=str(self.project_root),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=os.environ.copy(),
+                    text=True,
+                    bufsize=1,
+                )
 
-                    # Use nonlocal to track sizes across threads
-                    size_lock = threading.Lock()
+                # Use nonlocal to track sizes across threads
+                size_lock = threading.Lock()
 
-                    def stream_output(pipe, console_stream, file_stream, is_stdout: bool):
-                        """Stream output from pipe to both console and file."""
-                        nonlocal stdout_size, stderr_size
-                        if pipe:
-                            for line in pipe:
+                def stream_output(pipe, console_stream, file_stream, is_stdout: bool):
+                    """Stream output from pipe to file (and optionally console)."""
+                    nonlocal stdout_size, stderr_size
+                    if pipe:
+                        for line in pipe:
+                            # Write to console only in verbose/CI mode
+                            if self.github_actions or self.verbose:
                                 console_stream.write(line)
                                 console_stream.flush()
-                                file_stream.write(line)
 
-                                # Track size and update table
-                                line_bytes = len(line.encode('utf-8'))
-                                with size_lock:
-                                    if is_stdout:
-                                        stdout_size += line_bytes
-                                    else:
-                                        stderr_size += line_bytes
+                            # Always write to file
+                            file_stream.write(line)
 
-                                    # Update table manager if available
-                                    if table_manager and self.use_rich_table:
-                                        table_manager.update_output_sizes(
-                                            action_name, stdout_size, stderr_size
-                                        )
+                            # Track size and update table
+                            line_bytes = len(line.encode('utf-8'))
+                            with size_lock:
+                                if is_stdout:
+                                    stdout_size += line_bytes
+                                else:
+                                    stderr_size += line_bytes
 
-                    # Start threads to read stdout and stderr simultaneously
-                    stdout_thread = threading.Thread(
-                        target=stream_output,
-                        args=(process.stdout, sys.stdout, stdout_file, True),
-                    )
-                    stderr_thread = threading.Thread(
-                        target=stream_output,
-                        args=(process.stderr, sys.stderr, stderr_file, False),
-                    )
+                                # Update table manager if available (in real-time)
+                                if table_manager and self.use_rich_table:
+                                    table_manager.update_output_sizes(
+                                        action_name, stdout_size, stderr_size
+                                    )
 
-                    stdout_thread.start()
-                    stderr_thread.start()
+                # Start threads to read stdout and stderr simultaneously
+                stdout_thread = threading.Thread(
+                    target=stream_output,
+                    args=(process.stdout, sys.stdout, stdout_file, True),
+                )
+                stderr_thread = threading.Thread(
+                    target=stream_output,
+                    args=(process.stderr, sys.stderr, stderr_file, False),
+                )
 
-                    # Wait for process to complete
-                    returncode = process.wait()
+                stdout_thread.start()
+                stderr_thread.start()
 
-                    # Wait for output threads to finish
-                    stdout_thread.join()
-                    stderr_thread.join()
+                # Wait for process to complete
+                returncode = process.wait()
 
-                if self.github_actions:
-                    print("::endgroup::")
-            else:
-                # Normal mode - only write to files
-                with open(stdout_path, "w") as stdout_file, open(
-                    stderr_path, "w"
-                ) as stderr_file:
-                    result = subprocess.run(
-                        exec_cmd,
-                        cwd=str(self.project_root),
-                        stdout=stdout_file,
-                        stderr=stderr_file,
-                        env=os.environ.copy(),
-                    )
-                    returncode = result.returncode
+                # Wait for output threads to finish
+                stdout_thread.join()
+                stderr_thread.join()
+
+            if self.github_actions:
+                print("::endgroup::")
 
             # Get final sizes from files
             if stdout_path.exists():
