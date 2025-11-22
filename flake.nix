@@ -81,7 +81,7 @@
               touch .venv/.mudyla-installed
             fi
 
-            export FPATH="''${PWD}/completions"
+            #export FPATH="''${PWD}/completions"
 
             # Enable completions in dev shell without system install
             # Use PWD so we get the actual working directory, not the nix store path

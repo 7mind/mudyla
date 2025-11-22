@@ -37,6 +37,8 @@ class ActionResult:
     exit_code: int = 0
     error_message: Optional[str] = None
     restored: bool = False
+    stdout_size: int = 0
+    stderr_size: int = 0
 
 
 @dataclass
@@ -197,6 +199,9 @@ class ExecutionEngine:
             table_manager = TaskTableManager(execution_order, no_color=self.no_color)
             table_manager.start()
 
+        # Store table manager for access by _execute_action
+        self._current_table_manager = table_manager
+
         try:
             # Execute actions in order
             action_outputs: dict[str, dict[str, Any]] = {}
@@ -222,6 +227,9 @@ class ExecutionEngine:
 
                 # Update table or print completion message
                 if table_manager:
+                    # Update sizes first
+                    table_manager.update_output_sizes(action_name, result.stdout_size, result.stderr_size)
+                    # Then update status
                     if result.restored:
                         table_manager.mark_restored(action_name, result.duration_seconds)
                     elif result.success:
@@ -310,6 +318,9 @@ class ExecutionEngine:
                 # If we can't get execution order, skip table
                 pass
 
+        # Store table manager for access by _execute_action
+        self._current_table_manager = table_manager
+
         # Track restored actions
         restored_actions: list[str] = []
 
@@ -362,6 +373,9 @@ class ExecutionEngine:
 
                         # Update table or print completion message
                         if table_manager:
+                            # Update sizes first
+                            table_manager.update_output_sizes(action_name, result.stdout_size, result.stderr_size)
+                            # Then update status
                             if result.restored:
                                 table_manager.mark_restored(action_name, result.duration_seconds)
                             elif result.success:
@@ -444,6 +458,8 @@ class ExecutionEngine:
         duration: float,
         exit_code: int,
         error_message: Optional[str] = None,
+        stdout_size: int = 0,
+        stderr_size: int = 0,
     ) -> None:
         """Write meta.json for an action."""
         meta = {
@@ -453,6 +469,8 @@ class ExecutionEngine:
             "end_time": end_time,
             "duration_seconds": duration,
             "exit_code": exit_code,
+            "stdout_size": stdout_size,
+            "stderr_size": stderr_size,
         }
         if error_message:
             meta["error_message"] = error_message
@@ -522,6 +540,8 @@ class ExecutionEngine:
             duration_seconds=meta.get("duration_seconds", 0.0),
             exit_code=meta.get("exit_code", 0),
             restored=True,
+            stdout_size=meta.get("stdout_size", 0),
+            stderr_size=meta.get("stderr_size", 0),
         )
 
     def _execute_action(
@@ -638,6 +658,15 @@ class ExecutionEngine:
         start_time_iso = start_time.isoformat()
 
         try:
+            # Track output sizes
+            stdout_size = 0
+            stderr_size = 0
+
+            # Get table manager from execution context if available
+            table_manager = None
+            if hasattr(self, '_current_table_manager'):
+                table_manager = self._current_table_manager
+
             if self.github_actions or self.verbose:
                 # Stream output to console AND write to files
                 import sys
@@ -656,22 +685,40 @@ class ExecutionEngine:
                         bufsize=1,
                     )
 
-                    def stream_output(pipe, console_stream, file_stream):
+                    # Use nonlocal to track sizes across threads
+                    size_lock = threading.Lock()
+
+                    def stream_output(pipe, console_stream, file_stream, is_stdout: bool):
                         """Stream output from pipe to both console and file."""
+                        nonlocal stdout_size, stderr_size
                         if pipe:
                             for line in pipe:
                                 console_stream.write(line)
                                 console_stream.flush()
                                 file_stream.write(line)
 
+                                # Track size and update table
+                                line_bytes = len(line.encode('utf-8'))
+                                with size_lock:
+                                    if is_stdout:
+                                        stdout_size += line_bytes
+                                    else:
+                                        stderr_size += line_bytes
+
+                                    # Update table manager if available
+                                    if table_manager and self.use_rich_table:
+                                        table_manager.update_output_sizes(
+                                            action_name, stdout_size, stderr_size
+                                        )
+
                     # Start threads to read stdout and stderr simultaneously
                     stdout_thread = threading.Thread(
                         target=stream_output,
-                        args=(process.stdout, sys.stdout, stdout_file),
+                        args=(process.stdout, sys.stdout, stdout_file, True),
                     )
                     stderr_thread = threading.Thread(
                         target=stream_output,
-                        args=(process.stderr, sys.stderr, stderr_file),
+                        args=(process.stderr, sys.stderr, stderr_file, False),
                     )
 
                     stdout_thread.start()
@@ -700,6 +747,16 @@ class ExecutionEngine:
                     )
                     returncode = result.returncode
 
+            # Get final sizes from files
+            if stdout_path.exists():
+                stdout_size = stdout_path.stat().st_size
+            if stderr_path.exists():
+                stderr_size = stderr_path.stat().st_size
+
+            # Update table manager with final sizes
+            if table_manager and self.use_rich_table:
+                table_manager.update_output_sizes(action_name, stdout_size, stderr_size)
+
             # Record end time
             end_time = datetime.now()
             end_time_iso = end_time.isoformat()
@@ -707,16 +764,18 @@ class ExecutionEngine:
 
             if returncode != 0:
                 # Write failure meta.json
-                meta = {
-                    "action_name": action_name,
-                    "success": False,
-                    "start_time": start_time_iso,
-                    "end_time": end_time_iso,
-                    "duration_seconds": duration,
-                    "exit_code": returncode,
-                    "error_message": f"Script exited with code {returncode}",
-                }
-                (action_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+                self._write_action_meta(
+                    action_dir,
+                    action_name,
+                    success=False,
+                    start_time=start_time_iso,
+                    end_time=end_time_iso,
+                    duration=duration,
+                    exit_code=returncode,
+                    error_message=f"Script exited with code {returncode}",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
+                )
 
                 return ActionResult(
                     action_name=action_name,
@@ -730,6 +789,8 @@ class ExecutionEngine:
                     duration_seconds=duration,
                     exit_code=returncode,
                     error_message=f"Script exited with code {returncode}",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
                 )
 
             # Parse outputs
@@ -744,6 +805,8 @@ class ExecutionEngine:
                     duration=duration,
                     exit_code=returncode,
                     error_message="No output.json generated",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
                 )
 
                 return ActionResult(
@@ -758,6 +821,8 @@ class ExecutionEngine:
                     duration_seconds=duration,
                     exit_code=returncode,
                     error_message="No output.json generated",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
                 )
 
             outputs = self._parse_outputs(output_json_path, version.return_declarations)
@@ -777,6 +842,8 @@ class ExecutionEngine:
                             duration=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
                         return ActionResult(
                             action_name=action_name,
@@ -790,6 +857,8 @@ class ExecutionEngine:
                             duration_seconds=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
 
                     path = Path(output_value)
@@ -811,6 +880,8 @@ class ExecutionEngine:
                             duration=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
                         return ActionResult(
                             action_name=action_name,
@@ -824,6 +895,8 @@ class ExecutionEngine:
                             duration_seconds=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
 
                     if ret_decl.return_type == ReturnType.FILE and not path.is_file():
@@ -837,6 +910,8 @@ class ExecutionEngine:
                             duration=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
                         return ActionResult(
                             action_name=action_name,
@@ -850,6 +925,8 @@ class ExecutionEngine:
                             duration_seconds=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
 
                     if (
@@ -866,6 +943,8 @@ class ExecutionEngine:
                             duration=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
                         return ActionResult(
                             action_name=action_name,
@@ -879,6 +958,8 @@ class ExecutionEngine:
                             duration_seconds=duration,
                             exit_code=0,
                             error_message=error_msg,
+                            stdout_size=stdout_size,
+                            stderr_size=stderr_size,
                         )
 
             # Write success meta.json
@@ -890,6 +971,8 @@ class ExecutionEngine:
                 end_time=end_time_iso,
                 duration=duration,
                 exit_code=0,
+                stdout_size=stdout_size,
+                stderr_size=stderr_size,
             )
 
             return ActionResult(
@@ -903,6 +986,8 @@ class ExecutionEngine:
                 end_time=end_time_iso,
                 duration_seconds=duration,
                 exit_code=0,
+                stdout_size=stdout_size,
+                stderr_size=stderr_size,
             )
 
         except Exception as e:
@@ -910,6 +995,14 @@ class ExecutionEngine:
             end_time = datetime.now()
             end_time_iso = end_time.isoformat()
             duration = (end_time - start_time).total_seconds()
+
+            # Try to get sizes from files if they exist
+            exc_stdout_size = 0
+            exc_stderr_size = 0
+            if stdout_path.exists():
+                exc_stdout_size = stdout_path.stat().st_size
+            if stderr_path.exists():
+                exc_stderr_size = stderr_path.stat().st_size
 
             error_msg = f"Execution error: {e}"
             self._write_action_meta(
@@ -921,6 +1014,8 @@ class ExecutionEngine:
                 duration=duration,
                 exit_code=-1,
                 error_message=error_msg,
+                stdout_size=exc_stdout_size,
+                stderr_size=exc_stderr_size,
             )
 
             return ActionResult(
@@ -935,6 +1030,8 @@ class ExecutionEngine:
                 duration_seconds=duration,
                 exit_code=-1,
                 error_message=error_msg,
+                stdout_size=exc_stdout_size,
+                stderr_size=exc_stderr_size,
             )
 
     def _parse_outputs(

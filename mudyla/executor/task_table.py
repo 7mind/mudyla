@@ -38,6 +38,8 @@ class TaskTableManager:
         self.task_status: dict[str, TaskStatus] = {name: TaskStatus.TBD for name in task_names}
         self.task_start_times: dict[str, float] = {}
         self.task_durations: dict[str, float] = {}
+        self.task_stdout_sizes: dict[str, int] = {name: 0 for name in task_names}
+        self.task_stderr_sizes: dict[str, int] = {name: 0 for name in task_names}
 
         # Threading
         self.lock = threading.Lock()
@@ -94,6 +96,26 @@ class TaskTableManager:
             secs = seconds % 60
             return f"{minutes}m {secs:.0f}s"
 
+    def _format_size(self, size_bytes: int) -> str:
+        """Format size for display.
+
+        Args:
+            size_bytes: Size in bytes
+
+        Returns:
+            Formatted size string
+        """
+        if size_bytes == 0:
+            return "-"
+        elif size_bytes < 1024:
+            return f"{size_bytes}B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f}K"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.1f}M"
+        else:
+            return f"{size_bytes / (1024 * 1024 * 1024):.1f}G"
+
     def _build_table(self) -> Table:
         """Build the current state of the table.
 
@@ -103,6 +125,8 @@ class TaskTableManager:
         table = Table(show_header=True, header_style="bold")
         table.add_column("Task", style="", no_wrap=True)
         table.add_column("Time", justify="right", no_wrap=True)
+        table.add_column("Stdout", justify="right", no_wrap=True)
+        table.add_column("Stderr", justify="right", no_wrap=True)
         table.add_column("Status", justify="center", no_wrap=True)
 
         with self.lock:
@@ -120,9 +144,15 @@ class TaskTableManager:
                 else:
                     time_str = "-"
 
+                # Format sizes
+                stdout_str = self._format_size(self.task_stdout_sizes.get(task_name, 0))
+                stderr_str = self._format_size(self.task_stderr_sizes.get(task_name, 0))
+
                 table.add_row(
                     f"[{style}]{task_name}[/{style}]" if style else task_name,
                     f"[{style}]{time_str}[/{style}]" if style else time_str,
+                    f"[{style}]{stdout_str}[/{style}]" if style else stdout_str,
+                    f"[{style}]{stderr_str}[/{style}]" if style else stderr_str,
                     f"[{style}]{status_text}[/{style}]" if style else status_text,
                 )
 
@@ -196,3 +226,15 @@ class TaskTableManager:
         with self.lock:
             self.task_status[task_name] = TaskStatus.FAILED
             self.task_durations[task_name] = duration
+
+    def update_output_sizes(self, task_name: str, stdout_size: int, stderr_size: int) -> None:
+        """Update stdout and stderr sizes for a task.
+
+        Args:
+            task_name: Task name
+            stdout_size: Current stdout size in bytes
+            stderr_size: Current stderr size in bytes
+        """
+        with self.lock:
+            self.task_stdout_sizes[task_name] = stdout_size
+            self.task_stderr_sizes[task_name] = stderr_size
