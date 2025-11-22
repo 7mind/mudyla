@@ -301,7 +301,29 @@ class CLI:
         from .utils.colors import ColorFormatter
 
         color = ColorFormatter(no_color=no_color)
-        print(f"\n{color.info('Available actions:')}\n")
+
+        # Show available axes first
+        if document.axis:
+            print(f"\n{color.info('Available axes:')}\n")
+            for axis_name in sorted(document.axis.keys()):
+                axis_def = document.axis[axis_name]
+                default_value = axis_def.get_default_value()
+
+                # Format values with default marked
+                value_strs = []
+                for axis_val in axis_def.values:
+                    if axis_val.is_default:
+                        value_strs.append(f"{color.success(axis_val.value)}*")
+                    else:
+                        value_strs.append(axis_val.value)
+
+                values_str = ', '.join(value_strs)
+                print(f"  {color.highlight(axis_name)}: {values_str}")
+                if default_value:
+                    print(f"    {color.dim(f'Default: {default_value}')}")
+            print()
+
+        print(f"{color.info('Available actions:')}\n")
 
         # Separate actions into root (no dependencies) and non-root
         root_actions = []
