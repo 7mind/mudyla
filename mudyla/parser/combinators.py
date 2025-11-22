@@ -145,6 +145,9 @@ class MudylaGrammar:
         )
 
 
+GRAMMAR = MudylaGrammar()
+
+
 def parse_argument_definition(line: str) -> dict:
     """Parse argument definition line.
 
@@ -154,7 +157,7 @@ def parse_argument_definition(line: str) -> dict:
     Returns:
         Dict with keys: name, type, default (optional), description
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.argument_def.parseString(line, parseAll=True)
         # Extract default value string if present
@@ -181,7 +184,7 @@ def parse_flag_definition(line: str) -> dict:
     Returns:
         Dict with keys: name, description
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.flag_def.parseString(line, parseAll=True)
         return {
@@ -201,7 +204,7 @@ def parse_axis_definition(line: str) -> dict:
     Returns:
         Dict with keys: name, values (list of dicts with 'value' and 'is_default')
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.axis_def.parseString(line, parseAll=True)
         # Access named result using dict notation to avoid conflict with .values() method
@@ -233,7 +236,7 @@ def parse_environment_definition(line: str) -> dict:
     Returns:
         Dict with var_name and value, or None
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.environment_def.parseString(line, parseAll=True)
         return {
@@ -253,7 +256,7 @@ def parse_passthrough_definition(line: str) -> str:
     Returns:
         Variable name or None
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.passthrough_def.parseString(line, parseAll=True)
         return result.var_name
@@ -270,7 +273,7 @@ def parse_vars_definition(line: str) -> dict:
     Returns:
         Dict with keys: var_name, description
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.vars_def.parseString(line, parseAll=True)
         return {
@@ -290,7 +293,7 @@ def parse_return_declaration(line: str) -> dict:
     Returns:
         Dict with keys: name, type, value
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     try:
         result = grammar.return_decl.parseString(line, parseAll=True)
         return {
@@ -311,7 +314,7 @@ def find_expansions(script: str) -> list[dict]:
     Returns:
         List of dicts with keys: original, prefix, rest
     """
-    grammar = MudylaGrammar()
+    grammar = GRAMMAR
     expansions = []
 
     for match, start, end in grammar.expansion.scanString(script):

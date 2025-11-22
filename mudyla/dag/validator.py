@@ -20,6 +20,14 @@ class DAGValidator:
     def __init__(self, document: ParsedDocument, graph: ActionGraph):
         self.document = document
         self.graph = graph
+        self._pruned_graph: Optional[ActionGraph] = None
+
+    @property
+    def _required_graph(self) -> ActionGraph:
+        """Pruned graph cached for all validation passes."""
+        if self._pruned_graph is None:
+            self._pruned_graph = self.graph.prune_to_goals()
+        return self._pruned_graph
 
     def validate_all(
         self, args: dict[str, str], flags: dict[str, bool], axis_values: dict[str, str]
@@ -110,8 +118,7 @@ class DAGValidator:
         # any explicitly configured values from the document.
         available_env = dict(os.environ) | self.document.environment_vars
 
-        # Get pruned graph (only required actions)
-        pruned_graph = self.graph.prune_to_goals()
+        pruned_graph = self._required_graph
 
         for node in pruned_graph.nodes.values():
             if not node.selected_version:
@@ -153,8 +160,7 @@ class DAGValidator:
         """Validate that all required arguments are provided."""
         errors = []
 
-        # Get pruned graph
-        pruned_graph = self.graph.prune_to_goals()
+        pruned_graph = self._required_graph
 
         # Collect all used arguments
         used_args = set()
@@ -190,8 +196,7 @@ class DAGValidator:
         """Validate that all used flags are defined."""
         errors = []
 
-        # Get pruned graph
-        pruned_graph = self.graph.prune_to_goals()
+        pruned_graph = self._required_graph
 
         # Collect all used flags
         used_flags = set()
@@ -217,8 +222,7 @@ class DAGValidator:
         """Validate axis values."""
         errors = []
 
-        # Get pruned graph
-        pruned_graph = self.graph.prune_to_goals()
+        pruned_graph = self._required_graph
 
         # Collect required axis
         required_axis = set()
@@ -266,8 +270,7 @@ class DAGValidator:
         """Validate that all required action outputs are provided."""
         errors = []
 
-        # Get pruned graph
-        pruned_graph = self.graph.prune_to_goals()
+        pruned_graph = self._required_graph
 
         for node in pruned_graph.nodes.values():
             if not node.selected_version:

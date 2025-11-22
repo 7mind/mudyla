@@ -7,18 +7,21 @@ import shutil
 import subprocess
 import time
 import threading
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from ..ast.types import ReturnType
+from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph
 from ..utils.colors import ColorFormatter
 from ..utils.output import OutputFormatter
 from .runtime_registry import RuntimeRegistry
 from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
+from .language_runtime import ExecutionContext, LanguageRuntime
 
 
 @dataclass
@@ -63,6 +66,22 @@ class ExecutionResult:
             for goal in goals
             if goal in self.action_results
         }
+
+
+@dataclass
+class PreparedAction:
+    """Artifacts required to execute an action."""
+
+    action: ActionDefinition
+    version: ActionVersion
+    runtime: LanguageRuntime
+    context: ExecutionContext
+    action_dir: Path
+    script_path: Path
+    stdout_path: Path
+    stderr_path: Path
+    output_json_path: Path
+    exec_cmd: list[str]
 
 
 class ExecutionEngine:
@@ -113,7 +132,7 @@ class ExecutionEngine:
 
         # Register built-in runtimes once.
         for runtime_cls in (BashRuntime, PythonRuntime):
-            RuntimeRegistry.register(runtime_cls)
+            RuntimeRegistry.ensure_registered(runtime_cls)
 
         # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
@@ -258,32 +277,7 @@ class ExecutionEngine:
             if table_manager:
                 table_manager.stop()
 
-        # Calculate total wall time
-        graph_duration = time.time() - graph_start_time
-
-        # Print summary of restored actions
-        if restored_actions and not self.github_actions:
-            restored_list = ", ".join(restored_actions)
-            self.output.print(f"\n{self.output.emoji('♻️', '▸')} {self.color.dim('restored from previous run:')} {self.color.highlight(restored_list)}")
-
-        # Success - clean up run directory if not keeping it
-        if not self.keep_run_dir:
-            try:
-                shutil.rmtree(self.run_directory)
-            except Exception as e:
-                # Don't fail on cleanup errors, just warn
-                emoji = "!" if self.no_color else "⚠️"
-                print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
-
-        # Print total wall time
-        if not self.github_actions:
-            self.output.print(f"\n{self.color.dim('Total wall time:')} {self.color.highlight(f'{graph_duration:.1f}s')}")
-
-        return ExecutionResult(
-            success=True,
-            action_results=action_results,
-            run_directory=self.run_directory,
-        )
+        return self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
     def _execute_in_parallel(self) -> ExecutionResult:
         """Execute actions using a dependency-aware thread pool."""
@@ -422,32 +416,417 @@ class ExecutionEngine:
             if table_manager:
                 table_manager.stop()
 
-        # Calculate total wall time
-        graph_duration = time.time() - graph_start_time
+        return self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
-        # Print summary of restored actions
-        if restored_actions and not self.github_actions:
-            restored_list = ", ".join(restored_actions)
-            self.output.print(f"\n{self.output.emoji('♻️', '▸')} {self.color.dim('restored from previous run:')} {self.color.highlight(restored_list)}")
+    def _execute_action(
+        self, action_name: str, action_outputs: dict[str, dict[str, Any]]
+    ) -> ActionResult:
+        """Execute a single action."""
+        if self._can_restore_from_previous(action_name):
+            return self._restore_from_previous(action_name)
 
-        # Success - clean up run directory if not keeping it
-        if not self.keep_run_dir:
-            try:
-                shutil.rmtree(self.run_directory)
-            except Exception as e:
-                emoji = "!" if self.no_color else "⚠️"
-                print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+        try:
+            prepared = self._prepare_action_execution(action_name, action_outputs)
+        except ValueError as err:
+            now_iso = datetime.now().isoformat()
+            return ActionResult(
+                action_name=action_name,
+                success=False,
+                outputs={},
+                stdout_path=Path("/dev/null"),
+                stderr_path=Path("/dev/null"),
+                script_path=Path("/dev/null"),
+                start_time=now_iso,
+                end_time=now_iso,
+                duration_seconds=0.0,
+                exit_code=-1,
+                error_message=str(err),
+            )
 
-        # Print total wall time
-        if not self.github_actions:
-            self.output.print(f"\n{self.color.dim('Total wall time:')} {self.color.highlight(f'{graph_duration:.1f}s')}")
+        return self._run_prepared_action(prepared)
 
-        return ExecutionResult(
-            success=True,
-            action_results=action_results,
-            run_directory=self.run_directory,
+    def _prepare_action_execution(
+        self, action_name: str, action_outputs: dict[str, dict[str, Any]]
+    ) -> PreparedAction:
+        node = self.graph.get_node(action_name)
+        action = node.action
+        version = node.selected_version
+
+        if version is None:
+            raise ValueError("No valid version selected")
+
+        action_dir = self.run_directory / action_name
+        action_dir.mkdir(parents=True, exist_ok=True)
+
+        runtime = RuntimeRegistry.get(version.language)
+        context = self._build_execution_context(action_dir, action_outputs)
+
+        output_json_path = action_dir / "output.json"
+        rendered = runtime.prepare_script(
+            version=version,
+            context=context,
+            output_json_path=output_json_path,
+            working_dir=action_dir,
         )
 
+        script_ext = ".sh" if version.language == "bash" else ".py"
+        script_path = action_dir / f"script{script_ext}"
+        script_path.write_text(rendered.content)
+        script_path.chmod(0o755)
+
+        stdout_path = action_dir / "stdout.log"
+        stderr_path = action_dir / "stderr.log"
+
+        base_exec_cmd = runtime.get_execution_command(script_path)
+        exec_cmd = self._build_exec_command(action, base_exec_cmd)
+
+        return PreparedAction(
+            action=action,
+            version=version,
+            runtime=runtime,
+            context=context,
+            action_dir=action_dir,
+            script_path=script_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            output_json_path=output_json_path,
+            exec_cmd=exec_cmd,
+        )
+
+    def _build_execution_context(
+        self, action_dir: Path, action_outputs: dict[str, dict[str, Any]]
+    ) -> ExecutionContext:
+        return ExecutionContext(
+            system_vars={
+                "project-root": str(self.project_root),
+                "run-dir": str(self.run_directory),
+                "action-dir": str(action_dir),
+            },
+            env_vars=dict(os.environ) | self.environment_vars,
+            args=self.args,
+            flags=self.flags,
+            action_outputs=action_outputs,
+        )
+
+    def _build_exec_command(
+        self, action: ActionDefinition, base_exec_cmd: list[str]
+    ) -> list[str]:
+        if self.without_nix:
+            return base_exec_cmd
+
+        env_vars_to_keep = set(self.passthrough_env_vars)
+        env_vars_to_keep.update(action.required_env_vars.keys())
+
+        exec_cmd = ["nix", "develop", "--ignore-environment"]
+        for var in sorted(env_vars_to_keep):
+            exec_cmd.extend(["--keep", var])
+        exec_cmd.extend(["--command"] + base_exec_cmd)
+        return exec_cmd
+
+    def _run_prepared_action(self, prepared: PreparedAction) -> ActionResult:
+        action_name = prepared.action.name
+
+        if self.github_actions:
+            print(f"::group::{action_name}")
+
+        if self.github_actions or self.verbose:
+            print(f"{self.color.dim('Command:')} {' '.join(prepared.exec_cmd)}")
+
+        start_time = datetime.now()
+        start_time_iso = start_time.isoformat()
+
+        stdout_size = 0
+        stderr_size = 0
+        table_manager = getattr(self, "_current_table_manager", None)
+
+        try:
+            with open(prepared.stdout_path, "w") as stdout_file, open(
+                prepared.stderr_path, "w"
+            ) as stderr_file:
+                process = subprocess.Popen(
+                    prepared.exec_cmd,
+                    cwd=str(self.project_root),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=os.environ.copy(),
+                    text=True,
+                    bufsize=1,
+                )
+
+                size_lock = threading.Lock()
+
+                def stream_output(pipe, console_stream, file_stream, is_stdout: bool):
+                    nonlocal stdout_size, stderr_size
+                    if pipe:
+                        for line in pipe:
+                            if self.github_actions or self.verbose:
+                                console_stream.write(line)
+                                console_stream.flush()
+
+                            file_stream.write(line)
+                            file_stream.flush()
+
+                            line_bytes = len(line.encode("utf-8"))
+                            with size_lock:
+                                if is_stdout:
+                                    stdout_size += line_bytes
+                                else:
+                                    stderr_size += line_bytes
+
+                                if table_manager and self.use_rich_table:
+                                    table_manager.update_output_sizes(
+                                        action_name, stdout_size, stderr_size
+                                    )
+
+                stdout_thread = threading.Thread(
+                    target=stream_output,
+                    args=(process.stdout, sys.stdout, stdout_file, True),
+                )
+                stderr_thread = threading.Thread(
+                    target=stream_output,
+                    args=(process.stderr, sys.stderr, stderr_file, False),
+                )
+
+                stdout_thread.start()
+                stderr_thread.start()
+
+                returncode = process.wait()
+                stdout_thread.join()
+                stderr_thread.join()
+
+            if self.github_actions:
+                print("::endgroup::")
+
+            if prepared.stdout_path.exists():
+                stdout_size = prepared.stdout_path.stat().st_size
+            if prepared.stderr_path.exists():
+                stderr_size = prepared.stderr_path.stat().st_size
+
+            if table_manager and self.use_rich_table:
+                table_manager.update_output_sizes(action_name, stdout_size, stderr_size)
+
+            end_time = datetime.now()
+            end_time_iso = end_time.isoformat()
+            duration = (end_time - start_time).total_seconds()
+
+            if returncode != 0:
+                self._write_action_meta(
+                    prepared.action_dir,
+                    action_name,
+                    success=False,
+                    start_time=start_time_iso,
+                    end_time=end_time_iso,
+                    duration=duration,
+                    exit_code=returncode,
+                    error_message=f"Script exited with code {returncode}",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
+                )
+                return ActionResult(
+                    action_name=action_name,
+                    success=False,
+                    outputs={},
+                    stdout_path=prepared.stdout_path,
+                    stderr_path=prepared.stderr_path,
+                    script_path=prepared.script_path,
+                    start_time=start_time_iso,
+                    end_time=end_time_iso,
+                    duration_seconds=duration,
+                    exit_code=returncode,
+                    error_message=f"Script exited with code {returncode}",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
+                )
+
+            if not prepared.output_json_path.exists():
+                self._write_action_meta(
+                    prepared.action_dir,
+                    action_name,
+                    success=False,
+                    start_time=start_time_iso,
+                    end_time=end_time_iso,
+                    duration=duration,
+                    exit_code=returncode,
+                    error_message="No output.json generated",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
+                )
+                return ActionResult(
+                    action_name=action_name,
+                    success=False,
+                    outputs={},
+                    stdout_path=prepared.stdout_path,
+                    stderr_path=prepared.stderr_path,
+                    script_path=prepared.script_path,
+                    start_time=start_time_iso,
+                    end_time=end_time_iso,
+                    duration_seconds=duration,
+                    exit_code=returncode,
+                    error_message="No output.json generated",
+                    stdout_size=stdout_size,
+                    stderr_size=stderr_size,
+                )
+
+            outputs = self._parse_outputs(
+                prepared.output_json_path, prepared.version.return_declarations
+            )
+
+            for ret_decl in prepared.version.return_declarations:
+                if ret_decl.return_type not in (ReturnType.FILE, ReturnType.DIRECTORY):
+                    continue
+
+                output_value = outputs.get(ret_decl.name)
+                if output_value is None:
+                    return self._report_missing_output(
+                        prepared,
+                        action_name,
+                        start_time_iso,
+                        end_time_iso,
+                        duration,
+                        stdout_size,
+                        stderr_size,
+                        outputs,
+                        f"Output '{ret_decl.name}' not found",
+                    )
+
+                path = Path(output_value)
+                if not path.is_absolute():
+                    path = self.project_root / path
+
+                if not path.exists():
+                    return self._report_missing_output(
+                        prepared,
+                        action_name,
+                        start_time_iso,
+                        end_time_iso,
+                        duration,
+                        stdout_size,
+                        stderr_size,
+                        outputs,
+                        f"{ret_decl.return_type.value.capitalize()} '{ret_decl.name}' does not exist: {output_value}",
+                    )
+
+                if ret_decl.return_type == ReturnType.FILE and not path.is_file():
+                    return self._report_missing_output(
+                        prepared,
+                        action_name,
+                        start_time_iso,
+                        end_time_iso,
+                        duration,
+                        stdout_size,
+                        stderr_size,
+                        outputs,
+                        f"Output '{ret_decl.name}' is not a file: {output_value}",
+                    )
+
+            self._write_action_meta(
+                prepared.action_dir,
+                action_name,
+                success=True,
+                start_time=start_time_iso,
+                end_time=end_time_iso,
+                duration=duration,
+                exit_code=0,
+                stdout_size=stdout_size,
+                stderr_size=stderr_size,
+            )
+
+            return ActionResult(
+                action_name=action_name,
+                success=True,
+                outputs=outputs,
+                stdout_path=prepared.stdout_path,
+                stderr_path=prepared.stderr_path,
+                script_path=prepared.script_path,
+                start_time=start_time_iso,
+                end_time=end_time_iso,
+                duration_seconds=duration,
+                exit_code=0,
+                stdout_size=stdout_size,
+                stderr_size=stderr_size,
+            )
+
+        except Exception as e:
+            end_time = datetime.now()
+            end_time_iso = end_time.isoformat()
+            duration = (end_time - start_time).total_seconds()
+
+            exc_stdout_size = (
+                prepared.stdout_path.stat().st_size if prepared.stdout_path.exists() else 0
+            )
+            exc_stderr_size = (
+                prepared.stderr_path.stat().st_size if prepared.stderr_path.exists() else 0
+            )
+
+            error_msg = f"Execution error: {e}"
+            self._write_action_meta(
+                prepared.action_dir,
+                action_name,
+                success=False,
+                start_time=start_time_iso,
+                end_time=end_time_iso,
+                duration=duration,
+                exit_code=-1,
+                error_message=error_msg,
+                stdout_size=exc_stdout_size,
+                stderr_size=exc_stderr_size,
+            )
+
+            return ActionResult(
+                action_name=action_name,
+                success=False,
+                outputs={},
+                stdout_path=prepared.stdout_path,
+                stderr_path=prepared.stderr_path,
+                script_path=prepared.script_path,
+                start_time=start_time_iso,
+                end_time=end_time_iso,
+                duration_seconds=duration,
+                exit_code=-1,
+                error_message=error_msg,
+                stdout_size=exc_stdout_size,
+                stderr_size=exc_stderr_size,
+            )
+
+    def _report_missing_output(
+        self,
+        prepared: PreparedAction,
+        action_name: str,
+        start_time_iso: str,
+        end_time_iso: str,
+        duration: float,
+        stdout_size: int,
+        stderr_size: int,
+        outputs: dict[str, Any],
+        error_msg: str,
+    ) -> ActionResult:
+        self._write_action_meta(
+            prepared.action_dir,
+            action_name,
+            success=False,
+            start_time=start_time_iso,
+            end_time=end_time_iso,
+            duration=duration,
+            exit_code=0,
+            error_message=error_msg,
+            stdout_size=stdout_size,
+            stderr_size=stderr_size,
+        )
+        return ActionResult(
+            action_name=action_name,
+            success=False,
+            outputs=outputs,
+            stdout_path=prepared.stdout_path,
+            stderr_path=prepared.stderr_path,
+            script_path=prepared.script_path,
+            start_time=start_time_iso,
+            end_time=end_time_iso,
+            duration_seconds=duration,
+            exit_code=0,
+            error_message=error_msg,
+            stdout_size=stdout_size,
+            stderr_size=stderr_size,
+        )
     def _write_action_meta(
         self,
         action_dir: Path,
@@ -476,6 +855,34 @@ class ExecutionEngine:
             meta["error_message"] = error_message
 
         (action_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+
+    def _finalize_successful_execution(
+        self,
+        action_results: dict[str, ActionResult],
+        restored_actions: list[str],
+        graph_start_time: float,
+    ) -> ExecutionResult:
+        graph_duration = time.time() - graph_start_time
+
+        if restored_actions and not self.github_actions:
+            restored_list = ", ".join(restored_actions)
+            self.output.print(f"\n{self.output.emoji('♻️', '▸')} {self.color.dim('restored from previous run:')} {self.color.highlight(restored_list)}")
+
+        if not self.keep_run_dir:
+            try:
+                shutil.rmtree(self.run_directory)
+            except Exception as e:
+                emoji = "!" if self.no_color else "⚠️"
+                print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+
+        if not self.github_actions:
+            self.output.print(f"\n{self.color.dim('Total wall time:')} {self.color.highlight(f'{graph_duration:.1f}s')}")
+
+        return ExecutionResult(
+            success=True,
+            action_results=action_results,
+            run_directory=self.run_directory,
+        )
 
     def _can_restore_from_previous(self, action_name: str) -> bool:
         """Check if an action can be restored from previous run.
@@ -543,487 +950,6 @@ class ExecutionEngine:
             stdout_size=meta.get("stdout_size", 0),
             stderr_size=meta.get("stderr_size", 0),
         )
-
-    def _execute_action(
-        self, action_name: str, action_outputs: dict[str, dict[str, Any]]
-    ) -> ActionResult:
-        """Execute a single action.
-
-        Args:
-            action_name: Action name
-            action_outputs: Outputs from previously executed actions
-
-        Returns:
-            Action result
-        """
-        # Check if we can restore from previous run
-        if self._can_restore_from_previous(action_name):
-            return self._restore_from_previous(action_name)
-
-        node = self.graph.get_node(action_name)
-        action = node.action
-        version = node.selected_version
-
-        if version is None:
-            now_iso = datetime.now().isoformat()
-            return ActionResult(
-                action_name=action_name,
-                success=False,
-                outputs={},
-                stdout_path=Path("/dev/null"),
-                stderr_path=Path("/dev/null"),
-                script_path=Path("/dev/null"),
-                start_time=now_iso,
-                end_time=now_iso,
-                duration_seconds=0.0,
-                exit_code=-1,
-                error_message="No valid version selected",
-            )
-
-        # Create action directory
-        action_dir = self.run_directory / action_name
-        action_dir.mkdir(parents=True, exist_ok=True)
-
-        # Get appropriate language runtime
-        runtime = RuntimeRegistry.get(version.language)
-
-        # Prepare execution context
-        from mudyla.executor.language_runtime import ExecutionContext
-
-        context = ExecutionContext(
-            system_vars={
-                "project-root": str(self.project_root),
-                "run-dir": str(self.run_directory),
-                "action-dir": str(action_dir),
-            },
-            env_vars=dict(os.environ) | self.environment_vars,
-            args=self.args,
-            flags=self.flags,
-            action_outputs=action_outputs,
-        )
-
-        # Prepare script using language runtime
-        output_json_path = action_dir / "output.json"
-        rendered = runtime.prepare_script(
-            version=version,
-            context=context,
-            output_json_path=output_json_path,
-            working_dir=action_dir,
-        )
-
-        # Determine script extension based on language
-        script_ext = ".sh" if version.language == "bash" else ".py"
-        script_path = action_dir / f"script{script_ext}"
-        script_path.write_text(rendered.content)
-        script_path.chmod(0o755)
-
-        # Prepare output paths
-        stdout_path = action_dir / "stdout.log"
-        stderr_path = action_dir / "stderr.log"
-
-        # Get execution command from language runtime
-        base_exec_cmd = runtime.get_execution_command(script_path)
-
-        # Build execution command
-        if self.without_nix:
-            # Run directly without Nix
-            exec_cmd = base_exec_cmd
-        else:
-            # Run under Nix develop environment with clean environment
-            # Collect all environment variables that should be kept
-            env_vars_to_keep = set()
-
-            # Add global passthrough env vars
-            env_vars_to_keep.update(self.passthrough_env_vars)
-
-            # Add action-specific required env vars
-            env_vars_to_keep.update(action.required_env_vars.keys())
-
-            # Build command with --ignore-environment and --keep for each var
-            exec_cmd = ["nix", "develop", "--ignore-environment"]
-            for var in sorted(env_vars_to_keep):
-                exec_cmd.extend(["--keep", var])
-            exec_cmd.extend(["--command"] + base_exec_cmd)
-
-        # Execute
-        if self.github_actions:
-            print(f"::group::{action_name}")
-
-        # Print command in verbose/CI modes
-        if self.github_actions or self.verbose:
-            print(f"{self.color.dim('Command:')} {' '.join(exec_cmd)}")
-
-        # Record start time
-        start_time = datetime.now()
-        start_time_iso = start_time.isoformat()
-
-        try:
-            # Track output sizes
-            stdout_size = 0
-            stderr_size = 0
-
-            # Get table manager from execution context if available
-            table_manager = None
-            if hasattr(self, '_current_table_manager'):
-                table_manager = self._current_table_manager
-
-            # Always use streaming to enable real-time size updates
-            import sys
-            import threading
-
-            with open(stdout_path, "w") as stdout_file, open(
-                stderr_path, "w"
-            ) as stderr_file:
-                process = subprocess.Popen(
-                    exec_cmd,
-                    cwd=str(self.project_root),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=os.environ.copy(),
-                    text=True,
-                    bufsize=1,
-                )
-
-                # Use nonlocal to track sizes across threads
-                size_lock = threading.Lock()
-
-                def stream_output(pipe, console_stream, file_stream, is_stdout: bool):
-                    """Stream output from pipe to file (and optionally console)."""
-                    nonlocal stdout_size, stderr_size
-                    if pipe:
-                        for line in pipe:
-                            # Write to console only in verbose/CI mode
-                            if self.github_actions or self.verbose:
-                                console_stream.write(line)
-                                console_stream.flush()
-
-                            # Always write to file and flush immediately
-                            file_stream.write(line)
-                            file_stream.flush()
-
-                            # Track size and update table
-                            line_bytes = len(line.encode('utf-8'))
-                            with size_lock:
-                                if is_stdout:
-                                    stdout_size += line_bytes
-                                else:
-                                    stderr_size += line_bytes
-
-                                # Update table manager if available (in real-time)
-                                if table_manager and self.use_rich_table:
-                                    table_manager.update_output_sizes(
-                                        action_name, stdout_size, stderr_size
-                                    )
-
-                # Start threads to read stdout and stderr simultaneously
-                stdout_thread = threading.Thread(
-                    target=stream_output,
-                    args=(process.stdout, sys.stdout, stdout_file, True),
-                )
-                stderr_thread = threading.Thread(
-                    target=stream_output,
-                    args=(process.stderr, sys.stderr, stderr_file, False),
-                )
-
-                stdout_thread.start()
-                stderr_thread.start()
-
-                # Wait for process to complete
-                returncode = process.wait()
-
-                # Wait for output threads to finish
-                stdout_thread.join()
-                stderr_thread.join()
-
-            if self.github_actions:
-                print("::endgroup::")
-
-            # Get final sizes from files
-            if stdout_path.exists():
-                stdout_size = stdout_path.stat().st_size
-            if stderr_path.exists():
-                stderr_size = stderr_path.stat().st_size
-
-            # Update table manager with final sizes
-            if table_manager and self.use_rich_table:
-                table_manager.update_output_sizes(action_name, stdout_size, stderr_size)
-
-            # Record end time
-            end_time = datetime.now()
-            end_time_iso = end_time.isoformat()
-            duration = (end_time - start_time).total_seconds()
-
-            if returncode != 0:
-                # Write failure meta.json
-                self._write_action_meta(
-                    action_dir,
-                    action_name,
-                    success=False,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration=duration,
-                    exit_code=returncode,
-                    error_message=f"Script exited with code {returncode}",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
-                )
-
-                return ActionResult(
-                    action_name=action_name,
-                    success=False,
-                    outputs={},
-                    stdout_path=stdout_path,
-                    stderr_path=stderr_path,
-                    script_path=script_path,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration_seconds=duration,
-                    exit_code=returncode,
-                    error_message=f"Script exited with code {returncode}",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
-                )
-
-            # Parse outputs
-            if not output_json_path.exists():
-                # Write failure meta.json
-                self._write_action_meta(
-                    action_dir,
-                    action_name,
-                    success=False,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration=duration,
-                    exit_code=returncode,
-                    error_message="No output.json generated",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
-                )
-
-                return ActionResult(
-                    action_name=action_name,
-                    success=False,
-                    outputs={},
-                    stdout_path=stdout_path,
-                    stderr_path=stderr_path,
-                    script_path=script_path,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration_seconds=duration,
-                    exit_code=returncode,
-                    error_message="No output.json generated",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
-                )
-
-            outputs = self._parse_outputs(output_json_path, version.return_declarations)
-
-            # Validate file/directory outputs
-            for ret_decl in version.return_declarations:
-                if ret_decl.return_type in (ReturnType.FILE, ReturnType.DIRECTORY):
-                    output_value = outputs.get(ret_decl.name)
-                    if output_value is None:
-                        error_msg = f"Output '{ret_decl.name}' not found"
-                        self._write_action_meta(
-                            action_dir,
-                            action_name,
-                            success=False,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-                        return ActionResult(
-                            action_name=action_name,
-                            success=False,
-                            outputs=outputs,
-                            stdout_path=stdout_path,
-                            stderr_path=stderr_path,
-                            script_path=script_path,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration_seconds=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-
-                    path = Path(output_value)
-                    # Resolve relative paths relative to project root
-                    if not path.is_absolute():
-                        path = self.project_root / path
-
-                    if not path.exists():
-                        error_msg = (
-                            f"{ret_decl.return_type.value.capitalize()} "
-                            f"'{ret_decl.name}' does not exist: {output_value}"
-                        )
-                        self._write_action_meta(
-                            action_dir,
-                            action_name,
-                            success=False,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-                        return ActionResult(
-                            action_name=action_name,
-                            success=False,
-                            outputs=outputs,
-                            stdout_path=stdout_path,
-                            stderr_path=stderr_path,
-                            script_path=script_path,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration_seconds=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-
-                    if ret_decl.return_type == ReturnType.FILE and not path.is_file():
-                        error_msg = f"Output '{ret_decl.name}' is not a file: {output_value}"
-                        self._write_action_meta(
-                            action_dir,
-                            action_name,
-                            success=False,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-                        return ActionResult(
-                            action_name=action_name,
-                            success=False,
-                            outputs=outputs,
-                            stdout_path=stdout_path,
-                            stderr_path=stderr_path,
-                            script_path=script_path,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration_seconds=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-
-                    if (
-                        ret_decl.return_type == ReturnType.DIRECTORY
-                        and not path.is_dir()
-                    ):
-                        error_msg = f"Output '{ret_decl.name}' is not a directory: {output_value}"
-                        self._write_action_meta(
-                            action_dir,
-                            action_name,
-                            success=False,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-                        return ActionResult(
-                            action_name=action_name,
-                            success=False,
-                            outputs=outputs,
-                            stdout_path=stdout_path,
-                            stderr_path=stderr_path,
-                            script_path=script_path,
-                            start_time=start_time_iso,
-                            end_time=end_time_iso,
-                            duration_seconds=duration,
-                            exit_code=0,
-                            error_message=error_msg,
-                            stdout_size=stdout_size,
-                            stderr_size=stderr_size,
-                        )
-
-            # Write success meta.json
-            self._write_action_meta(
-                action_dir,
-                action_name,
-                success=True,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration=duration,
-                exit_code=0,
-                stdout_size=stdout_size,
-                stderr_size=stderr_size,
-            )
-
-            return ActionResult(
-                action_name=action_name,
-                success=True,
-                outputs=outputs,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                script_path=script_path,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration_seconds=duration,
-                exit_code=0,
-                stdout_size=stdout_size,
-                stderr_size=stderr_size,
-            )
-
-        except Exception as e:
-            # Record end time for exception case
-            end_time = datetime.now()
-            end_time_iso = end_time.isoformat()
-            duration = (end_time - start_time).total_seconds()
-
-            # Try to get sizes from files if they exist
-            exc_stdout_size = 0
-            exc_stderr_size = 0
-            if stdout_path.exists():
-                exc_stdout_size = stdout_path.stat().st_size
-            if stderr_path.exists():
-                exc_stderr_size = stderr_path.stat().st_size
-
-            error_msg = f"Execution error: {e}"
-            self._write_action_meta(
-                action_dir,
-                action_name,
-                success=False,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration=duration,
-                exit_code=-1,
-                error_message=error_msg,
-                stdout_size=exc_stdout_size,
-                stderr_size=exc_stderr_size,
-            )
-
-            return ActionResult(
-                action_name=action_name,
-                success=False,
-                outputs={},
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                script_path=script_path,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration_seconds=duration,
-                exit_code=-1,
-                error_message=error_msg,
-                stdout_size=exc_stdout_size,
-                stderr_size=exc_stderr_size,
-            )
 
     def _parse_outputs(
         self, output_json_path: Path, return_declarations

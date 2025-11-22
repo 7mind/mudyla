@@ -173,17 +173,23 @@ class ActionGraph:
             required_actions.add(goal)
             required_actions.update(self.get_all_dependencies(goal))
 
-        # Create new graph with only required actions
-        pruned_nodes = {
-            name: node for name, node in self.nodes.items() if name in required_actions
-        }
+        pruned_nodes: dict[str, ActionNode] = {}
 
-        # Update dependencies to only include required actions
-        for node in pruned_nodes.values():
-            node.dependencies = node.dependencies & required_actions
-            node.dependents = node.dependents & required_actions
+        # Create deep copies of the nodes we keep so that pruning never mutates
+        # the original graph (validator relies on this multiple times).
+        for name, node in self.nodes.items():
+            if name not in required_actions:
+                continue
 
-        return ActionGraph(nodes=pruned_nodes, goals=self.goals)
+            pruned_nodes[name] = ActionNode(
+                action=node.action,
+                selected_version=node.selected_version,
+                dependencies=set(node.dependencies) & required_actions,
+                dependents=set(node.dependents) & required_actions,
+            )
+
+        pruned_goals = {goal for goal in self.goals if goal in pruned_nodes}
+        return ActionGraph(nodes=pruned_nodes, goals=pruned_goals)
 
     def get_execution_order(self) -> list[str]:
         """Get execution order (topological sort of pruned graph).

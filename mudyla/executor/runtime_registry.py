@@ -19,6 +19,14 @@ class RuntimeRegistry:
         cls._registry[language_name] = runtime_cls
 
     @classmethod
+    def ensure_registered(cls, runtime_cls: Type[LanguageRuntime]) -> None:
+        """Register runtime only if not present."""
+        runtime = runtime_cls()
+        language_name = runtime.get_language_name()
+        if language_name not in cls._registry:
+            cls._registry[language_name] = runtime_cls
+
+    @classmethod
     def get(cls, language: str) -> LanguageRuntime:
         """Get a runtime by language name."""
         if language not in cls._registry:
