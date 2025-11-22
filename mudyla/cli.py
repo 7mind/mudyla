@@ -417,30 +417,9 @@ class CLI:
                 ]
                 print(f"    {color.dim('Returns:')} {', '.join(return_strs)}")
 
-            # Collect all axis and platform conditions across versions
-            from .ast.models import AxisCondition, PlatformCondition
-            axis_names = set()
-            platform_values = set()
-
-            for version in action.versions:
-                for cond in version.conditions:
-                    if isinstance(cond, AxisCondition):
-                        axis_names.add(cond.axis_name)
-                    elif isinstance(cond, PlatformCondition):
-                        platform_values.add(cond.platform_value)
-
-            # Show axis if present
-            if axis_names:
-                axis_str = ', '.join(sorted(axis_names))
-                print(f"    {color.dim('Axis:')} {color.warning(axis_str)}")
-
-            # Show platforms if present
-            if platform_values:
-                platform_str = ', '.join(sorted(platform_values))
-                print(f"    {color.dim('Platforms:')} {color.warning(platform_str)}")
-
             # Show versions if action has multiple versions
             if len(action.versions) > 1:
+                from .ast.models import AxisCondition, PlatformCondition
                 version_strs = []
                 for i, version in enumerate(action.versions, 1):
                     cond_parts = []
