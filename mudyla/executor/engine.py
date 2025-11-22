@@ -697,8 +697,9 @@ class ExecutionEngine:
                                 console_stream.write(line)
                                 console_stream.flush()
 
-                            # Always write to file
+                            # Always write to file and flush immediately
                             file_stream.write(line)
+                            file_stream.flush()
 
                             # Track size and update table
                             line_bytes = len(line.encode('utf-8'))

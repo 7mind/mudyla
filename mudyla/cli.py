@@ -366,18 +366,38 @@ class CLI:
                 env_str = ', '.join(sorted(all_env_vars))
                 print(f"    {color.dim('Env vars:')} {env_str}")
 
-            # Returns
-            if action.versions:
-                returns = action.versions[0].return_declarations
-                if returns:
-                    return_strs = [
-                        f"{color.success(r.name)}:{color.dim(r.return_type.value)}" for r in returns
-                    ]
-                    print(f"    {color.dim('Returns:')} {', '.join(return_strs)}")
+            # Inputs (consumed action outputs)
+            inputs_map = {}  # action_name -> set of variable names
+            for expansion in action.get_all_expansions():
+                from .ast.expansions import ActionExpansion
+                if isinstance(expansion, ActionExpansion):
+                    if expansion.action_name not in inputs_map:
+                        inputs_map[expansion.action_name] = set()
+                    inputs_map[expansion.action_name].add(expansion.variable_name)
 
-            # Axis
-            if action.is_multi_version:
-                axis_names = action.get_required_axis()
+            if inputs_map:
+                input_strs = []
+                for act_name in sorted(inputs_map.keys()):
+                    vars_str = ', '.join(sorted(inputs_map[act_name]))
+                    input_strs.append(f"{color.highlight(act_name)}.{{{vars_str}}}")
+                print(f"    {color.dim('Inputs:')} {', '.join(input_strs)}")
+
+            # Returns (collect across all versions)
+            all_returns = {}  # name -> ReturnDeclaration (deduplicate by name)
+            for version in action.versions:
+                for ret_decl in version.return_declarations:
+                    all_returns[ret_decl.name] = ret_decl
+
+            if all_returns:
+                return_strs = [
+                    f"{color.success(r.name)}:{color.dim(r.return_type.value)}"
+                    for r in all_returns.values()
+                ]
+                print(f"    {color.dim('Returns:')} {', '.join(return_strs)}")
+
+            # Axis (show if any version has axis conditions)
+            axis_names = action.get_required_axis()
+            if axis_names:
                 axis_str = ', '.join(sorted(axis_names))
                 print(f"    {color.dim('Axis:')} {color.warning(axis_str)}")
 
