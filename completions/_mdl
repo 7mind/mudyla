@@ -1,9 +1,14 @@
 #compdef mdl
 
 _mdl() {
-  local -a actions
-  actions=(${(f)"$(mdl --autocomplete 2>/dev/null)"})
+  local -a actions flags
 
-  # Complete actions with colon prefix
+  if [[ ${words[$CURRENT]} == -* ]]; then
+    flags=(${(f)"$(mdl --autocomplete flags 2>/dev/null)"})
+    _describe -t flags 'mudyla flag' flags
+    return
+  fi
+
+  actions=(${(f)"$(mdl --autocomplete actions 2>/dev/null)"})
   _describe -t actions 'mudyla action' actions -P ':'
 }

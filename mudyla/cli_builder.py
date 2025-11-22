@@ -31,7 +31,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--autocomplete",
-        action="store_true",
+        nargs="?",
+        const="actions",
+        choices=["actions", "flags"],
         help=argparse.SUPPRESS,
     )
 

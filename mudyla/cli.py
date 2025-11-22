@@ -14,7 +14,12 @@ from .dag.builder import DAGBuilder
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
-from .cli_args import CLIParseError, parse_custom_inputs, ParsedCLIInputs
+from .cli_args import (
+    AXIS_OPTION,
+    CLIParseError,
+    parse_custom_inputs,
+    ParsedCLIInputs,
+)
 from .cli_builder import build_arg_parser
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
@@ -52,7 +57,7 @@ class CLI:
             Exit code
         """
         args, unknown = self.parser.parse_known_args(argv)
-        quiet_mode = args.autocomplete
+        quiet_mode = args.autocomplete is not None
         self._apply_platform_defaults(args, quiet_mode)
 
         if args.autocomplete:
@@ -206,6 +211,7 @@ class CLI:
 
     def _handle_autocomplete(self, args: argparse.Namespace) -> int:
         """Handle autocomplete mode without noisy output."""
+        mode = args.autocomplete or "actions"
         try:
             project_root = find_project_root()
             md_files = self._discover_markdown_files(args.defs, project_root)
@@ -214,7 +220,15 @@ class CLI:
 
             parser = MarkdownParser()
             document = parser.parse_files(md_files)
-            for name in self._list_action_names_ordered(document):
+
+            if mode == "actions":
+                suggestions = self._list_action_names_ordered(document)
+            elif mode == "flags":
+                suggestions = self._list_all_flags(document)
+            else:
+                return 1
+
+            for name in suggestions:
                 print(name)
             return 0
         except Exception:
@@ -460,6 +474,26 @@ class CLI:
         root_actions.sort()
         non_root_actions.sort()
         return root_actions, non_root_actions
+
+    def _list_cli_flag_options(self) -> list[str]:
+        """Return CLI-level flag options (long form only, excluding autocomplete)."""
+        cli_flags: set[str] = set()
+        for action in self.parser._actions:
+            for option in action.option_strings:
+                if not option.startswith("--"):
+                    continue
+                if option == "--autocomplete":
+                    continue
+                cli_flags.add(option)
+        cli_flags.add(AXIS_OPTION)
+        return sorted(cli_flags)
+
+    def _list_all_flags(self, document: ParsedDocument) -> list[str]:
+        """Return combined list of CLI and document flags (prefixed with --)."""
+        document_flags = {f"--{flag_name}" for flag_name in document.flags.keys()}
+        all_flags = set(self._list_cli_flag_options())
+        all_flags.update(document_flags)
+        return sorted(all_flags)
 
     def _collect_action_metadata(self, action: ActionDefinition) -> dict[str, object]:
         args_used: set[str] = set()

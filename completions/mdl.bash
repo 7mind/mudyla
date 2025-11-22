@@ -4,9 +4,19 @@ _mdl_completion() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
+    # Suggest flags whenever the current token starts with '-'
+    if [[ "$cur" == -* ]]; then
+        local -a flag_suggestions
+        while IFS= read -r flag; do
+            [[ -n "$flag" ]] && flag_suggestions+=( "${flag}" )
+        done < <(mdl --autocomplete flags 2>/dev/null) || return 0
+        COMPREPLY=($(compgen -W "${flag_suggestions[*]}" -- "$cur"))
+        return 0
+    fi
+
     # Get actions from mdl
     local actions
-    actions=$(mdl --autocomplete 2>/dev/null) || return 0
+    actions=$(mdl --autocomplete actions 2>/dev/null) || return 0
 
     # Complete after mdl command OR after : (because bash breaks :action into : action)
     if [[ "$prev" == "mdl" || "$prev" == ":" ]]; then
