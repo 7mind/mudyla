@@ -339,6 +339,12 @@ object parser:
                 case "sys"   => Some(SystemExpansion(m.matched, rest))
                 case "action" =>
                   rest.split("\\.", 2).toList match
+                    // Check for weak action expansion: ${action.weak.action-name.variable}
+                    case "weak" :: weakRest :: Nil =>
+                      weakRest.split("\\.", 2).toList match
+                        case action :: variable :: Nil => Some(WeakActionExpansion(m.matched, action, variable))
+                        case _ => None
+                    // Regular action expansion: ${action.action-name.variable}
                     case action :: variable :: Nil => Some(ActionExpansion(m.matched, action, variable))
                     case _ => None
                 case "env"   => Some(EnvExpansion(m.matched, rest))
@@ -356,8 +362,10 @@ object parser:
       }.toSeq
 
     private val DepActionRegex: Regex = "(?m)^\\s*dep\\s+action.([a-zA-Z][a-zA-Z0-9_-]*)\\s*$".r
+    private val WeakActionRegex: Regex = "(?m)^\\s*weak\\s+action.([a-zA-Z][a-zA-Z0-9_-]*)\\s*$".r
     private val DepEnvRegex: Regex = "(?m)^\\s*dep\\s+env.([A-Z_][A-Z0-9_]*)\\s*$".r
     private val DepPythonActionRegex: Regex = "(?m)^\\s*mdl\\.dep\\(\\s*\"action.([a-zA-Z][a-zA-Z0-9_-]*)\"".r
+    private val WeakPythonActionRegex: Regex = "(?m)^\\s*mdl\\.weak\\(\\s*\"action.([a-zA-Z][a-zA-Z0-9_-]*)\"".r
     private val DepPythonEnvRegex: Regex = "(?m)^\\s*mdl\\.dep\\(\\s*\"env.([A-Z_][A-Z0-9_]*)\"".r
 
     private def parseDependencyDeclarations(script: String, location: SourceLocation): (Seq[DependencyDeclaration], Seq[String]) =
@@ -367,9 +375,13 @@ object parser:
       for ((line, idx) <- lines.zipWithIndex) {
         line match
           case DepActionRegex(name) =>
-            deps += DependencyDeclaration(name, location.copy(lineNumber = location.lineNumber + idx))
+            deps += DependencyDeclaration(name, location.copy(lineNumber = location.lineNumber + idx), weak = false)
+          case WeakActionRegex(name) =>
+            deps += DependencyDeclaration(name, location.copy(lineNumber = location.lineNumber + idx), weak = true)
           case DepPythonActionRegex(name) =>
-            deps += DependencyDeclaration(name, location.copy(lineNumber = location.lineNumber + idx))
+            deps += DependencyDeclaration(name, location.copy(lineNumber = location.lineNumber + idx), weak = false)
+          case WeakPythonActionRegex(name) =>
+            deps += DependencyDeclaration(name, location.copy(lineNumber = location.lineNumber + idx), weak = true)
           case DepEnvRegex(name) => envDeps += name
           case DepPythonEnvRegex(name) => envDeps += name
           case _ => ()

@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from ..ast.expansions import ArgsExpansion, EnvExpansion, FlagsExpansion, ActionExpansion
+from ..ast.expansions import ArgsExpansion, EnvExpansion, FlagsExpansion, ActionExpansion, WeakActionExpansion
 from ..ast.models import ParsedDocument
 from .graph import ActionGraph, ActionKey
 
@@ -100,10 +100,10 @@ class DAGValidator:
         """Validate that all action dependencies exist."""
         errors = []
         for node in self.graph.nodes.values():
-            for dep_key in node.dependencies:
-                if dep_key not in self.graph.nodes:
+            for dep in node.dependencies:
+                if dep.action not in self.graph.nodes:
                     errors.append(
-                        f"Action '{node.action.name}' depends on '{dep_key}' "
+                        f"Action '{node.action.name}' depends on '{dep.action}' "
                         f"which does not exist (at {node.action.location})"
                     )
 
@@ -267,7 +267,11 @@ class DAGValidator:
             raise ValidationError("\n".join(errors))
 
     def _validate_action_outputs(self) -> None:
-        """Validate that all required action outputs are provided."""
+        """Validate that all required action outputs are provided.
+
+        Weak dependencies that were pruned are skipped (WeakActionExpansion
+        gracefully returns empty string if the action is missing).
+        """
         errors = []
 
         pruned_graph = self._required_graph
@@ -279,19 +283,29 @@ class DAGValidator:
                 )
                 continue
 
-            # Get all required outputs
+            # Get all required outputs, tracking whether each is from a weak dependency
             required_outputs: dict[str, set[str]] = {}  # dep_action -> {output_names}
+            weak_expansions: dict[str, bool] = {}  # dep_action -> is_weak
 
             for expansion in node.selected_version.expansions:
-                if isinstance(expansion, ActionExpansion):
+                if isinstance(expansion, (ActionExpansion, WeakActionExpansion)):
                     dep_action = expansion.get_dependency_action()
                     if dep_action not in required_outputs:
                         required_outputs[dep_action] = set()
+                        weak_expansions[dep_action] = isinstance(expansion, WeakActionExpansion)
                     required_outputs[dep_action].add(expansion.variable_name)
 
             # Check each dependency provides the required outputs
             for dep_action, output_names in required_outputs.items():
                 dep_key = ActionKey.from_name(dep_action)
+                is_weak = weak_expansions.get(dep_action, False)
+
+                # If this is a weak dependency and the action was pruned, skip validation
+                # (WeakActionExpansion will return empty string)
+                if is_weak and dep_key not in pruned_graph.nodes:
+                    continue
+
+                # For strong dependencies, missing action is an error (caught elsewhere)
                 if dep_key not in pruned_graph.nodes:
                     continue  # This will be caught by dependency validation
 
@@ -307,12 +321,14 @@ class DAGValidator:
                 # Check all required outputs are provided
                 missing = output_names - provided_outputs
                 if missing:
-                    errors.append(
-                        f"Action '{node.action.name}' requires outputs "
-                        f"{{{', '.join(sorted(missing))}}} from '{dep_action}', "
-                        f"but '{dep_action}' only provides "
-                        f"{{{', '.join(sorted(provided_outputs))}}}"
-                    )
+                    # For weak dependencies, missing outputs are tolerated (will be empty string)
+                    if not is_weak:
+                        errors.append(
+                            f"Action '{node.action.name}' requires outputs "
+                            f"{{{', '.join(sorted(missing))}}} from '{dep_action}', "
+                            f"but '{dep_action}' only provides "
+                            f"{{{', '.join(sorted(provided_outputs))}}}"
+                        )
 
         if errors:
             raise ValidationError("\n".join(errors))

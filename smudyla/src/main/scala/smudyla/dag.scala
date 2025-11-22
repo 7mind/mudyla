@@ -16,13 +16,33 @@ object dag:
   object ActionKey:
     def fromName(name: String): ActionKey = ActionKey(ActionId(name))
 
+  /** Represents a dependency between actions.
+    *
+    * A dependency can be either strong (regular) or weak. Weak dependencies
+    * are only retained if the target action is already required by a strong
+    * dependency path from a goal.
+    */
+  final case class Dependency(action: ActionKey, weak: Boolean = false):
+    override def toString: String =
+      val qualifier = if weak then "weak " else ""
+      s"$qualifier$action"
+
   final case class ActionNode(
       action: ActionDefinition,
       selectedVersion: Option[ActionVersion],
-      dependencies: Set[ActionKey],
-      dependents: Set[ActionKey],
+      dependencies: Set[Dependency],
+      dependents: Set[Dependency],
   ):
     def key: ActionKey = ActionKey.fromName(action.name)
+
+    def getDependencyKeys: Set[ActionKey] =
+      dependencies.map(_.action)
+
+    def getStrongDependencyKeys: Set[ActionKey] =
+      dependencies.filter(!_.weak).map(_.action)
+
+    def getWeakDependencyKeys: Set[ActionKey] =
+      dependencies.filter(_.weak).map(_.action)
 
   final case class ActionGraph(nodes: Map[ActionKey, ActionNode], goals: Set[ActionKey]):
     def getNode(key: ActionKey): ActionNode =
@@ -31,17 +51,28 @@ object dag:
     def getNodeByName(name: String): ActionNode =
       getNode(ActionKey.fromName(name))
 
+    private def collectStrongDependencies(key: ActionKey, visited: mutable.Set[ActionKey]): Unit =
+      if !visited.contains(key) then
+        visited += key
+        nodes.get(key).foreach { node =>
+          node.dependencies.foreach { dep =>
+            if !dep.weak then collectStrongDependencies(dep.action, visited)
+          }
+        }
+
     def pruneToGoals(): ActionGraph =
-      val required = mutable.LinkedHashSet.empty[ActionKey]
-      def collect(actionKey: ActionKey): Unit =
-        if !required.contains(actionKey) then
-          required += actionKey
-          nodes.get(actionKey).foreach { node => node.dependencies.foreach(collect) }
-      goals.foreach(collect)
-      val filtered = nodes.collect { case (key, node) if required.contains(key) =>
+      // First, collect actions reachable via strong dependencies only
+      val retained = mutable.LinkedHashSet.empty[ActionKey]
+      goals.foreach(goal => collectStrongDependencies(goal, retained))
+
+      val filtered = nodes.collect { case (key, node) if retained.contains(key) =>
+        // Filter dependencies: keep all dependencies (strong and weak) whose targets are in the retained set
+        val prunedDependencies = node.dependencies.filter(dep => retained.contains(dep.action))
+        val prunedDependents = node.dependents.filter(dep => retained.contains(dep.action))
+
         key -> node.copy(
-          dependencies = node.dependencies.intersect(required.toSet),
-          dependents = node.dependents.intersect(required.toSet),
+          dependencies = prunedDependencies,
+          dependents = prunedDependents,
         )
       }
       ActionGraph(filtered, goals.intersect(filtered.keySet))
@@ -59,10 +90,10 @@ object dag:
         val current = queue.dequeue()
         order += current
         val node = nodes(current)
-        node.dependents.foreach { depKey =>
-          val next = inDegree(depKey) - 1
-          inDegree(depKey) = next
-          if next == 0 then queue.enqueue(depKey)
+        node.dependents.foreach { dep =>
+          val next = inDegree(dep.action) - 1
+          inDegree(dep.action) = next
+          if next == 0 then queue.enqueue(dep.action)
         }
       if order.size != nodes.size then
         val remaining = nodes.keySet.diff(order.toSet)
@@ -79,11 +110,11 @@ object dag:
         visited += key
         stack += key
         path += key
-        val cycle = nodes(key).dependencies.iterator.flatMap { depKey =>
-          if !visited(depKey) then dfs(depKey)
-          else if stack(depKey) then
-            val idx = path.indexOf(depKey)
-            Some(path.slice(idx, path.length).toList :+ depKey)
+        val cycle = nodes(key).dependencies.iterator.flatMap { dep =>
+          if !visited(dep.action) then dfs(dep.action)
+          else if stack(dep.action) then
+            val idx = path.indexOf(dep.action)
+            Some(path.slice(idx, path.length).toList :+ dep.action)
           else None
         }.toSeq.headOption
         stack -= key
@@ -100,22 +131,28 @@ object dag:
       document.actions.values.foreach { action =>
         val version = try action.getVersion(axisValues, platform) catch
           case _: Throwable => null
-        val deps = mutable.LinkedHashSet.empty[ActionKey]
+        val deps = mutable.LinkedHashSet.empty[Dependency]
         if version != null then
-          version.expansions.collect { case ActionExpansion(_, actionName, _) =>
-            ActionKey.fromName(actionName)
-          }.foreach(deps += _)
-          version.dependencyDeclarations.foreach(dep =>
-            deps += ActionKey.fromName(dep.actionName)
-          )
+          // Implicit dependencies from ${action.*} and ${action.weak.*} expansions
+          version.expansions.foreach {
+            case ActionExpansion(_, actionName, _) =>
+              deps += Dependency(ActionKey.fromName(actionName), weak = false)
+            case WeakActionExpansion(_, actionName, _) =>
+              deps += Dependency(ActionKey.fromName(actionName), weak = true)
+            case _ => ()
+          }
+          // Explicit dependencies from dep/weak declarations
+          version.dependencyDeclarations.foreach { dep =>
+            deps += Dependency(ActionKey.fromName(dep.actionName), weak = dep.weak)
+          }
         val actionKey = ActionKey.fromName(action.name)
         nodes(actionKey) = ActionNode(action, Option(version), deps.toSet, Set.empty)
       }
       // fill dependents
       nodes.values.foreach { node =>
-        node.dependencies.foreach { depKey =>
-          nodes.get(depKey).foreach { depNode =>
-            nodes.update(depKey, depNode.copy(dependents = depNode.dependents + node.key))
+        node.dependencies.foreach { dep =>
+          nodes.get(dep.action).foreach { depNode =>
+            nodes.update(dep.action, depNode.copy(dependents = depNode.dependents + Dependency(node.key, dep.weak)))
           }
         }
       }

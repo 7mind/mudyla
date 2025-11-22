@@ -42,8 +42,12 @@ class DependencyDeclaration:
 
     location: SourceLocation
 
+    weak: bool = False
+    """Whether this is a weak dependency (does not force retention)"""
+
     def __str__(self) -> str:
-        return f"dep {self.action_name}"
+        prefix = "weak" if self.weak else "dep"
+        return f"{prefix} {self.action_name}"
 
 
 @dataclass(frozen=True)

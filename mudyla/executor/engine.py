@@ -289,10 +289,10 @@ class ExecutionEngine:
 
         # Use ActionKey throughout for type safety
         pending_deps: dict[ActionKey, set[ActionKey]] = {
-            key: set(node.dependencies) for key, node in self.graph.nodes.items()
+            key: {dep.action for dep in node.dependencies} for key, node in self.graph.nodes.items()
         }
         dependents: dict[ActionKey, set[ActionKey]] = {
-            key: set(node.dependents) for key, node in self.graph.nodes.items()
+            key: {dep.action for dep in node.dependents} for key, node in self.graph.nodes.items()
         }
         ready = [key for key, deps in pending_deps.items() if len(deps) == 0]
         scheduled: set[ActionKey] = set()

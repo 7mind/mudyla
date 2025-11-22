@@ -82,6 +82,55 @@ class ActionExpansion(Expansion):
         """Get the action name this expansion depends on."""
         return self.action_name
 
+    def is_weak(self) -> bool:
+        """Return False to indicate this is a strong dependency."""
+        return False
+
+
+@dataclass(frozen=True)
+class WeakActionExpansion(Expansion):
+    """Weak action output expansion: ${action.weak.action-name.variable-name}
+
+    Unlike ActionExpansion, if the action is not available (was pruned due to
+    being only weakly depended on), this returns an empty string instead of
+    raising an error.
+    """
+
+    action_name: str
+    variable_name: str
+
+    def get_type(self) -> ExpansionType:
+        return ExpansionType.ACTION
+
+    def resolve(self, context: dict[str, Any]) -> str:
+        actions = context.get("actions", {})
+
+        # If action was pruned (not retained), return empty string
+        if self.action_name not in actions:
+            return ""
+
+        action_outputs = actions[self.action_name]
+
+        # If variable not provided, return empty string (graceful degradation)
+        if self.variable_name not in action_outputs:
+            return ""
+
+        value = action_outputs[self.variable_name]
+
+        # Handle None values (return empty string)
+        if value is None:
+            return ""
+
+        return str(value)
+
+    def get_dependency_action(self) -> str:
+        """Get the action name this expansion depends on."""
+        return self.action_name
+
+    def is_weak(self) -> bool:
+        """Return True to indicate this is a weak dependency."""
+        return True
+
 
 @dataclass(frozen=True)
 class EnvExpansion(Expansion):

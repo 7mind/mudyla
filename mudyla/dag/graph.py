@@ -40,6 +40,27 @@ class ActionKey:
         return cls(id=ActionId(name=name))
 
 
+@dataclass(frozen=True)
+class Dependency:
+    """Represents a dependency between actions.
+
+    A dependency can be either strong (regular) or weak. Weak dependencies
+    are only retained if the target action is already required by a strong
+    dependency path from a goal. This is similar to weak dependencies in
+    distage dependency injection.
+    """
+
+    action: ActionKey
+    """The action being depended on"""
+
+    weak: bool = False
+    """Whether this is a weak dependency (does not force retention)"""
+
+    def __str__(self) -> str:
+        qualifier = "weak " if self.weak else ""
+        return f"{qualifier}{self.action}"
+
+
 @dataclass
 class ActionNode:
     """Node in the action dependency graph."""
@@ -50,16 +71,28 @@ class ActionNode:
     selected_version: Optional[ActionVersion] = None
     """The selected version based on axis values"""
 
-    dependencies: set[ActionKey] = field(default_factory=set)
-    """Keys of actions this node depends on"""
+    dependencies: set[Dependency] = field(default_factory=set)
+    """Dependencies of this node (can be strong or weak)"""
 
-    dependents: set[ActionKey] = field(default_factory=set)
-    """Keys of actions that depend on this node"""
+    dependents: set[Dependency] = field(default_factory=set)
+    """Nodes that depend on this node (can be strong or weak)"""
 
     @property
     def key(self) -> ActionKey:
         """Get the key for this node."""
         return ActionKey.from_name(self.action.name)
+
+    def get_dependency_keys(self) -> set[ActionKey]:
+        """Get all dependency action keys (both strong and weak)."""
+        return {dep.action for dep in self.dependencies}
+
+    def get_strong_dependency_keys(self) -> set[ActionKey]:
+        """Get only strong dependency action keys."""
+        return {dep.action for dep in self.dependencies if not dep.weak}
+
+    def get_weak_dependency_keys(self) -> set[ActionKey]:
+        """Get only weak dependency action keys."""
+        return {dep.action for dep in self.dependencies if dep.weak}
 
     def __hash__(self) -> int:
         return hash(self.key)
@@ -138,15 +171,27 @@ class ActionGraph:
         return self.get_all_dependencies(key)
 
     def _collect_dependencies(self, key: ActionKey, visited: set[ActionKey]) -> None:
-        """Recursively collect dependencies."""
+        """Recursively collect dependencies (both strong and weak)."""
         if key in visited:
             return
 
         visited.add(key)
         node = self.get_node(key)
 
-        for dep_key in node.dependencies:
-            self._collect_dependencies(dep_key, visited)
+        for dep in node.dependencies:
+            self._collect_dependencies(dep.action, visited)
+
+    def _collect_strong_dependencies(self, key: ActionKey, visited: set[ActionKey]) -> None:
+        """Recursively collect only strong dependencies."""
+        if key in visited:
+            return
+
+        visited.add(key)
+        node = self.get_node(key)
+
+        for dep in node.dependencies:
+            if not dep.weak:
+                self._collect_strong_dependencies(dep.action, visited)
 
     def topological_sort(self) -> list[ActionKey]:
         """Get topological sort of the graph.
@@ -157,12 +202,12 @@ class ActionGraph:
         Raises:
             ValueError: If graph contains cycles
         """
-        # Kahn's algorithm
+        # Kahn's algorithm - count all dependencies (strong and weak)
         in_degree = {key: 0 for key in self.nodes}
 
         for node in self.nodes.values():
-            for dep_key in node.dependencies:
-                in_degree[node.key] += 1
+            # Count number of dependencies (all types)
+            in_degree[node.key] = len(node.dependencies)
 
         queue = [key for key, degree in in_degree.items() if degree == 0]
         result: list[ActionKey] = []
@@ -174,10 +219,10 @@ class ActionGraph:
             result.append(action_key)
 
             node = self.nodes[action_key]
-            for dependent_key in node.dependents:
-                in_degree[dependent_key] -= 1
-                if in_degree[dependent_key] == 0:
-                    queue.append(dependent_key)
+            for dependent in node.dependents:
+                in_degree[dependent.action] -= 1
+                if in_degree[dependent.action] == 0:
+                    queue.append(dependent.action)
 
         if len(result) != len(self.nodes):
             # Graph has a cycle
@@ -192,6 +237,8 @@ class ActionGraph:
     def find_cycle(self) -> Optional[list[ActionKey]]:
         """Find a cycle in the graph if one exists.
 
+        Checks for cycles considering both strong and weak dependencies.
+
         Returns:
             List of action keys forming a cycle, or None if no cycle
         """
@@ -205,15 +252,15 @@ class ActionGraph:
             path.append(key)
 
             node = self.nodes[key]
-            for dep_key in node.dependencies:
-                if dep_key not in visited:
-                    cycle = dfs(dep_key)
+            for dep in node.dependencies:
+                if dep.action not in visited:
+                    cycle = dfs(dep.action)
                     if cycle:
                         return cycle
-                elif dep_key in rec_stack:
+                elif dep.action in rec_stack:
                     # Found a cycle
-                    cycle_start = path.index(dep_key)
-                    return path[cycle_start:] + [dep_key]
+                    cycle_start = path.index(dep.action)
+                    return path[cycle_start:] + [dep.action]
 
             path.pop()
             rec_stack.remove(key)
@@ -230,29 +277,43 @@ class ActionGraph:
     def prune_to_goals(self) -> "ActionGraph":
         """Create a new graph containing only actions required for goals.
 
+        This implements weak dependency semantics: weak dependencies are only
+        retained if the target action is already required via a strong dependency
+        path from a goal.
+
         Returns:
             New pruned graph
         """
-        required_actions: set[ActionKey] = set()
-
-        # Collect all dependencies of goals
+        # First, collect actions reachable via strong dependencies only
+        retained_actions: set[ActionKey] = set()
         for goal in self.goals:
-            required_actions.add(goal)
-            required_actions.update(self.get_all_dependencies(goal))
+            self._collect_strong_dependencies(goal, retained_actions)
 
         pruned_nodes: dict[ActionKey, ActionNode] = {}
 
-        # Create deep copies of the nodes we keep so that pruning never mutates
-        # the original graph (validator relies on this multiple times).
+        # Create deep copies of the nodes we keep
         for key, node in self.nodes.items():
-            if key not in required_actions:
+            if key not in retained_actions:
                 continue
+
+            # Filter dependencies: keep all dependencies (strong and weak)
+            # whose targets are in the retained set
+            pruned_dependencies = {
+                dep for dep in node.dependencies
+                if dep.action in retained_actions
+            }
+
+            # Filter dependents similarly
+            pruned_dependents = {
+                dep for dep in node.dependents
+                if dep.action in retained_actions
+            }
 
             pruned_nodes[key] = ActionNode(
                 action=node.action,
                 selected_version=node.selected_version,
-                dependencies=set(node.dependencies) & required_actions,
-                dependents=set(node.dependents) & required_actions,
+                dependencies=pruned_dependencies,
+                dependents=pruned_dependents,
             )
 
         pruned_goals = {goal for goal in self.goals if goal in pruned_nodes}

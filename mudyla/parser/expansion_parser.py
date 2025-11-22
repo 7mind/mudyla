@@ -7,6 +7,7 @@ from ..ast.expansions import (
     Expansion,
     SystemExpansion,
     ActionExpansion,
+    WeakActionExpansion,
     EnvExpansion,
     ArgsExpansion,
     FlagsExpansion,
@@ -101,15 +102,42 @@ class ExpansionParser:
     @classmethod
     def _parse_action_expansion(
         cls, original_text: str, parts: list[str]
-    ) -> ActionExpansion:
-        """Parse action expansion: ${action.action-name.variable-name}"""
+    ) -> ActionExpansion | WeakActionExpansion:
+        """Parse action expansion: ${action.action-name.variable-name} or ${action.weak.action-name.variable-name}"""
         if len(parts) != 2:
             raise ValueError(
                 f"Invalid action expansion: {original_text}. "
-                "Expected format: ${{action.action-name.variable-name}}"
+                "Expected format: ${{action.action-name.variable-name}} or ${{action.weak.action-name.variable-name}}"
             )
 
         rest_parts = parts[1].split(".", 1)
+
+        # Check if this is a weak dependency: ${action.weak.action-name.variable-name}
+        if len(rest_parts) >= 1 and rest_parts[0] == "weak":
+            if len(rest_parts) != 2:
+                raise ValueError(
+                    f"Invalid weak action expansion: {original_text}. "
+                    "Expected format: ${{action.weak.action-name.variable-name}}"
+                )
+
+            # Parse the rest: action-name.variable-name
+            weak_rest_parts = rest_parts[1].split(".", 1)
+            if len(weak_rest_parts) != 2:
+                raise ValueError(
+                    f"Invalid weak action expansion: {original_text}. "
+                    "Expected format: ${{action.weak.action-name.variable-name}}"
+                )
+
+            action_name = weak_rest_parts[0]
+            variable_name = weak_rest_parts[1]
+
+            return WeakActionExpansion(
+                original_text=original_text,
+                action_name=action_name,
+                variable_name=variable_name,
+            )
+
+        # Regular strong dependency: ${action.action-name.variable-name}
         if len(rest_parts) != 2:
             raise ValueError(
                 f"Invalid action expansion: {original_text}. "

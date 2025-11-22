@@ -2,9 +2,9 @@
 
 import platform
 
-from ..ast.expansions import ActionExpansion
+from ..ast.expansions import ActionExpansion, WeakActionExpansion
 from ..ast.models import ParsedDocument
-from .graph import ActionGraph, ActionNode, ActionKey
+from .graph import ActionGraph, ActionNode, ActionKey, Dependency
 
 
 def get_normalized_platform() -> str:
@@ -66,17 +66,20 @@ class DAGBuilder:
                 selected_version = None
 
             # Extract dependencies
-            dependencies: set[ActionKey] = set()
+            dependencies: set[Dependency] = set()
             if selected_version:
-                # Implicit dependencies from ${action.*} expansions
+                # Implicit dependencies from ${action.*} and ${action.weak.*} expansions
                 for expansion in selected_version.expansions:
-                    if isinstance(expansion, ActionExpansion):
+                    if isinstance(expansion, (ActionExpansion, WeakActionExpansion)):
                         dep_name = expansion.get_dependency_action()
-                        dependencies.add(ActionKey.from_name(dep_name))
+                        dep_key = ActionKey.from_name(dep_name)
+                        is_weak = isinstance(expansion, WeakActionExpansion)
+                        dependencies.add(Dependency(action=dep_key, weak=is_weak))
 
-                # Explicit dependencies from dep declarations
+                # Explicit dependencies from dep/weak declarations
                 for dep_decl in selected_version.dependency_declarations:
-                    dependencies.add(ActionKey.from_name(dep_decl.action_name))
+                    dep_key = ActionKey.from_name(dep_decl.action_name)
+                    dependencies.add(Dependency(action=dep_key, weak=dep_decl.weak))
 
             node = ActionNode(
                 action=action,
@@ -88,9 +91,12 @@ class DAGBuilder:
 
         # Build reverse edges (dependents)
         for action_key, node in nodes.items():
-            for dep_key in node.dependencies:
-                if dep_key in nodes:
-                    nodes[dep_key].dependents.add(action_key)
+            for dep in node.dependencies:
+                if dep.action in nodes:
+                    # Create reverse dependency with same weak flag
+                    nodes[dep.action].dependents.add(
+                        Dependency(action=action_key, weak=dep.weak)
+                    )
 
         goal_keys = {ActionKey.from_name(goal) for goal in goals}
         return ActionGraph(nodes=nodes, goals=goal_keys)

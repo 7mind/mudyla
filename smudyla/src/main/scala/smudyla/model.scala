@@ -27,12 +27,13 @@ object model:
     def originalText: String
   final case class SystemExpansion(originalText: String, variableName: String) extends Expansion
   final case class ActionExpansion(originalText: String, actionName: String, variableName: String) extends Expansion
+  final case class WeakActionExpansion(originalText: String, actionName: String, variableName: String) extends Expansion
   final case class EnvExpansion(originalText: String, variableName: String) extends Expansion
   final case class ArgsExpansion(originalText: String, argumentName: String) extends Expansion
   final case class FlagsExpansion(originalText: String, flagName: String) extends Expansion
 
   final case class ReturnDeclaration(name: String, returnType: ReturnType, valueExpression: String, location: SourceLocation)
-  final case class DependencyDeclaration(actionName: String, location: SourceLocation)
+  final case class DependencyDeclaration(actionName: String, location: SourceLocation, weak: Boolean = false)
 
   final case class ArgumentDefinition(name: String, argType: ReturnType, defaultValue: Option[String], description: String, location: SourceLocation)
   final case class FlagDefinition(name: String, description: String, location: SourceLocation)

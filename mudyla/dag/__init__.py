@@ -2,6 +2,6 @@
 
 from .builder import DAGBuilder
 from .validator import DAGValidator
-from .graph import ActionGraph, ActionNode, ActionId, ActionKey
+from .graph import ActionGraph, ActionNode, ActionId, ActionKey, Dependency
 
-__all__ = ["DAGBuilder", "DAGValidator", "ActionGraph", "ActionNode", "ActionId", "ActionKey"]
+__all__ = ["DAGBuilder", "DAGValidator", "ActionGraph", "ActionNode", "ActionId", "ActionKey", "Dependency"]

@@ -340,10 +340,11 @@ class CLI:
                 # Has dependencies - show them
                 dep_names = []
                 # Sort dependencies by their action name for deterministic output
-                sorted_deps = sorted(node.dependencies, key=lambda k: k.id.name)
-                for dep_key in sorted_deps:
-                    dep_num = execution_order.index(dep_key) + 1
-                    dep_names.append(f"{dep_num}")
+                sorted_deps = sorted(node.dependencies, key=lambda d: d.action.id.name)
+                for dep in sorted_deps:
+                    dep_num = execution_order.index(dep.action) + 1
+                    weak_marker = "(weak)" if dep.weak else ""
+                    dep_names.append(f"{dep_num}{weak_marker}")
 
                 deps_str = ",".join(dep_names)
                 arrow = output.emoji("←", "<-")
