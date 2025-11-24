@@ -212,7 +212,8 @@ class CLI:
                 output.print(f"\n{output.emoji('❌', '✗')} {color.error('Execution failed!')}")
                 return 1
 
-            goal_outputs = result.get_goal_outputs(goals)
+            # Get outputs using ActionKeys (with context) instead of just action names
+            goal_outputs = result.get_goal_outputs(graph.goals)
             output.print(f"\n{output.emoji('✅', '✓')} {color.success('Execution completed successfully!')}")
 
             output_json = json.dumps(goal_outputs, indent=2)

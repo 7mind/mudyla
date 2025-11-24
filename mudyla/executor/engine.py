@@ -70,24 +70,36 @@ class ExecutionResult:
     action_results: dict[str, ActionResult]
     run_directory: Path
 
-    def get_goal_outputs(self, goals: list[str]) -> dict[str, dict[str, Any]]:
+    def get_goal_outputs(self, goal_keys) -> dict[str, dict[str, Any]]:
         """Get outputs for goal actions.
 
         Args:
-            goals: List of goal action names
+            goal_keys: List of ActionKeys representing goals
 
         Returns:
-            Dictionary mapping action name to outputs
+            Dictionary mapping full action key (context#action) to outputs
         """
         result = {}
-        for goal in goals:
-            # Find matching action results (may be keyed by simple name or "context#name")
-            for key, action_result in self.action_results.items():
-                # Extract action name from key (format: "name" or "context#name")
-                action_name = key.split("#")[-1] if "#" in key else key
-                if action_name == goal:
-                    result[goal] = action_result.outputs
-                    break
+        for goal_key in goal_keys:
+            # Convert ActionKey to string format
+            goal_key_str = str(goal_key)
+
+            # Find matching action result
+            if goal_key_str in self.action_results:
+                action_result = self.action_results[goal_key_str]
+
+                # Assert that we're not overwriting - this would be a bug
+                if goal_key_str in result:
+                    raise RuntimeError(
+                        f"Internal error: duplicate output for '{goal_key_str}'. "
+                        "This indicates a bug in context isolation."
+                    )
+
+                result[goal_key_str] = action_result.outputs
+            else:
+                # This shouldn't happen - log warning but don't fail
+                print(f"Warning: No results found for goal {goal_key_str}", file=sys.stderr)
+
         return result
 
 

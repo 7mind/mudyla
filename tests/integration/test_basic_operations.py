@@ -155,8 +155,13 @@ class TestBasicOperations:
         # Parse and validate JSON
         try:
             outputs = json.loads(json_text)
-            assert "write-message" in outputs
-            assert "message-file" in outputs["write-message"]
-            assert "message-length" in outputs["write-message"]
+
+            # Find the key that ends with #write-message (includes context ID)
+            write_message_keys = [k for k in outputs.keys() if k.endswith("#write-message") or k == "write-message"]
+            assert len(write_message_keys) == 1, f"Expected exactly one write-message output, found: {write_message_keys}"
+
+            write_message_key = write_message_keys[0]
+            assert "message-file" in outputs[write_message_key]
+            assert "message-length" in outputs[write_message_key]
         except json.JSONDecodeError as e:
             pytest.fail(f"Invalid JSON output: {e}\n{json_text}")
