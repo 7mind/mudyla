@@ -31,6 +31,8 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 - **Multi-language support**: Write actions in Bash or Python
 - **Dependency graph execution**: Automatic dependency resolution and parallel execution
 - **Multi-version actions**: Different implementations based on axis values (e.g., build-mode)
+- **Multi-context execution**: Run the same action multiple times with different configurations
+- **Per-action parameters**: Each action invocation can have different axis values and arguments
 - **Type-safe returns**: Actions return typed values (int, string, bool, file, directory)
 - **Nix integration**: All actions run in Nix development environment (optional on Windows)
 - **Command-line arguments and flags**: Parameterize actions with arguments and flags
@@ -219,6 +221,92 @@ ret mode:string=development
 \```
 ```
 
+### Multi-Context Execution
+
+Run the same action multiple times with different configurations using per-action axis values and arguments.
+
+**Multiple contexts for the same action:**
+
+```bash
+# Run build action in both development and release modes
+mdl :build --axis=build-mode=development :build --axis=build-mode=release
+
+# Each context gets its own execution with separate outputs
+# Output: build-mode:development#build and build-mode:release#build
+```
+
+**Per-action arguments:**
+
+```bash
+# Run the same action with different argument values
+mdl :process-file --input=file1.txt :process-file --input=file2.txt
+
+# Each invocation executes independently with its own arguments
+```
+
+**Context inheritance:**
+
+Dependencies automatically inherit the context from their parent action:
+
+```bash
+# When running :build with different modes, dependencies also get separate contexts
+mdl :build --axis=build-mode=release
+
+# If build depends on compile, both will use build-mode:release context
+# Output shows: build-mode:release#compile → build-mode:release#build
+```
+
+**Context notation:**
+
+Multi-context execution uses the format `context#action`:
+- `build-mode:release#build` - build action in release context
+- `build-mode:development#compile` - compile action in development context
+- Rich tables show separate rows for each context
+
+**Graph unification:**
+
+Duplicate invocations with identical context are automatically unified:
+
+```bash
+# These two are the same and will only execute once
+mdl :build --axis=build-mode=release :build --axis=build-mode=release
+```
+
+**Real-world example: Cross-compilation**
+
+```markdown
+# Axis
+- `target-arch`=`{x86_64*|aarch64|armv7}`
+
+# action: compile
+
+## definition when `target-arch: x86_64`
+```bash
+gcc -march=x86-64 -o build/app-x64 src/*.c
+ret binary:file=build/app-x64
+\```
+
+## definition when `target-arch: aarch64`
+```bash
+aarch64-linux-gnu-gcc -o build/app-arm64 src/*.c
+ret binary:file=build/app-arm64
+\```
+
+## definition when `target-arch: armv7`
+```bash
+arm-linux-gnueabihf-gcc -o build/app-armv7 src/*.c
+ret binary:file=build/app-armv7
+\```
+```
+
+Run for all architectures:
+```bash
+# Compiles for all three architectures in parallel
+mdl :compile --axis=target-arch=x86_64 \
+    :compile --axis=target-arch=aarch64 \
+    :compile --axis=target-arch=armv7
+```
+
 ### Python Actions
 
 Mudyla supports Python code blocks alongside Bash. Python actions use the `mdl` object for interacting with the Mudyla runtime.
@@ -338,6 +426,8 @@ Python actions use the `mdl` object (see [Python Actions](#python-actions) secti
 
 ## Command-Line Usage
 
+### Basic Usage
+
 ```bash
 # Execute goals (runs in parallel by default)
 mdl :goal1 :goal2
@@ -348,12 +438,29 @@ mdl --arg-name=value :goal
 # With flags
 mdl --flag-name :goal
 
-# With axis (multi-version actions)
-mdl --axis build-mode=release :goal
-
 # List available actions
 mdl --list-actions
+```
 
+### Multi-Context Execution
+
+```bash
+# Run same action with different axis values (multi-context)
+mdl :build --axis=build-mode=development :build --axis=build-mode=release
+
+# Set global axis for all actions
+mdl --axis=build-mode=release :build :test
+
+# Per-action arguments
+mdl :process --input=file1.txt :process --input=file2.txt
+
+# Mix global and per-action settings
+mdl --verbose :compile --axis=opt-level=O3 :compile --axis=opt-level=O0
+```
+
+### Execution Control
+
+```bash
 # Dry run (show plan without executing)
 mdl --dry-run :goal
 
@@ -365,7 +472,11 @@ mdl --continue :goal
 
 # Keep run directory for inspection
 mdl --keep-run-dir :goal
+```
 
+### Output and Logging
+
+```bash
 # Verbose mode (show commands)
 mdl --verbose :goal
 
@@ -374,9 +485,16 @@ mdl --simple-log :goal
 
 # Save output to file
 mdl --out results.json :goal
+```
 
+### Platform Options
+
+```bash
 # Run without Nix (Windows or when Nix unavailable)
 mdl --without-nix :goal
+
+# GitHub Actions mode (optimized for CI)
+mdl --github-actions :goal
 ```
 
 ## Testing
