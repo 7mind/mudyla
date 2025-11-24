@@ -93,6 +93,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--show-dirs",
+        dest="show_dirs",
+        action="store_true",
+        help="Show action directories in the rich table (off by default)",
+    )
+
+    parser.add_argument(
         "--seq",
         dest="sequential",
         action="store_true",

@@ -146,6 +146,7 @@ class ExecutionEngine:
         keep_run_dir: bool = False,
         no_color: bool = False,
         simple_log: bool = False,
+        show_dirs: bool = False,
         parallel_execution: bool = True,
         use_short_context_ids: bool = False,
         context_id_mapping: Optional[dict[str, str]] = None,
@@ -165,6 +166,7 @@ class ExecutionEngine:
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
         self.simple_log = simple_log
+        self.show_dirs = show_dirs
         self.parallel_execution = parallel_execution
         self.use_short_context_ids = use_short_context_ids
         self.context_id_mapping = context_id_mapping or {}
@@ -309,7 +311,7 @@ class ExecutionEngine:
             # Build action directory mapping
             action_dirs = self._build_action_dir_mapping(execution_order)
             table_manager = TaskTableManager(
-                action_names, no_color=self.no_color, action_dirs=action_dirs
+                action_names, no_color=self.no_color, action_dirs=action_dirs, show_dirs=self.show_dirs
             )
             table_manager.start()
 
@@ -409,7 +411,7 @@ class ExecutionEngine:
                 # Build action directory mapping
                 action_dirs = self._build_action_dir_mapping(execution_order)
                 table_manager = TaskTableManager(
-                    action_names, no_color=self.no_color, action_dirs=action_dirs
+                    action_names, no_color=self.no_color, action_dirs=action_dirs, show_dirs=self.show_dirs
                 )
                 table_manager.start()
             except ValueError:

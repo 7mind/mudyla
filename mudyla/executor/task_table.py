@@ -28,6 +28,7 @@ class TaskTableManager:
         task_names: list[str],
         no_color: bool = False,
         action_dirs: Optional[dict[str, str]] = None,
+        show_dirs: bool = False,
     ):
         """Initialize the task table manager.
 
@@ -35,11 +36,13 @@ class TaskTableManager:
             task_names: List of task names in execution order
             no_color: Whether colors are disabled
             action_dirs: Optional mapping of task names to relative action directory paths
+            show_dirs: Whether to show the directory column (default: False)
         """
         self.task_names = task_names
         self.no_color = no_color
         self.console = Console()
         self.action_dirs = action_dirs or {}
+        self.show_dirs = show_dirs
 
         # Task state
         self.task_status: dict[str, TaskStatus] = {name: TaskStatus.TBD for name in task_names}
@@ -143,7 +146,8 @@ class TaskTableManager:
             # Single context mode: just task column
             table.add_column("Task", style="cyan bold", no_wrap=True)
 
-        table.add_column("Dir", style="dim", no_wrap=True)
+        if self.show_dirs:
+            table.add_column("Dir", style="dim", no_wrap=True)
         table.add_column("Time", justify="right", no_wrap=True)
         table.add_column("Stdout", justify="right", no_wrap=True)
         table.add_column("Stderr", justify="right", no_wrap=True)
@@ -215,8 +219,10 @@ class TaskTableManager:
                     ]
 
                 # Add remaining columns
+                if self.show_dirs:
+                    row_data.append(f"[dim]{dir_str}[/dim]" if not self.no_color else dir_str)
+
                 row_data.extend([
-                    f"[dim]{dir_str}[/dim]" if not self.no_color else dir_str,
                     f"[{style}]{time_str}[/{style}]" if style else time_str,
                     f"[{style}]{stdout_str}[/{style}]" if style else stdout_str,
                     f"[{style}]{stderr_str}[/{style}]" if style else stderr_str,

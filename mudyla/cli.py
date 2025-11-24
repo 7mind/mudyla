@@ -178,6 +178,7 @@ class CLI:
                 keep_run_dir=args.keep_run_dir,
                 no_color=args.no_color,
                 simple_log=args.simple_log,
+                show_dirs=args.show_dirs,
                 parallel_execution=parallel_execution,
                 use_short_context_ids=use_short_ids,
                 context_id_mapping=context_mapping,
