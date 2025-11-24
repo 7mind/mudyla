@@ -163,8 +163,6 @@ class CLI:
                 else:
                     output.print(f"\n{output.emoji('⚠️', '!')} {color.warning('Warning:')} No runs directory found, starting fresh")
 
-            output.print(f"\n{output.emoji('🚀', '→')} {color.bold('Executing actions...')}")
-
             engine = ExecutionEngine(
                 graph=pruned_graph,
                 project_root=project_root,
@@ -184,6 +182,11 @@ class CLI:
                 use_short_context_ids=use_short_ids,
                 context_id_mapping=context_mapping,
             )
+
+            # Print run ID
+            run_id = engine.run_directory.name
+            output.print(f"\n{output.emoji('🆔', '▸')} {color.dim('Run ID:')} {color.highlight(run_id)}")
+            output.print(f"{output.emoji('🚀', '→')} {color.bold('Executing actions...')}")
 
             result = engine.execute_all()
             if not result.success:

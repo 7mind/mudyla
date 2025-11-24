@@ -23,16 +23,23 @@ class TaskStatus(Enum):
 class TaskTableManager:
     """Manages a dynamic rich table showing task execution status."""
 
-    def __init__(self, task_names: list[str], no_color: bool = False):
+    def __init__(
+        self,
+        task_names: list[str],
+        no_color: bool = False,
+        action_dirs: Optional[dict[str, str]] = None,
+    ):
         """Initialize the task table manager.
 
         Args:
             task_names: List of task names in execution order
             no_color: Whether colors are disabled
+            action_dirs: Optional mapping of task names to relative action directory paths
         """
         self.task_names = task_names
         self.no_color = no_color
         self.console = Console()
+        self.action_dirs = action_dirs or {}
 
         # Task state
         self.task_status: dict[str, TaskStatus] = {name: TaskStatus.TBD for name in task_names}
@@ -136,6 +143,7 @@ class TaskTableManager:
             # Single context mode: just task column
             table.add_column("Task", style="cyan bold", no_wrap=True)
 
+        table.add_column("Dir", style="dim", no_wrap=True)
         table.add_column("Time", justify="right", no_wrap=True)
         table.add_column("Stdout", justify="right", no_wrap=True)
         table.add_column("Stderr", justify="right", no_wrap=True)
@@ -159,6 +167,9 @@ class TaskTableManager:
                 # Format sizes
                 stdout_str = self._format_size(self.task_stdout_sizes.get(task_name, 0))
                 stderr_str = self._format_size(self.task_stderr_sizes.get(task_name, 0))
+
+                # Get action directory (relative path)
+                dir_str = self.action_dirs.get(task_name, "-")
 
                 # Split task name into context and action if present
                 if has_context and "#" in task_name:
@@ -205,6 +216,7 @@ class TaskTableManager:
 
                 # Add remaining columns
                 row_data.extend([
+                    f"[dim]{dir_str}[/dim]" if not self.no_color else dir_str,
                     f"[{style}]{time_str}[/{style}]" if style else time_str,
                     f"[{style}]{stdout_str}[/{style}]" if style else stdout_str,
                     f"[{style}]{stderr_str}[/{style}]" if style else stderr_str,

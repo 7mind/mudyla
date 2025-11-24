@@ -118,15 +118,18 @@ class TestBasicOperations:
         """Test that rich table is displayed during execution."""
         result = mdl.run_success([":write-message"])
 
-        # Verify table headers (some may be truncated due to long context names)
+        # Verify table headers (some may be heavily truncated due to many columns)
         mdl.assert_in_output(result, "Context")
         mdl.assert_in_output(result, "Action")
-        # Time and Status columns may be abbreviated when context column is long
-        assert "Time" in result.stdout or "T…" in result.stdout, "Expected Time column in table"
-        assert "Status" in result.stdout or "St…" in result.stdout, "Expected Status column in table"
+        # Dir column should be visible
+        assert "Dir" in result.stdout or "D…" in result.stdout, "Expected Dir column in table"
+        # Other columns may be truncated to just "…" when terminal width is limited
+        # Just verify the table structure exists with the box drawing characters
+        assert "┃" in result.stdout, "Expected table box drawing characters"
+        assert "━" in result.stdout, "Expected table box drawing characters"
 
-        # Verify execution status (may be abbreviated in table)
-        assert "done" in result.stdout or "do…" in result.stdout, "Expected 'done' status in output"
+        # Verify task completed successfully (execution message at end, not in truncated table)
+        mdl.assert_in_output(result, "Execution completed successfully")
 
     def test_json_output_structure(self, mdl: MudylaRunner, clean_test_output):
         """Test that JSON output is properly structured."""
@@ -156,12 +159,24 @@ class TestBasicOperations:
         try:
             outputs = json.loads(json_text)
 
-            # Find the key that ends with #write-message (includes context ID)
-            write_message_keys = [k for k in outputs.keys() if k.endswith("#write-message") or k == "write-message"]
-            assert len(write_message_keys) == 1, f"Expected exactly one write-message output, found: {write_message_keys}"
+            # Navigate through nested structure to find write-message outputs
+            # Output structure is now nested by axes: {axis-name: {axis-value: {...}}}
+            def find_action_outputs(data, action_name="write-message"):
+                """Recursively search for action outputs in nested structure."""
+                if isinstance(data, dict):
+                    # Check if this level has the action directly
+                    if action_name in data:
+                        return data[action_name]
+                    # Otherwise recurse into nested structures
+                    for value in data.values():
+                        result = find_action_outputs(value, action_name)
+                        if result is not None:
+                            return result
+                return None
 
-            write_message_key = write_message_keys[0]
-            assert "message-file" in outputs[write_message_key]
-            assert "message-length" in outputs[write_message_key]
+            write_message_output = find_action_outputs(outputs, "write-message")
+            assert write_message_output is not None, f"Could not find write-message output in: {outputs}"
+            assert "message-file" in write_message_output, f"Missing message-file in: {write_message_output}"
+            assert "message-length" in write_message_output, f"Missing message-length in: {write_message_output}"
         except json.JSONDecodeError as e:
             pytest.fail(f"Invalid JSON output: {e}\n{json_text}")

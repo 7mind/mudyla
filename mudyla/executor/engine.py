@@ -60,7 +60,8 @@ class ExecutionResult:
             goal_keys: List of ActionKeys representing goals
 
         Returns:
-            Dictionary mapping full action key (context#action) to outputs
+            Dictionary with nested structure by axes, then action name
+            Format: {axis1-name: {axis1-value: {axis2-name: {axis2-value: {action-name: {...}}}}}}
         """
         result = {}
         for goal_key in goal_keys:
@@ -71,14 +72,31 @@ class ExecutionResult:
             if goal_key_str in self.action_results:
                 action_result = self.action_results[goal_key_str]
 
-                # Assert that we're not overwriting - this would be a bug
-                if goal_key_str in result:
+                # Get the axis values from the context (already sorted by name)
+                axis_values = goal_key.context_id.axis_values
+                action_name = goal_key.id.name
+
+                # Build nested structure: navigate through axes in sorted order
+                current = result
+                for axis_name, axis_value in axis_values:
+                    # Create axis_name level if needed
+                    if axis_name not in current:
+                        current[axis_name] = {}
+                    current = current[axis_name]
+
+                    # Create axis_value level if needed
+                    if axis_value not in current:
+                        current[axis_value] = {}
+                    current = current[axis_value]
+
+                # At the deepest level, add the action outputs
+                if action_name in current:
                     raise RuntimeError(
-                        f"Internal error: duplicate output for '{goal_key_str}'. "
+                        f"Internal error: duplicate output for action '{action_name}' in context '{goal_key.context_id}'. "
                         "This indicates a bug in context isolation."
                     )
 
-                result[goal_key_str] = action_result.outputs
+                current[action_name] = action_result.outputs
             else:
                 # This shouldn't happen - log warning but don't fail
                 print(f"Warning: No results found for goal {goal_key_str}", file=sys.stderr)
@@ -187,6 +205,35 @@ class ExecutionEngine:
         """
         return format_action_label(action_key, use_short_ids=self.use_short_context_ids)
 
+    def _build_action_dir_mapping(self, action_keys: list[ActionKey]) -> dict[str, str]:
+        """Build mapping of display names to relative action directory paths.
+
+        Args:
+            action_keys: List of action keys in execution order
+
+        Returns:
+            Dictionary mapping display names to relative directory paths
+        """
+        contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
+        use_context_in_dirname = len(contexts_in_graph) > 1
+
+        result = {}
+        for action_key in action_keys:
+            display_name = self._format_action_key(action_key)
+
+            # Determine directory name using same logic as _prepare_action_execution
+            if use_context_in_dirname:
+                action_key_str = str(action_key)
+                safe_dir_name = action_key_str.replace(":", "_")
+            else:
+                safe_dir_name = action_key.id.name
+
+            # Make it relative to run directory
+            relative_path = f".mdl/runs/{self.run_directory.name}/{safe_dir_name}"
+            result[display_name] = relative_path
+
+        return result
+
     def _print_action_start(self, action_name: str) -> None:
         """Print action start message.
 
@@ -259,7 +306,11 @@ class ExecutionEngine:
             from .task_table import TaskTableManager
             # Convert ActionKey list to action names for table display
             action_names = [self._format_action_key(key) for key in execution_order]
-            table_manager = TaskTableManager(action_names, no_color=self.no_color)
+            # Build action directory mapping
+            action_dirs = self._build_action_dir_mapping(execution_order)
+            table_manager = TaskTableManager(
+                action_names, no_color=self.no_color, action_dirs=action_dirs
+            )
             table_manager.start()
 
         # Store table manager for access by _execute_action
@@ -355,7 +406,11 @@ class ExecutionEngine:
                 from .task_table import TaskTableManager
                 # Convert ActionKey list to action names for table display
                 action_names = [self._format_action_key(key) for key in execution_order]
-                table_manager = TaskTableManager(action_names, no_color=self.no_color)
+                # Build action directory mapping
+                action_dirs = self._build_action_dir_mapping(execution_order)
+                table_manager = TaskTableManager(
+                    action_names, no_color=self.no_color, action_dirs=action_dirs
+                )
                 table_manager.start()
             except ValueError:
                 # If we can't get execution order, skip table
@@ -738,6 +793,10 @@ class ExecutionEngine:
             duration = (end_time - start_time).total_seconds()
 
             if returncode != 0:
+                # Add success=false to output.json if it exists
+                if prepared.output_json_path.exists():
+                    self._add_success_to_output_json(prepared.output_json_path, success=False)
+
                 self._write_action_meta(
                     prepared.action_dir,
                     action_name,
@@ -798,6 +857,9 @@ class ExecutionEngine:
             outputs = self._parse_outputs(
                 prepared.output_json_path, prepared.version.return_declarations
             )
+
+            # Add success field to output.json
+            self._add_success_to_output_json(prepared.output_json_path, success=True)
 
             for ret_decl in prepared.version.return_declarations:
                 if ret_decl.return_type not in (ReturnType.FILE, ReturnType.DIRECTORY):
@@ -1110,3 +1172,18 @@ class ExecutionEngine:
             return outputs
         except Exception as e:
             raise ValueError(f"Failed to parse output.json: {e}")
+
+    def _add_success_to_output_json(self, output_json_path: Path, success: bool) -> None:
+        """Add success field to output.json.
+
+        Args:
+            output_json_path: Path to output.json
+            success: Whether the action succeeded
+        """
+        try:
+            data = json.loads(output_json_path.read_text())
+            data["success"] = {"type": "bool", "value": success}
+            output_json_path.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            # Don't fail if we can't add success field
+            print(f"Warning: Failed to add success field to output.json: {e}", file=sys.stderr)
