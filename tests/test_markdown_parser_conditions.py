@@ -11,7 +11,7 @@ Intro
 ```bash
 ret value:string=foo
 ```
-## definition when `axis-a: bar, sys.platform: linux`
+## definition when `axis-a: bar, platform: linux`
 ```bash
 ret value:string=bar
 ```

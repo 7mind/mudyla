@@ -2,21 +2,21 @@
 
 # action: platform-greeting
 
-This action demonstrates platform-specific implementations.
+This action demonstrates platform-specific implementations using the built-in platform axis.
 
-## definition when `sys.platform: linux`
+## definition when `platform: linux`
 
 ```bash
 ret platform-message:string="Hello from Linux!"
 ```
 
-## definition when `sys.platform: macos`
+## definition when `platform: darwin`
 
 ```bash
 ret platform-message:string="Hello from macOS!"
 ```
 
-## definition when `sys.platform: windows`
+## definition when `platform: windows`
 
 ```bash
 ret platform-message:string="Hello from Windows!"
@@ -26,25 +26,25 @@ ret platform-message:string="Hello from Windows!"
 
 This action combines axis and platform conditions.
 
-## definition when `build-mode: release, sys.platform: linux`
+## definition when `build-mode: release, platform: linux`
 
 ```bash
 ret message:string="Linux Release Build"
 ```
 
-## definition when `build-mode: release, sys.platform: windows`
+## definition when `build-mode: release, platform: windows`
 
 ```bash
 ret message:string="Windows Release Build"
 ```
 
-## definition when `build-mode: development, sys.platform: linux`
+## definition when `build-mode: development, platform: linux`
 
 ```bash
 ret message:string="Linux Development Build"
 ```
 
-## definition when `build-mode: development, sys.platform: windows`
+## definition when `build-mode: development, platform: windows`
 
 ```bash
 ret message:string="Windows Development Build"
@@ -53,7 +53,7 @@ ret message:string="Windows Development Build"
 # action: build-binary
 
 This action demonstrates specificity-based version selection.
-Default version for Linux/macOS, specific version for Windows.
+Default version for Linux/macOS (darwin), specific version for Windows.
 
 ## definition
 
@@ -64,7 +64,7 @@ ret binary:file=output.bin
 ret platform:string="unix"
 ```
 
-## definition when `sys.platform: windows`
+## definition when `platform: windows`
 
 ```bash
 echo "Building for Windows..."

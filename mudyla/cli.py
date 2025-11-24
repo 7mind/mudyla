@@ -95,13 +95,15 @@ class CLI:
             for warning in setup.parsed_inputs.goal_warnings:
                 output.print(f"{output.emoji('⚠️', '!')} {color.warning('Warning:')} {warning}")
 
-            output.print(f"{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(', '.join(goals))}")
-
             # Use the new compiler for multi-context support
             compiler = DAGCompiler(document, setup.parsed_inputs)
             compiler.validate_action_invocations()
             graph = compiler.compile()
             pruned_graph = graph.prune_to_goals()
+
+            # Show fully-qualified goals with contexts
+            goal_keys_str = ', '.join(str(goal) for goal in sorted(graph.goals, key=str))
+            output.print(f"{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(goal_keys_str)}")
 
             validator = DAGValidator(document, pruned_graph)
             validator.validate_all(custom_args, all_flags, axis_values)

@@ -1,5 +1,6 @@
 """Markdown parser for Mudyla action definitions."""
 
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,8 +52,57 @@ class MarkdownParser:
 
     # Pattern to match condition: definition when `conditions...`
     # Conditions can be axis-based or platform-based, separated by commas
-    # Examples: `build-mode: release` or `build-mode: release, sys.platform: windows`
+    # Examples: `build-mode: release` or `build-mode: release, platform: windows`
     CONDITION_PATTERN = re.compile(r"^definition\s+when\s+`([^`]+)`$")
+
+    @staticmethod
+    def _detect_platform() -> str:
+        """Detect current platform and return normalized name.
+
+        Returns:
+            Platform name: linux, darwin, or windows
+
+        Raises:
+            RuntimeError: If platform is not supported
+        """
+        system = platform.system().lower()
+        if system == "linux":
+            return "linux"
+        elif system == "darwin":
+            return "darwin"
+        elif system == "windows":
+            return "windows"
+        else:
+            raise RuntimeError(
+                f"Unsupported platform: {system}. "
+                "Mudyla only supports linux, darwin (macOS), and windows."
+            )
+
+    @classmethod
+    def _create_builtin_platform_axis(cls) -> AxisDefinition:
+        """Create built-in platform axis with current platform as default.
+
+        Returns:
+            AxisDefinition for platform axis
+        """
+        current_platform = cls._detect_platform()
+
+        # Define all supported platforms with current one as default
+        platform_values = []
+        for p in ["linux", "darwin", "windows"]:
+            platform_values.append(
+                AxisValue(value=p, is_default=(p == current_platform))
+            )
+
+        return AxisDefinition(
+            name="platform",
+            values=platform_values,
+            location=SourceLocation(
+                file_path="<built-in>",
+                line_number=0,
+                section_name="platform (built-in axis)",
+            ),
+        )
 
     # Pattern for argument definition (new multi-line syntax):
     # - `args.name`: Description
@@ -129,6 +179,10 @@ class MarkdownParser:
 
         # Remove duplicate passthrough vars
         all_passthrough = list(set(all_passthrough))
+
+        # Add built-in platform axis if not already defined by user
+        if "platform" not in all_axis:
+            all_axis["platform"] = self._create_builtin_platform_axis()
 
         return ParsedDocument(
             actions=all_actions,
@@ -695,19 +749,15 @@ class MarkdownParser:
             name = name.strip()
             value = value.strip()
 
-            # Determine if this is a platform condition or axis condition
+            # Check if this is deprecated sys.platform syntax
             if name == "sys.platform":
-                # Validate platform value
-                valid_platforms = ["windows", "linux", "macos"]
-                if value not in valid_platforms:
-                    raise ValueError(
-                        f"Invalid platform value: '{value}'. "
-                        f"Valid values: {', '.join(valid_platforms)}"
-                    )
-                conditions.append(PlatformCondition(platform_value=value))
-            else:
-                # Assume it's an axis condition
-                conditions.append(AxisCondition(axis_name=name, axis_value=value))
+                raise ValueError(
+                    f"Deprecated syntax 'sys.platform: {value}'. "
+                    f"Use 'platform: {value}' instead. The 'platform' axis is now built-in."
+                )
+
+            # All conditions are now axis conditions (including platform)
+            conditions.append(AxisCondition(axis_name=name, axis_value=value))
 
         return conditions
 

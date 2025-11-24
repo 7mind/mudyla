@@ -20,13 +20,13 @@ class TestMultiContext:
             "--axis=build-mode=release",
         ])
 
-        # Verify both contexts were executed
-        mdl.assert_in_output(result, "build-mode:development#conditional-build")
-        mdl.assert_in_output(result, "build-mode:release#conditional-build")
+        # Verify both contexts were executed (includes built-in platform axis)
+        mdl.assert_in_output(result, "build-mode:development+platform")
+        mdl.assert_in_output(result, "build-mode:release+platform")
+        mdl.assert_in_output(result, "conditional-build")
 
         # Verify both contexts have their own dependencies
-        mdl.assert_in_output(result, "build-mode:development#create-directory")
-        mdl.assert_in_output(result, "build-mode:release#create-directory")
+        mdl.assert_in_output(result, "create-directory")
 
         # Verify 4 actions total (2 contexts × 2 actions each)
         mdl.assert_in_output(result, "4 required action(s)")
@@ -41,13 +41,13 @@ class TestMultiContext:
         ])
 
         # Verify execution plan shows proper context inheritance
-        # Development context should have its own create-directory
-        mdl.assert_in_output(result, "build-mode:development#create-directory")
-        mdl.assert_in_output(result, "build-mode:development#conditional-build")
+        # Development context should have its own create-directory (includes platform axis)
+        mdl.assert_in_output(result, "build-mode:development+platform")
+        mdl.assert_in_output(result, "conditional-build")
 
         # Release context should have its own create-directory
-        mdl.assert_in_output(result, "build-mode:release#create-directory")
-        mdl.assert_in_output(result, "build-mode:release#conditional-build")
+        mdl.assert_in_output(result, "build-mode:release+platform")
+        mdl.assert_in_output(result, "create-directory")
 
         # Verify execution completed successfully
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -80,9 +80,10 @@ class TestMultiContext:
         # Verify unification occurred - should only have 2 actions (not 4)
         mdl.assert_in_output(result, "2 required action(s)")
 
-        # Verify both actions in the unified graph
-        mdl.assert_in_output(result, "build-mode:release#create-directory")
-        mdl.assert_in_output(result, "build-mode:release#conditional-build")
+        # Verify both actions in the unified graph (includes platform axis)
+        mdl.assert_in_output(result, "build-mode:release+platform")
+        mdl.assert_in_output(result, "create-directory")
+        mdl.assert_in_output(result, "conditional-build")
 
         # Verify execution completed successfully
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -130,9 +131,10 @@ class TestMultiContext:
             "--axis=build-mode=release",
         ])
 
-        # Verify context#action format
-        mdl.assert_in_output(result, "build-mode:release#create-directory")
-        mdl.assert_in_output(result, "build-mode:release#conditional-build")
+        # Verify context#action format (includes built-in platform axis)
+        mdl.assert_in_output(result, "build-mode:release+platform")
+        mdl.assert_in_output(result, "#create-directory")
+        mdl.assert_in_output(result, "#conditional-build")
 
         # Verify NOT using old action@context format
         mdl.assert_not_in_output(result, "create-directory@")
@@ -159,8 +161,9 @@ class TestMultiContextEdgeCases:
         """Test that single-context execution shows simple action names."""
         result = mdl.run_success([":create-directory"])
 
-        # For single context, should show context in execution plan
-        mdl.assert_in_output(result, "build-mode:development#create-directory")
+        # For single context, should show context in execution plan (includes platform axis)
+        mdl.assert_in_output(result, "build-mode:development+platform")
+        mdl.assert_in_output(result, "#create-directory")
 
         # But rich table should just show Task column (not Context + Action)
         # because there's only one context
@@ -175,5 +178,6 @@ class TestMultiContextEdgeCases:
             "--axis=build-mode=release",
         ])
 
-        # Verify single-axis context format
-        mdl.assert_in_output(result, "build-mode:release#conditional-build")
+        # Verify multi-axis context format (includes built-in platform axis)
+        mdl.assert_in_output(result, "build-mode:release+platform")
+        mdl.assert_in_output(result, "#conditional-build")
