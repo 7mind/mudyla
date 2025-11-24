@@ -151,7 +151,6 @@ class CLI:
                 for goal in sorted(graph.goals, key=str):
                     goal_strs.append(color.format_action_key(str(goal)))
                 goal_keys_str = ', '.join(goal_strs)
-            output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {goal_keys_str}")
 
             # Display context mapping if using short IDs
             if use_short_ids and context_mapping:
@@ -162,6 +161,8 @@ class CLI:
                     short_id_colored = color.format_short_context_id(short_id)
                     full_ctx_colored = color.format_context_string(full_ctx)
                     output.print(f"  {short_id_colored}: {full_ctx_colored}")
+
+            output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {goal_keys_str}")
 
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
@@ -492,12 +493,12 @@ class CLI:
             is_goal = action_name in goals
             goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""
 
-            # Format the action with its number
-            action_label = f"{i}. {action_name}{goal_marker}"
+            # Format the action with its number (left-padded to minimum width 2)
+            action_label = f"{i:>2}. {action_name}{goal_marker}"
 
             # Format action key with colors
             action_colored = color.format_action_key(action_name)
-            formatted_label = f"{i}. {action_colored}{goal_marker}"
+            formatted_label = f"{i:>2}. {action_colored}{goal_marker}"
 
             if not node.dependencies:
                 # No dependencies - just print the action
@@ -510,7 +511,7 @@ class CLI:
                 for dep in sorted_deps:
                     dep_num = execution_order.index(dep.action) + 1
                     weak_marker = "(weak)" if dep.weak else ""
-                    dep_names.append(f"{dep_num}{weak_marker}")
+                    dep_names.append(f"{dep_num:>2}{weak_marker}")
 
                 deps_str = ",".join(dep_names)
                 arrow = output.emoji("←", "<-")
