@@ -166,12 +166,15 @@ class TaskTableManager:
                     # Format context with colors (symbol/emoji + blue bold hex ID)
                     # Check if context is a short ID (7 chars: 1 symbol + 6 hex)
                     if context_str and len(context_str) == 7:
-                        first_char = context_str[0]
-                        # Check if it's an emoji or ASCII letter/digit
-                        is_emoji = ord(first_char) > 0x1F000
-                        is_ascii_symbol = first_char.isalnum()
+                        # Check if last 6 chars are hex (means it's a short ID)
+                        hex_part = context_str[1:]
+                        try:
+                            int(hex_part, 16)  # Try parsing as hex
+                            is_short_id = True
+                        except ValueError:
+                            is_short_id = False
 
-                        if is_emoji or is_ascii_symbol:
+                        if is_short_id:
                             # Short ID with symbol: symbol + blue bold hex
                             symbol = context_str[0]
                             hex_id = context_str[1:]
