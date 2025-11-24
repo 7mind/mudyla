@@ -13,10 +13,14 @@
         python = pkgs.python312;
         pythonPackages = python.pkgs;
 
+        # Read version from pyproject.toml (single source of truth)
+        pyproject = builtins.fromTOML (builtins.readFile ./pyproject.toml);
+        version = pyproject.project.version;
+
         # Build package using Python build tools
         mudyla = pythonPackages.buildPythonApplication {
           pname = "mudyla";
-          version = "0.1.0";
+          inherit version;
           src = ./.;
           format = "pyproject";
 
