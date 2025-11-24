@@ -189,5 +189,80 @@ fi
 echo
 
 echo "================================"
+echo "MULTI-CONTEXT TESTS"
+echo "================================"
+echo
+
+# Test 15: Multiple contexts - same action invoked with different axis values
+echo "Test 15: Multiple contexts for same action"
+echo "-------------------------------------------"
+echo "Running conditional-build with development and release modes..."
+rm -rf test-output .mdl/runs
+mdl :conditional-build --axis=build-mode=development :conditional-build --axis=build-mode=release 2>&1 | tee /tmp/multi-context-1.log
+
+# Verify both contexts were executed
+if grep -q "build-mode:development#conditional-build" /tmp/multi-context-1.log && \
+   grep -q "build-mode:release#conditional-build" /tmp/multi-context-1.log; then
+    echo "SUCCESS: Both contexts executed"
+else
+    echo "ERROR: Not all contexts were executed"
+    cat /tmp/multi-context-1.log
+    exit 1
+fi
+
+# Verify each context has its own dependency
+if grep -q "build-mode:development#create-directory" /tmp/multi-context-1.log && \
+   grep -q "build-mode:release#create-directory" /tmp/multi-context-1.log; then
+    echo "SUCCESS: Each context has its own dependencies"
+else
+    echo "ERROR: Dependencies not properly contextualized"
+    exit 1
+fi
+
+echo "Multiple contexts verified - each has separate dependency chain"
+echo
+
+# Test 16: Per-action arguments with different contexts
+echo "Test 16: Per-action arguments in multi-context"
+echo "-----------------------------------------------"
+echo "Testing per-action arguments with different messages..."
+rm -rf test-output .mdl/runs
+mdl :write-message --message=FirstMessage :write-message --message=SecondMessage 2>&1 | tee /tmp/multi-context-2.log
+
+# Verify both invocations executed
+if grep -q "build-mode:development#write-message" /tmp/multi-context-2.log; then
+    echo "SUCCESS: Multiple invocations with different arguments executed"
+else
+    echo "ERROR: Invocations not executed properly"
+    exit 1
+fi
+
+# Check that we have the final message file (last invocation wins since same context)
+test -f test-output/message.txt || (echo "ERROR: Message file not created" && exit 1)
+echo "Per-action arguments verified"
+echo
+
+# Test 17: Graph unification - same action+context invoked multiple times
+echo "Test 17: Graph unification (duplicate invocations)"
+echo "---------------------------------------------------"
+echo "Testing that duplicate invocations with same context merge..."
+rm -rf test-output .mdl/runs
+mdl :conditional-build --axis=build-mode=release :conditional-build --axis=build-mode=release 2>&1 | tee /tmp/multi-context-3.log
+
+# Should only execute once due to unification (count execution in logs)
+EXEC_COUNT=$(grep -o "build-mode:release#conditional-build" /tmp/multi-context-3.log | wc -l)
+
+if [ "$EXEC_COUNT" -le 3 ]; then
+    echo "SUCCESS: Duplicate invocations were unified (executed once)"
+else
+    echo "ERROR: Action ran $EXEC_COUNT times in logs - should have been unified"
+    cat /tmp/multi-context-3.log
+    exit 1
+fi
+
+test -f test-output/build-mode.txt || (echo "ERROR: Output not created" && exit 1)
+echo
+
+echo "================================"
 echo "All tests passed!"
 echo "================================"

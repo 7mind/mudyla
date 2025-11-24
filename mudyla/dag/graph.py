@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..ast.models import ActionDefinition, ActionVersion
+from .context import ContextId
 
 
 @dataclass(frozen=True)
@@ -19,25 +20,40 @@ class ActionId:
 
 @dataclass(frozen=True)
 class ActionKey:
-    """Key for identifying action nodes in the dependency graph."""
+    """Key for identifying action nodes in the dependency graph.
+
+    In the multi-context system, actions are identified by both their name
+    and their execution context. This allows the same action to be executed
+    multiple times with different axis values.
+    """
 
     id: ActionId
     """The action identifier"""
 
+    context_id: ContextId
+    """The execution context identifier"""
+
     def __str__(self) -> str:
-        return str(self.id)
+        """Format as context#action_name or just action_name for default context."""
+        context_str = str(self.context_id)
+        if context_str == "default":
+            return str(self.id)
+        return f"{context_str}#{self.id}"
 
     @classmethod
-    def from_name(cls, name: str) -> "ActionKey":
+    def from_name(cls, name: str, context_id: Optional[ContextId] = None) -> "ActionKey":
         """Create an ActionKey from an action name string.
 
         Args:
             name: Action name
+            context_id: Context identifier (defaults to empty context)
 
         Returns:
             ActionKey instance
         """
-        return cls(id=ActionId(name=name))
+        if context_id is None:
+            context_id = ContextId.empty()
+        return cls(id=ActionId(name=name), context_id=context_id)
 
 
 @dataclass(frozen=True)
@@ -65,6 +81,9 @@ class Dependency:
 class ActionNode:
     """Node in the action dependency graph."""
 
+    key: ActionKey
+    """The unique key for this action (includes context)"""
+
     action: ActionDefinition
     """The action definition"""
 
@@ -77,10 +96,11 @@ class ActionNode:
     dependents: set[Dependency] = field(default_factory=set)
     """Nodes that depend on this node (can be strong or weak)"""
 
-    @property
-    def key(self) -> ActionKey:
-        """Get the key for this node."""
-        return ActionKey.from_name(self.action.name)
+    args: Optional[dict[str, str]] = None
+    """Per-action arguments (for multi-context support)"""
+
+    flags: Optional[dict[str, bool]] = None
+    """Per-action flags (for multi-context support)"""
 
     def get_dependency_keys(self) -> set[ActionKey]:
         """Get all dependency action keys (both strong and weak)."""
@@ -310,10 +330,13 @@ class ActionGraph:
             }
 
             pruned_nodes[key] = ActionNode(
+                key=node.key,
                 action=node.action,
                 selected_version=node.selected_version,
                 dependencies=pruned_dependencies,
                 dependents=pruned_dependents,
+                args=node.args,
+                flags=node.flags,
             )
 
         pruned_goals = {goal for goal in self.goals if goal in pruned_nodes}

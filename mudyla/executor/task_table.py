@@ -122,8 +122,19 @@ class TaskTableManager:
         Returns:
             Rich Table object
         """
+        # Check if any tasks have context (contain "#")
+        has_context = any("#" in name for name in self.task_names)
+
         table = Table(show_header=True, header_style="bold")
-        table.add_column("Task", style="", no_wrap=True)
+
+        if has_context:
+            # Multi-context mode: separate context and action columns
+            table.add_column("Context", style="magenta", no_wrap=True)
+            table.add_column("Action", style="cyan bold", no_wrap=True)
+        else:
+            # Single context mode: just task column
+            table.add_column("Task", style="cyan bold", no_wrap=True)
+
         table.add_column("Time", justify="right", no_wrap=True)
         table.add_column("Stdout", justify="right", no_wrap=True)
         table.add_column("Stderr", justify="right", no_wrap=True)
@@ -148,13 +159,34 @@ class TaskTableManager:
                 stdout_str = self._format_size(self.task_stdout_sizes.get(task_name, 0))
                 stderr_str = self._format_size(self.task_stderr_sizes.get(task_name, 0))
 
-                table.add_row(
-                    f"[{style}]{task_name}[/{style}]" if style else task_name,
+                # Split task name into context and action if present
+                if has_context and "#" in task_name:
+                    context_str, action_name = task_name.split("#", 1)
+                    row_data = [
+                        f"[{style}]{context_str}[/{style}]" if style else context_str,
+                        f"[{style}]{action_name}[/{style}]" if style else action_name,
+                    ]
+                elif has_context:
+                    # No context for this task, use empty string for context column
+                    row_data = [
+                        "",
+                        f"[{style}]{task_name}[/{style}]" if style else task_name,
+                    ]
+                else:
+                    # Single context mode
+                    row_data = [
+                        f"[{style}]{task_name}[/{style}]" if style else task_name,
+                    ]
+
+                # Add remaining columns
+                row_data.extend([
                     f"[{style}]{time_str}[/{style}]" if style else time_str,
                     f"[{style}]{stdout_str}[/{style}]" if style else stdout_str,
                     f"[{style}]{stderr_str}[/{style}]" if style else stderr_str,
                     f"[{style}]{status_text}[/{style}]" if style else status_text,
-                )
+                ])
+
+                table.add_row(*row_data)
 
         return table
 

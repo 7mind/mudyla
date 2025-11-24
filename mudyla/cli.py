@@ -11,6 +11,7 @@ from typing import Optional
 
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.builder import DAGBuilder
+from .dag.compiler import DAGCompiler, CompilationError
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
@@ -66,7 +67,9 @@ class CLI:
         color, output = self._build_formatters(args.no_color)
 
         try:
-            parsed_inputs = parse_custom_inputs(args.goals, unknown)
+            # All arguments (goals, axes, args, flags) are in 'unknown' since we don't
+            # define a positional 'goals' parameter in argparse (to preserve order)
+            parsed_inputs = parse_custom_inputs([], unknown)
         except CLIParseError as e:
             output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
             return 1
@@ -94,9 +97,10 @@ class CLI:
 
             output.print(f"{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(', '.join(goals))}")
 
-            builder = DAGBuilder(document)
-            builder.validate_goals(goals)
-            graph = builder.build_graph(goals, axis_values)
+            # Use the new compiler for multi-context support
+            compiler = DAGCompiler(document, setup.parsed_inputs)
+            compiler.validate_action_invocations()
+            graph = compiler.compile()
             pruned_graph = graph.prune_to_goals()
 
             validator = DAGValidator(document, pruned_graph)
@@ -187,6 +191,12 @@ class CLI:
                 output.print(f"\n{output.emoji('❌', '✗')} {color.error('Validation error:')}\n{e}")
             except (NameError, UnicodeEncodeError):
                 print(f"\n[!] Validation error:\n{e}")
+            return 1
+        except CompilationError as e:
+            try:
+                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Compilation error:')}\n{e}")
+            except (NameError, UnicodeEncodeError):
+                print(f"\n[!] Compilation error:\n{e}")
             return 1
         except Exception as e:
             try:
@@ -333,9 +343,13 @@ class CLI:
             # Format the action with its number
             action_label = f"{i}. {action_name}{goal_marker}"
 
+            # Format action key with colors
+            action_colored = color.format_action_key(action_name)
+            formatted_label = f"{i}. {action_colored}{goal_marker}"
+
             if not node.dependencies:
                 # No dependencies - just print the action
-                output.print(f"  {color.highlight(action_label)}")
+                output.print(f"  {formatted_label}")
             else:
                 # Has dependencies - show them
                 dep_names = []
@@ -348,7 +362,7 @@ class CLI:
 
                 deps_str = ",".join(dep_names)
                 arrow = output.emoji("←", "<-")
-                output.print(f"  {color.highlight(action_label)} {color.dim(f'{arrow} [{deps_str}]')}")
+                output.print(f"  {formatted_label} {color.dim(f'{arrow} [{deps_str}]')}")
 
         output.print("")  # Empty line after plan
 

@@ -61,11 +61,16 @@ class ExecutionResult:
         Returns:
             Dictionary mapping action name to outputs
         """
-        return {
-            goal: self.action_results[goal].outputs
-            for goal in goals
-            if goal in self.action_results
-        }
+        result = {}
+        for goal in goals:
+            # Find matching action results (may be keyed by simple name or "context#name")
+            for key, action_result in self.action_results.items():
+                # Extract action name from key (format: "name" or "context#name")
+                action_name = key.split("#")[-1] if "#" in key else key
+                if action_name == goal:
+                    result[goal] = action_result.outputs
+                    break
+        return result
 
 
 @dataclass
@@ -85,7 +90,13 @@ class PreparedAction:
 
 
 class ExecutionEngine:
-    """Engine for executing actions in a DAG."""
+    """Engine for executing actions in a DAG with context support.
+
+    NOTE: In the multi-context system, axis_values are no longer global.
+    Each action has its own context embedded in its ActionKey. The args
+    and flags parameters are kept for backward compatibility but may be
+    overridden per-action in the future.
+    """
 
     def __init__(
         self,
@@ -93,7 +104,7 @@ class ExecutionEngine:
         project_root: Path,
         args: dict[str, str],
         flags: dict[str, bool],
-        axis_values: dict[str, str],
+        axis_values: dict[str, str],  # Deprecated - kept for backward compat
         environment_vars: dict[str, str],
         passthrough_env_vars: list[str],
         run_directory: Optional[Path] = None,
@@ -108,9 +119,10 @@ class ExecutionEngine:
     ):
         self.graph = graph
         self.project_root = project_root
-        self.args = args
-        self.flags = flags
-        self.axis_values = axis_values
+        self.args = args  # May be global or per-context
+        self.flags = flags  # May be global or per-context
+        # Note: axis_values parameter kept for compatibility but not used
+        # Each action's axes are now in its ActionKey.context_id
         self.environment_vars = environment_vars
         self.passthrough_env_vars = passthrough_env_vars
         self.previous_run_directory = previous_run_directory
@@ -154,7 +166,8 @@ class ExecutionEngine:
             action_name: Name of the action starting
         """
         if not self.github_actions:
-            self.output.print(f"{self.color.dim('start:')} {self.color.highlight(action_name)}")
+            action_colored = self.color.format_action_key(action_name)
+            self.output.print(f"{self.color.dim('start:')} {action_colored}")
 
     def _print_action_completion(self, result: ActionResult) -> None:
         """Print action completion message with duration.
@@ -163,13 +176,14 @@ class ExecutionEngine:
             result: The completed action result
         """
         if not self.github_actions:
+            action_colored = self.color.format_action_key(result.action_name)
             duration_str = f"{result.duration_seconds:.1f}s"
             restored_str = " (restored from previous run)" if result.restored else ""
             if result.success:
                 emoji = self.output.emoji('♻️', '✓') if result.restored else ""
-                self.output.print(f"{emoji} {self.color.dim('done:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
+                self.output.print(f"{emoji} {self.color.dim('done:')} {action_colored} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
             else:
-                self.output.print(f"{self.color.error('failed:')} {self.color.highlight(result.action_name)} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
+                self.output.print(f"{self.color.error('failed:')} {action_colored} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
 
     def _print_action_failure(self, result: ActionResult) -> None:
         """Print diagnostic information for a failed action.
@@ -230,34 +244,34 @@ class ExecutionEngine:
             restored_actions: list[str] = []
 
             for action_key in execution_order:
-                action_name = str(action_key)
+                action_key_str = str(action_key)
                 node = self.graph.get_node(action_key)
 
                 # Update table or print start message
                 if table_manager:
-                    table_manager.mark_running(action_name)
+                    table_manager.mark_running(action_key_str)
                 else:
-                    self._print_action_start(action_name)
+                    self._print_action_start(action_key_str)
 
-                # Execute action
-                result = self._execute_action(node.action.name, action_outputs)
-                action_results[action_name] = result
+                # Execute action with its ActionKey
+                result = self._execute_action(action_key, action_outputs)
+                action_results[action_key_str] = result
 
                 # Track restored actions
                 if result.restored:
-                    restored_actions.append(action_name)
+                    restored_actions.append(action_key_str)
 
                 # Update table or print completion message
                 if table_manager:
                     # Update sizes first
-                    table_manager.update_output_sizes(action_name, result.stdout_size, result.stderr_size)
+                    table_manager.update_output_sizes(action_key_str, result.stdout_size, result.stderr_size)
                     # Then update status
                     if result.restored:
-                        table_manager.mark_restored(action_name, result.duration_seconds)
+                        table_manager.mark_restored(action_key_str, result.duration_seconds)
                     elif result.success:
-                        table_manager.mark_done(action_name, result.duration_seconds)
+                        table_manager.mark_done(action_key_str, result.duration_seconds)
                     else:
-                        table_manager.mark_failed(action_name, result.duration_seconds)
+                        table_manager.mark_failed(action_key_str, result.duration_seconds)
                 else:
                     self._print_action_completion(result)
 
@@ -273,8 +287,8 @@ class ExecutionEngine:
                         run_directory=self.run_directory,
                     )
 
-                # Store outputs for dependent actions
-                action_outputs[action_name] = result.outputs
+                # Store outputs for dependent actions (keyed by ActionKey string)
+                action_outputs[action_key_str] = result.outputs
 
         finally:
             if table_manager:
@@ -300,7 +314,7 @@ class ExecutionEngine:
         action_outputs: dict[str, dict[str, Any]] = {}
         action_results: dict[str, ActionResult] = {}
         lock = threading.Lock()
-        running: dict[concurrent.futures.Future[ActionResult], str] = {}
+        running: dict[concurrent.futures.Future[ActionResult], ActionKey] = {}
         max_workers = max(1, min(32, os.cpu_count() or 1))
 
         # Setup rich table if enabled
@@ -325,16 +339,17 @@ class ExecutionEngine:
         restored_actions: list[str] = []
 
         def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_key: ActionKey):
-            action_name = str(action_key)
+            action_key_str = str(action_key)
             scheduled.add(action_key)
             # Update table or print start message
             if table_manager:
-                table_manager.mark_running(action_name)
+                table_manager.mark_running(action_key_str)
             else:
-                self._print_action_start(action_name)
+                self._print_action_start(action_key_str)
             snapshot_outputs = dict(action_outputs)
-            future = executor.submit(self._execute_action, action_name, snapshot_outputs)
-            running[future] = action_name
+            # Pass ActionKey directly to _execute_action
+            future = executor.submit(self._execute_action, action_key, snapshot_outputs)
+            running[future] = action_key
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -347,12 +362,13 @@ class ExecutionEngine:
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
                     for future in done:
-                        action_name = running.pop(future)
+                        action_key = running.pop(future)
+                        action_key_str = str(action_key)
                         try:
                             result = future.result()
                         except Exception as exc:  # pragma: no cover - defensive
                             result = ActionResult(
-                                action_name=action_name,
+                                action_name=action_key_str,
                                 success=False,
                                 outputs={},
                                 stdout_path=Path("/dev/null"),
@@ -365,24 +381,24 @@ class ExecutionEngine:
                                 error_message=f"Execution error: {exc}",
                             )
 
-                        action_results[action_name] = result
+                        action_results[action_key_str] = result
 
                         # Track restored actions
                         if result.restored:
                             with lock:
-                                restored_actions.append(action_name)
+                                restored_actions.append(action_key_str)
 
                         # Update table or print completion message
                         if table_manager:
                             # Update sizes first
-                            table_manager.update_output_sizes(action_name, result.stdout_size, result.stderr_size)
+                            table_manager.update_output_sizes(action_key_str, result.stdout_size, result.stderr_size)
                             # Then update status
                             if result.restored:
-                                table_manager.mark_restored(action_name, result.duration_seconds)
+                                table_manager.mark_restored(action_key_str, result.duration_seconds)
                             elif result.success:
-                                table_manager.mark_done(action_name, result.duration_seconds)
+                                table_manager.mark_done(action_key_str, result.duration_seconds)
                             else:
-                                table_manager.mark_failed(action_name, result.duration_seconds)
+                                table_manager.mark_failed(action_key_str, result.duration_seconds)
                         else:
                             self._print_action_completion(result)
 
@@ -398,11 +414,12 @@ class ExecutionEngine:
                                 run_directory=self.run_directory,
                             )
 
-                        action_key = ActionKey.from_name(action_name)
+                        # Store outputs and mark as completed
                         with lock:
-                            action_outputs[action_name] = result.outputs
+                            action_outputs[action_key_str] = result.outputs
                             completed.add(action_key)
 
+                        # Schedule dependent actions
                         for dependent_key in dependents.get(action_key, set()):
                             if dependent_key in completed or dependent_key in scheduled:
                                 continue
@@ -427,18 +444,28 @@ class ExecutionEngine:
         return self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
     def _execute_action(
-        self, action_name: str, action_outputs: dict[str, dict[str, Any]]
+        self, action_key: ActionKey, action_outputs: dict[str, dict[str, Any]]
     ) -> ActionResult:
-        """Execute a single action."""
-        if self._can_restore_from_previous(action_name):
-            return self._restore_from_previous(action_name)
+        """Execute a single action identified by its ActionKey."""
+        action_key_str = str(action_key)
+
+        # Determine directory name using same logic as preparation
+        contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
+        use_context_in_dirname = len(contexts_in_graph) > 1
+        if use_context_in_dirname:
+            action_dirname = action_key_str.replace(":", "_")
+        else:
+            action_dirname = action_key.id.name
+
+        if self._can_restore_from_previous(action_dirname):
+            return self._restore_from_previous(action_dirname, action_key_str)
 
         try:
-            prepared = self._prepare_action_execution(action_name, action_outputs)
+            prepared = self._prepare_action_execution(action_key, action_outputs)
         except ValueError as err:
             now_iso = datetime.now().isoformat()
             return ActionResult(
-                action_name=action_name,
+                action_name=action_key_str,
                 success=False,
                 outputs={},
                 stdout_path=Path("/dev/null"),
@@ -454,20 +481,51 @@ class ExecutionEngine:
         return self._run_prepared_action(prepared)
 
     def _prepare_action_execution(
-        self, action_name: str, action_outputs: dict[str, dict[str, Any]]
+        self, action_key: ActionKey, action_outputs: dict[str, dict[str, Any]]
     ) -> PreparedAction:
-        node = self.graph.get_node_by_name(action_name)
+        """Prepare an action for execution.
+
+        Args:
+            action_key: The ActionKey identifying the action (includes context)
+            action_outputs: Outputs from previously executed actions
+
+        Returns:
+            PreparedAction with all execution artifacts
+        """
+        node = self.graph.get_node(action_key)
         action = node.action
         version = node.selected_version
 
         if version is None:
             raise ValueError("No valid version selected")
 
-        action_dir = self.run_directory / action_name
+        # Determine if we need context in directory name (for multi-context executions)
+        # If there are multiple distinct contexts in the graph, include context to avoid collisions
+        contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
+        use_context_in_dirname = len(contexts_in_graph) > 1
+
+        if use_context_in_dirname:
+            # Include context in directory name for multi-context executions
+            # E.g., "platform:jvm+scala:2.12#build" becomes "platform_jvm+scala_2.12#build"
+            action_key_str = str(action_key)
+            safe_dir_name = action_key_str.replace(":", "_")
+        else:
+            # Single context - use simple action name for backward compatibility
+            safe_dir_name = action_key.id.name
+
+        action_dir = self.run_directory / safe_dir_name
         action_dir.mkdir(parents=True, exist_ok=True)
 
         runtime = RuntimeRegistry.get(version.language)
-        context = self._build_execution_context(action_dir, action_outputs)
+
+        # Use per-action args/flags if available (multi-context mode)
+        # Otherwise fall back to engine's global args/flags
+        action_args = node.args if node.args is not None else self.args
+        action_flags = node.flags if node.flags is not None else self.flags
+
+        context = self._build_execution_context(
+            action_dir, action_outputs, action_args, action_flags, action_key
+        )
 
         output_json_path = action_dir / "output.json"
         rendered = runtime.prepare_script(
@@ -502,8 +560,40 @@ class ExecutionEngine:
         )
 
     def _build_execution_context(
-        self, action_dir: Path, action_outputs: dict[str, dict[str, Any]]
+        self,
+        action_dir: Path,
+        action_outputs: dict[str, dict[str, Any]],
+        args: dict[str, str],
+        flags: dict[str, bool],
+        action_key: ActionKey,
     ) -> ExecutionContext:
+        """Build execution context with provided args and flags.
+
+        Args:
+            action_dir: Action directory path
+            action_outputs: Outputs from previous actions (keyed by ActionKey string)
+            args: Arguments for this action (may be per-action or global)
+            flags: Flags for this action (may be per-action or global)
+            action_key: The ActionKey for this action (to filter outputs by context)
+
+        Returns:
+            ExecutionContext for the action
+        """
+        # Transform action_outputs to use simple action names for same-context actions
+        # This allows ${action.dependency-name.var} to work in scripts
+        context_filtered_outputs: dict[str, dict[str, Any]] = {}
+        for output_key_str, outputs in action_outputs.items():
+            # Parse the output key to extract action name and context
+            # Format is either "action-name" or "context#action-name"
+            if "#" in output_key_str:
+                context_str, action_name = output_key_str.split("#", 1)
+                # Only include outputs from the same context
+                if context_str == str(action_key.context_id):
+                    context_filtered_outputs[action_name] = outputs
+            else:
+                # Old format without context (backward compatibility)
+                context_filtered_outputs[output_key_str] = outputs
+
         return ExecutionContext(
             system_vars={
                 "project-root": str(self.project_root),
@@ -511,9 +601,9 @@ class ExecutionEngine:
                 "action-dir": str(action_dir),
             },
             env_vars=dict(os.environ) | self.environment_vars,
-            args=self.args,
-            flags=self.flags,
-            action_outputs=action_outputs,
+            args=args,
+            flags=flags,
+            action_outputs=context_filtered_outputs,
         )
 
     def _build_exec_command(
@@ -916,16 +1006,17 @@ class ExecutionEngine:
         except Exception:
             return False
 
-    def _restore_from_previous(self, action_name: str) -> ActionResult:
+    def _restore_from_previous(self, action_dirname: str, action_key_str: str) -> ActionResult:
         """Restore action from previous run.
 
         Args:
-            action_name: Action name
+            action_dirname: Directory name for the action (may include context)
+            action_key_str: Full ActionKey string for result
 
         Returns:
             Action result from previous run
         """
-        prev_action_dir = self.previous_run_directory / action_name
+        prev_action_dir = self.previous_run_directory / action_dirname
         prev_meta_path = prev_action_dir / "meta.json"
         prev_output_path = prev_action_dir / "output.json"
 
@@ -933,18 +1024,25 @@ class ExecutionEngine:
         meta = json.loads(prev_meta_path.read_text())
 
         # Copy entire action directory to current run
-        current_action_dir = self.run_directory / action_name
+        current_action_dir = self.run_directory / action_dirname
         shutil.copytree(prev_action_dir, current_action_dir)
 
-        # Parse outputs
-        node = self.graph.get_node_by_name(action_name)
-        version = node.selected_version
+        # Parse outputs - need to find node by matching action name
+        # Search through graph nodes to find one with matching action name
+        version = None
+        for node in self.graph.nodes.values():
+            # Extract action name from key string (format: "name" or "context#name")
+            action_name = action_key_str.split("#")[-1] if "#" in action_key_str else action_key_str
+            if node.action.name == action_name or node.key.id.name == action_name:
+                version = node.selected_version
+                break
+
         outputs = {}
         if prev_output_path.exists() and version is not None:
             outputs = self._parse_outputs(prev_output_path, version.return_declarations)
 
         return ActionResult(
-            action_name=action_name,
+            action_name=action_key_str,  # Use full key string for result
             success=True,
             outputs=outputs,
             stdout_path=current_action_dir / "stdout.log",

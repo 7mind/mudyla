@@ -174,3 +174,29 @@ class ColorFormatter:
         if not self.enabled:
             return text
         return f"{Colors.BOLD}{text}{Colors.RESET}"
+
+    def format_action_key(self, action_key_str: str) -> str:
+        """Format an action key with context and action name in different colors.
+
+        Args:
+            action_key_str: Action key string (format: "name" or "context#name")
+
+        Returns:
+            Formatted string with context (dim magenta) and action (cyan bold)
+        """
+        if "#" not in action_key_str:
+            # No context - just highlight the action name
+            return self.highlight(action_key_str)
+
+        # Split context and action name
+        context_str, action_name = action_key_str.split("#", 1)
+
+        # Format: dim magenta context + dim # separator + bold cyan action
+        if not self.enabled:
+            return action_key_str
+
+        context_colored = self.colorize(context_str, Colors.MAGENTA)
+        separator = self.dim("#")
+        action_colored = self.highlight(action_name)
+
+        return f"{context_colored}{separator}{action_colored}"
