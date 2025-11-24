@@ -481,10 +481,21 @@ class CLI:
 
         # Create a tree-like visualization showing dependencies
         for i, action_key in enumerate(execution_order, 1):
-            # Format action key with short ID if enabled
+            # Build action key string (without formatting yet)
             if use_short_ids:
                 context_str = str(action_key.context_id)
-                formatted_id = self._format_short_context_id(context_str)
+                # Get short ID with symbol/emoji but WITHOUT color formatting
+                hash_obj = hashlib.sha256(context_str.encode())
+                short_id = hash_obj.hexdigest()[:6]
+
+                if platform.system() == "Windows":
+                    symbols = CONTEXT_SYMBOLS_ASCII
+                else:
+                    symbols = CONTEXT_EMOJIS
+
+                symbol_index = int(short_id[:2], 16) % len(symbols)
+                symbol = symbols[symbol_index]
+                formatted_id = f"{symbol}{short_id}"
                 action_name = f"{formatted_id}#{action_key.id}"
             else:
                 action_name = str(action_key)
@@ -496,7 +507,7 @@ class CLI:
             # Format the action with its number (left-padded to minimum width 2)
             action_label = f"{i:>2}. {action_name}{goal_marker}"
 
-            # Format action key with colors
+            # Format action key with colors using the helper function
             action_colored = color.format_action_key(action_name)
             formatted_label = f"{i:>2}. {action_colored}{goal_marker}"
 

@@ -129,7 +129,8 @@ class TaskTableManager:
 
         if has_context:
             # Multi-context mode: separate context and action columns
-            table.add_column("Context", style="magenta", no_wrap=True)
+            # Don't set a default style for Context - let per-cell formatting handle colors
+            table.add_column("Context", no_wrap=True)
             table.add_column("Action", style="cyan bold", no_wrap=True)
         else:
             # Single context mode: just task column
@@ -184,7 +185,7 @@ class TaskTableManager:
                         context_formatted = context_str
 
                     row_data = [
-                        f"[{style}]{context_formatted}[/{style}]" if style else context_formatted,
+                        context_formatted,  # Don't apply status style to context - keep blue formatting
                         f"[{style}]{action_name}[/{style}]" if style else action_name,
                     ]
                 elif has_context:
