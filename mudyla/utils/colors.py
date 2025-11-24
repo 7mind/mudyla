@@ -250,14 +250,18 @@ class ColorFormatter:
 
         # Check if it's a short ID with symbol/emoji prefix
         # Short IDs start with a single symbol followed by 6 hex chars
-        # Symbols can be emojis (> U+1F000) or ASCII (alphanumeric)
+        # Symbols can be emojis or ASCII alphanumeric
         if context_str and len(context_str) == 7:
             first_char = context_str[0]
-            # Check if it's an emoji or ASCII letter/digit
-            is_emoji = ord(first_char) > 0x1F000
-            is_ascii_symbol = first_char.isalnum()
+            # Check if first char is our symbol (emoji or ASCII) by checking if rest is hex
+            rest_chars = context_str[1:]
+            try:
+                int(rest_chars, 16)  # Try parsing as hex
+                is_short_id = True  # If it's hex, this is a short ID
+            except ValueError:
+                is_short_id = False
 
-            if is_emoji or is_ascii_symbol:
+            if is_short_id:
                 # Short ID format: format the symbol + ID
                 context_colored = self.format_short_context_id(context_str)
             else:
