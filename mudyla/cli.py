@@ -1,6 +1,7 @@
 """Command-line interface for Mudyla."""
 
 import argparse
+import hashlib
 import json
 import platform
 import sys
@@ -101,21 +102,48 @@ class CLI:
             graph = compiler.compile()
             pruned_graph = graph.prune_to_goals()
 
+            # Build context mapping for short IDs (unless full representations requested)
+            use_short_ids = not args.full_ctx_reprs
+            context_mapping = {}
+            if use_short_ids:
+                context_mapping = self._build_context_mapping(pruned_graph)
+
             # Show fully-qualified goals with contexts
-            goal_keys_str = ', '.join(str(goal) for goal in sorted(graph.goals, key=str))
+            if use_short_ids and context_mapping:
+                # Show goals with short IDs
+                goal_strs = []
+                for goal in sorted(graph.goals, key=str):
+                    context_str = str(goal.context_id)
+                    short_id = self._generate_short_context_id(context_str)
+                    action_name = goal.id
+                    goal_strs.append(f"{short_id}#{action_name}")
+                goal_keys_str = ', '.join(goal_strs)
+            else:
+                # Show full context representations
+                goal_keys_str = ', '.join(str(goal) for goal in sorted(graph.goals, key=str))
             output.print(f"{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(goal_keys_str)}")
+
+            # Show execution mode
+            if not quiet_mode:
+                mode_label = "dry-run" if args.dry_run else ("parallel" if parallel_execution else "sequential")
+                output.print(f"{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
 
             validator = DAGValidator(document, pruned_graph)
             validator.validate_all(custom_args, all_flags, axis_values)
             if not quiet_mode:
                 output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
-                mode_label = "parallel" if parallel_execution else "sequential"
-                output.print(f"{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
+
+            # Display context mapping if using short IDs
+            if use_short_ids and context_mapping:
+                output.print(f"\n{output.emoji('🔗', '▸')} {color.bold('Contexts:')}")
+                for short_id in sorted(context_mapping.keys()):
+                    full_ctx = context_mapping[short_id]
+                    output.print(f"  {color.highlight(short_id)}: {color.dim(full_ctx)}")
 
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
                 output.print(f"\n{output.emoji('📋', '▸')} {color.bold('Execution plan:')}")
-                self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output)
+                self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output, use_short_ids, context_mapping)
 
             if args.dry_run:
                 output.print(f"\n{output.emoji('ℹ️', 'i')} {color.info('Dry run - not executing')}")
@@ -152,6 +180,8 @@ class CLI:
                 no_color=args.no_color,
                 simple_log=args.simple_log,
                 parallel_execution=parallel_execution,
+                use_short_context_ids=use_short_ids,
+                context_id_mapping=context_mapping,
             )
 
             result = engine.execute_all()
@@ -209,6 +239,42 @@ class CLI:
 
             traceback.print_exc()
             return 1
+
+    @staticmethod
+    def _generate_short_context_id(context_str: str) -> str:
+        """Generate a short 6-character ID for a context.
+
+        Args:
+            context_str: Full context string (e.g., "build-mode:release+platform:linux")
+
+        Returns:
+            6-character hash-based ID
+        """
+        # Use first 6 chars of SHA256 hash
+        hash_obj = hashlib.sha256(context_str.encode())
+        return hash_obj.hexdigest()[:6]
+
+    @staticmethod
+    def _build_context_mapping(graph) -> dict[str, str]:
+        """Build mapping from short IDs to full context strings.
+
+        Args:
+            graph: Execution graph containing action keys with contexts
+
+        Returns:
+            Dictionary mapping short ID to full context string
+        """
+        mapping = {}
+        contexts_seen = set()
+
+        for action_key in graph.nodes.keys():
+            context_str = str(action_key.context_id)
+            if context_str not in contexts_seen:
+                contexts_seen.add(context_str)
+                short_id = CLI._generate_short_context_id(context_str)
+                mapping[short_id] = context_str
+
+        return mapping
 
     def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
         """Apply platform specific defaults."""
@@ -325,7 +391,16 @@ class CLI:
             if arg_def.default_value is not None:
                 custom_args[arg_name] = arg_def.default_value
 
-    def _visualize_execution_plan(self, graph, execution_order, goals: list[str], color, output: OutputFormatter) -> None:
+    def _visualize_execution_plan(
+        self,
+        graph,
+        execution_order,
+        goals: list[str],
+        color,
+        output: OutputFormatter,
+        use_short_ids: bool = False,
+        context_mapping: dict[str, str] = None,
+    ) -> None:
         """Visualize execution plan as a tree.
 
         Args:
@@ -334,10 +409,22 @@ class CLI:
             goals: List of goal action names
             color: Color formatter
             output: Output formatter
+            use_short_ids: Whether to use short context IDs
+            context_mapping: Mapping from short IDs to full context strings
         """
+        if context_mapping is None:
+            context_mapping = {}
+
         # Create a tree-like visualization showing dependencies
         for i, action_key in enumerate(execution_order, 1):
-            action_name = str(action_key)
+            # Format action key with short ID if enabled
+            if use_short_ids:
+                context_str = str(action_key.context_id)
+                short_id = self._generate_short_context_id(context_str)
+                action_name = f"{short_id}#{action_key.id}"
+            else:
+                action_name = str(action_key)
+
             node = graph.get_node(action_key)
             is_goal = action_name in goals
             goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""

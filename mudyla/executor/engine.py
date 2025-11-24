@@ -1,5 +1,6 @@
 """Execution engine for running actions."""
 
+import hashlib
 import json
 import os
 import concurrent.futures
@@ -116,6 +117,8 @@ class ExecutionEngine:
         no_color: bool = False,
         simple_log: bool = False,
         parallel_execution: bool = True,
+        use_short_context_ids: bool = False,
+        context_id_mapping: Optional[dict[str, str]] = None,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -133,6 +136,8 @@ class ExecutionEngine:
         self.no_color = no_color
         self.simple_log = simple_log
         self.parallel_execution = parallel_execution
+        self.use_short_context_ids = use_short_context_ids
+        self.context_id_mapping = context_id_mapping or {}
 
         # Determine if we should use rich table
         # Use simple log if: --simple-log, --no-color, --github-actions, --verbose, or not a TTY
@@ -158,6 +163,23 @@ class ExecutionEngine:
             self.run_directory = run_directory
 
         self.run_directory.mkdir(parents=True, exist_ok=True)
+
+    def _format_action_key(self, action_key: ActionKey) -> str:
+        """Format an action key for display.
+
+        Args:
+            action_key: Action key to format
+
+        Returns:
+            Formatted string (short ID or full context)
+        """
+        if self.use_short_context_ids:
+            context_str = str(action_key.context_id)
+            hash_obj = hashlib.sha256(context_str.encode())
+            short_id = hash_obj.hexdigest()[:6]
+            return f"{short_id}#{action_key.id}"
+        else:
+            return str(action_key)
 
     def _print_action_start(self, action_name: str) -> None:
         """Print action start message.
@@ -230,7 +252,7 @@ class ExecutionEngine:
         if self.use_rich_table:
             from .task_table import TaskTableManager
             # Convert ActionKey list to action names for table display
-            action_names = [str(key) for key in execution_order]
+            action_names = [self._format_action_key(key) for key in execution_order]
             table_manager = TaskTableManager(action_names, no_color=self.no_color)
             table_manager.start()
 
@@ -244,12 +266,13 @@ class ExecutionEngine:
             restored_actions: list[str] = []
 
             for action_key in execution_order:
-                action_key_str = str(action_key)
+                action_key_str = str(action_key)  # Internal key (full context)
+                display_name = self._format_action_key(action_key)  # Display name (short ID)
                 node = self.graph.get_node(action_key)
 
                 # Update table or print start message
                 if table_manager:
-                    table_manager.mark_running(action_key_str)
+                    table_manager.mark_running(display_name)
                 else:
                     self._print_action_start(action_key_str)
 
@@ -264,14 +287,14 @@ class ExecutionEngine:
                 # Update table or print completion message
                 if table_manager:
                     # Update sizes first
-                    table_manager.update_output_sizes(action_key_str, result.stdout_size, result.stderr_size)
+                    table_manager.update_output_sizes(display_name, result.stdout_size, result.stderr_size)
                     # Then update status
                     if result.restored:
-                        table_manager.mark_restored(action_key_str, result.duration_seconds)
+                        table_manager.mark_restored(display_name, result.duration_seconds)
                     elif result.success:
-                        table_manager.mark_done(action_key_str, result.duration_seconds)
+                        table_manager.mark_done(display_name, result.duration_seconds)
                     else:
-                        table_manager.mark_failed(action_key_str, result.duration_seconds)
+                        table_manager.mark_failed(display_name, result.duration_seconds)
                 else:
                     self._print_action_completion(result)
 
@@ -325,7 +348,7 @@ class ExecutionEngine:
                 execution_order = self.graph.get_execution_order()
                 from .task_table import TaskTableManager
                 # Convert ActionKey list to action names for table display
-                action_names = [str(key) for key in execution_order]
+                action_names = [self._format_action_key(key) for key in execution_order]
                 table_manager = TaskTableManager(action_names, no_color=self.no_color)
                 table_manager.start()
             except ValueError:
@@ -339,13 +362,13 @@ class ExecutionEngine:
         restored_actions: list[str] = []
 
         def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_key: ActionKey):
-            action_key_str = str(action_key)
+            display_name = self._format_action_key(action_key)
             scheduled.add(action_key)
             # Update table or print start message
             if table_manager:
-                table_manager.mark_running(action_key_str)
+                table_manager.mark_running(display_name)
             else:
-                self._print_action_start(action_key_str)
+                self._print_action_start(str(action_key))
             snapshot_outputs = dict(action_outputs)
             # Pass ActionKey directly to _execute_action
             future = executor.submit(self._execute_action, action_key, snapshot_outputs)
@@ -363,7 +386,8 @@ class ExecutionEngine:
                     )
                     for future in done:
                         action_key = running.pop(future)
-                        action_key_str = str(action_key)
+                        action_key_str = str(action_key)  # Internal key (full context)
+                        display_name = self._format_action_key(action_key)  # Display name (short ID)
                         try:
                             result = future.result()
                         except Exception as exc:  # pragma: no cover - defensive
@@ -391,14 +415,14 @@ class ExecutionEngine:
                         # Update table or print completion message
                         if table_manager:
                             # Update sizes first
-                            table_manager.update_output_sizes(action_key_str, result.stdout_size, result.stderr_size)
+                            table_manager.update_output_sizes(display_name, result.stdout_size, result.stderr_size)
                             # Then update status
                             if result.restored:
-                                table_manager.mark_restored(action_key_str, result.duration_seconds)
+                                table_manager.mark_restored(display_name, result.duration_seconds)
                             elif result.success:
-                                table_manager.mark_done(action_key_str, result.duration_seconds)
+                                table_manager.mark_done(display_name, result.duration_seconds)
                             else:
-                                table_manager.mark_failed(action_key_str, result.duration_seconds)
+                                table_manager.mark_failed(display_name, result.duration_seconds)
                         else:
                             self._print_action_completion(result)
 

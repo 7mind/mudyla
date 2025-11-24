@@ -99,6 +99,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Force sequential execution (disables parallel execution)",
     )
 
+    parser.add_argument(
+        "--full-ctx-reprs",
+        dest="full_ctx_reprs",
+        action="store_true",
+        help="Show full context representations instead of short IDs",
+    )
+
     # Note: We don't add a positional 'goals' argument here because we need to
     # preserve the order of all arguments (goals, axes, args, flags) as they appear
     # on the command line. All unrecognized arguments (including :goals) will be
