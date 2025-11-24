@@ -134,19 +134,26 @@ class CLI:
                     context_str = str(goal.context_id)
                     formatted_id = self._format_short_context_id(context_str)
                     action_name = goal.id
-                    goal_strs.append(f"{formatted_id}#{action_name}")
+                    # Use color formatter for consistent coloring
+                    goal_strs.append(color.format_action_key(f"{formatted_id}#{action_name}"))
                 goal_keys_str = ', '.join(goal_strs)
             else:
                 # Show full context representations
-                goal_keys_str = ', '.join(str(goal) for goal in sorted(graph.goals, key=str))
-            output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(goal_keys_str)}")
+                goal_strs = []
+                for goal in sorted(graph.goals, key=str):
+                    goal_strs.append(color.format_action_key(str(goal)))
+                goal_keys_str = ', '.join(goal_strs)
+            output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {goal_keys_str}")
 
             # Display context mapping if using short IDs
             if use_short_ids and context_mapping:
                 output.print(f"\n{output.emoji('🔗', '▸')} {color.bold('Contexts:')}")
                 for short_id in sorted(context_mapping.keys()):
                     full_ctx = context_mapping[short_id]
-                    output.print(f"  {color.highlight(short_id)}: {color.dim(full_ctx)}")
+                    # Apply consistent coloring to context ID and full context
+                    short_id_colored = color.format_short_context_id(short_id)
+                    full_ctx_colored = color.format_context_string(full_ctx)
+                    output.print(f"  {short_id_colored}: {full_ctx_colored}")
 
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
