@@ -403,7 +403,7 @@ class CLI:
                 for dep in sorted_deps:
                     dep_num = execution_order.index(dep.action) + 1
                     weak_marker = "(weak)" if dep.weak else ""
-                    dep_names.append(f"{dep_num:>2}{weak_marker}")
+                    dep_names.append(f"{dep_num}{weak_marker}")
 
                 deps_str = ",".join(dep_names)
                 arrow = output.emoji("←", "<-")
