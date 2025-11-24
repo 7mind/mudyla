@@ -1,8 +1,9 @@
 # Mudyla - Multimodal Dynamic Launcher
 
 [![CI/CD](https://github.com/7mind/mudyla/actions/workflows/ci.yml/badge.svg)](https://github.com/7mind/mudyla/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/mudyla.svg)](https://pypi.org/project/mudyla/)
+[![Python 3.12+](https://img.shields.io/pypi/pyversions/mudyla.svg)](https://pypi.org/project/mudyla/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Nix](https://img.shields.io/badge/Built%20with-Nix-5277C3.svg?logo=nixos&logoColor=white)](https://builtwithnix.org)
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-blue.svg)](https://nixos.wiki/wiki/Flakes)
 
@@ -28,12 +29,16 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 
 - **Markdown-based action definitions**: Define actions in readable Markdown files
 - **Multi-language support**: Write actions in Bash or Python
-- **Dependency graph execution**: Automatic dependency resolution and execution
+- **Dependency graph execution**: Automatic dependency resolution and parallel execution
 - **Multi-version actions**: Different implementations based on axis values (e.g., build-mode)
 - **Type-safe returns**: Actions return typed values (int, string, bool, file, directory)
-- **Nix integration**: All actions run in Nix development environment
+- **Nix integration**: All actions run in Nix development environment (optional on Windows)
 - **Command-line arguments and flags**: Parameterize actions with arguments and flags
 - **Environment validation**: Validates required environment variables before execution
+- **Parallel execution**: Run independent actions concurrently for faster builds
+- **Checkpoint recovery**: Resume from previous runs with `--continue` flag
+- **Rich CLI output**: Beautiful tables, execution plans, and progress tracking
+- **CI/CD ready**: GitHub Actions integration with automated test reporting and PyPI publishing
 
 ## Installation
 
@@ -95,14 +100,27 @@ mdl --help
 
 ## Quick Start
 
-### 1. Create a Definition File
+### 1. Install Mudyla
+
+```bash
+# Recommended: Install with pipx (isolated installation)
+pipx install mudyla
+
+# Or install with pip
+pip install mudyla
+
+# Verify installation
+mdl --help
+```
+
+### 2. Create a Definition File
 
 Create `.mdl/defs/actions.md`:
 
 ```markdown
 # arguments
 
-- `args.output-dir`: Output directory for test results
+- `args.output-dir`: Output directory for results
   - type: `directory`
   - default: `"test-output"`
 
@@ -114,11 +132,17 @@ ret message-file:file=${args.output-dir}/hello.txt
 \```
 ```
 
-### 2. Run the Action
+### 3. Run the Action
 
 ```bash
 mdl :hello-world
 ```
+
+That's it! Mudyla will:
+- Resolve dependencies
+- Execute actions in parallel (if independent)
+- Show a rich progress table
+- Output results as JSON
 
 ## Action Definition Format
 
@@ -315,7 +339,7 @@ Python actions use the `mdl` object (see [Python Actions](#python-actions) secti
 ## Command-Line Usage
 
 ```bash
-# Execute goals
+# Execute goals (runs in parallel by default)
 mdl :goal1 :goal2
 
 # With arguments
@@ -324,7 +348,7 @@ mdl --arg-name=value :goal
 # With flags
 mdl --flag-name :goal
 
-# With axis
+# With axis (multi-version actions)
 mdl --axis build-mode=release :goal
 
 # List available actions
@@ -333,8 +357,26 @@ mdl --list-actions
 # Dry run (show plan without executing)
 mdl --dry-run :goal
 
+# Sequential execution (disable parallelism)
+mdl --seq :goal
+
+# Continue from previous run (checkpoint recovery)
+mdl --continue :goal
+
+# Keep run directory for inspection
+mdl --keep-run-dir :goal
+
+# Verbose mode (show commands)
+mdl --verbose :goal
+
+# Simple log mode (no rich tables)
+mdl --simple-log :goal
+
 # Save output to file
 mdl --out results.json :goal
+
+# Run without Nix (Windows or when Nix unavailable)
+mdl --without-nix :goal
 ```
 
 ## Testing
@@ -372,12 +414,43 @@ See [TESTING.md](TESTING.md) for detailed testing documentation, including:
 The test suite includes:
 - **Unit tests** (20 tests): Test individual components without subprocess calls
 - **Integration tests** (28 tests): Test the full CLI by running the built Nix package
-- **GitHub Actions**: Test results published to Checks tab with JUnit XML reports
+- **Parallel execution**: Tests run concurrently with file locking for isolation
+- **GitHub Actions integration**: Test results published to Checks tab with JUnit XML reports
+
+### CI/CD Pipeline
+
+The project includes a complete CI/CD pipeline:
+- **Automated testing**: Runs on every push and PR with parallel test execution
+- **Cross-platform support**: Tests on Linux and Windows
+- **Type checking**: Optional mypy type checking
+- **Test reporting**: Results visible in GitHub Checks tab
+- **Automated publishing**: PyPI releases on version tags using trusted publishing
+- **GitHub Releases**: Automatic release creation with artifacts
 
 ## Documentation
 
 - [Full Specification](docs/drafts/20251120-final-spec.md)
 - [Example Actions](example.md)
+- [Testing Guide](TESTING.md)
+
+## Releases
+
+Mudyla uses semantic versioning and automated releases:
+- **PyPI**: Published automatically on version tags (e.g., `v0.1.0`)
+- **GitHub Releases**: Created with distribution artifacts
+- **Installation**: Always available via `pip install mudyla` or `pipx install mudyla`
+
+To create a new release, push a version tag:
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The CI/CD pipeline will automatically:
+1. Run all tests on Linux and Windows
+2. Build distribution packages (wheel and sdist)
+3. Publish to PyPI using trusted publishing (no tokens needed)
+4. Create a GitHub Release with artifacts
 
 ## License
 
