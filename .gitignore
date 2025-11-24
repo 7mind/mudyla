@@ -17,6 +17,10 @@ dist/
 build/
 .venv/
 venv/
+.pytest_cache/
+
+# Test outputs
+test-reports/
 
 # UV
 .python-version

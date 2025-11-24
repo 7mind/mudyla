@@ -26,6 +26,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "pytest-html>=4.0.0",
+    "pytest-xdist>=3.0.0",
     "mypy>=1.0.0",
 ]
 
@@ -67,3 +69,17 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--color=yes",
+]
+markers = [
+    "integration: integration tests that launch the mudyla CLI",
+    "unit: unit tests for individual components",
+    "slow: tests that take a long time to run",
+]
+# Capture settings
+log_cli = true
+log_cli_level = "INFO"

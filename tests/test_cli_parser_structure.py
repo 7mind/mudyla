@@ -16,7 +16,8 @@ def test_cli_parser_defaults_and_options_present():
     assert defaults["verbose"] is False
     assert defaults["keep_run_dir"] is False
     assert defaults["no_color"] is False
-    assert defaults["goals"] == []
+    # Note: 'goals' was removed from argparse and is now parsed from unknown arguments
+    # to preserve command-line order for multi-context execution
 
 
 def test_autocomplete_argument_accepts_modes():
