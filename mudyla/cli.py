@@ -140,7 +140,18 @@ class CLI:
                 goal_strs = []
                 for goal in sorted(graph.goals, key=str):
                     context_str = str(goal.context_id)
-                    formatted_id = self._format_short_context_id(context_str)
+                    # Build unformatted context ID (symbol + hex) - let format_action_key handle coloring
+                    hash_obj = hashlib.sha256(context_str.encode())
+                    short_id = hash_obj.hexdigest()[:6]
+
+                    if platform.system() == "Windows":
+                        symbols = CONTEXT_SYMBOLS_ASCII
+                    else:
+                        symbols = CONTEXT_EMOJIS
+
+                    symbol_index = int(short_id[:2], 16) % len(symbols)
+                    symbol = symbols[symbol_index]
+                    formatted_id = f"{symbol}{short_id}"
                     action_name = goal.id
                     # Use color formatter for consistent coloring
                     goal_strs.append(color.format_action_key(f"{formatted_id}#{action_name}"))
