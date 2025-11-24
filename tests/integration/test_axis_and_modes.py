@@ -23,7 +23,7 @@ class TestAxisValues:
 
     def test_explicit_axis_value(self, mdl: MudylaRunner, clean_test_output):
         """Test explicitly setting axis value to release."""
-        result = mdl.run_success(["--axis=build-mode=release", ":conditional-build"])
+        result = mdl.run_success(["--axis build-mode:release", ":conditional-build"])
 
         # Verify release mode was used
         mdl.assert_in_output(result, "build-mode:release")
@@ -48,7 +48,7 @@ class TestAxisValues:
             shutil.rmtree(runs_dir)
 
         # Run with release mode (using verbose to see script output)
-        result_release = mdl.run_success(["--verbose", "--axis=build-mode=release", ":conditional-build"])
+        result_release = mdl.run_success(["--verbose", "--axis build-mode:release", ":conditional-build"])
         mdl.assert_in_output(result_release, "RELEASE")
 
 

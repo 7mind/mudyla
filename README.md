@@ -229,7 +229,7 @@ Run the same action multiple times with different configurations using per-actio
 
 ```bash
 # Run build action in both development and release modes
-mdl :build --axis=build-mode=development :build --axis=build-mode=release
+mdl :build --axis build-mode:development :build --axis build-mode:release
 
 # Each context gets its own execution with separate outputs
 # Output: build-mode:development#build and build-mode:release#build
@@ -250,7 +250,7 @@ Dependencies automatically inherit the context from their parent action:
 
 ```bash
 # When running :build with different modes, dependencies also get separate contexts
-mdl :build --axis=build-mode=release
+mdl :build --axis build-mode:release
 
 # If build depends on compile, both will use build-mode:release context
 # Output shows: build-mode:release#compile → build-mode:release#build
@@ -269,7 +269,7 @@ Duplicate invocations with identical context are automatically unified:
 
 ```bash
 # These two are the same and will only execute once
-mdl :build --axis=build-mode=release :build --axis=build-mode=release
+mdl :build --axis build-mode:release :build --axis build-mode:release
 ```
 
 **Real-world example: Cross-compilation**
@@ -302,9 +302,9 @@ ret binary:file=build/app-armv7
 Run for all architectures:
 ```bash
 # Compiles for all three architectures in parallel
-mdl :compile --axis=target-arch=x86_64 \
-    :compile --axis=target-arch=aarch64 \
-    :compile --axis=target-arch=armv7
+mdl :compile --axis target-arch:x86_64 \
+    :compile --axis target-arch:aarch64 \
+    :compile --axis target-arch:armv7
 ```
 
 ### Python Actions
@@ -446,16 +446,16 @@ mdl --list-actions
 
 ```bash
 # Run same action with different axis values (multi-context)
-mdl :build --axis=build-mode=development :build --axis=build-mode=release
+mdl :build --axis build-mode:development :build --axis build-mode:release
 
 # Set global axis for all actions
-mdl --axis=build-mode=release :build :test
+mdl --axis build-mode:release :build :test
 
 # Per-action arguments
 mdl :process --input=file1.txt :process --input=file2.txt
 
 # Mix global and per-action settings
-mdl --verbose :compile --axis=opt-level=O3 :compile --axis=opt-level=O0
+mdl --verbose :compile --axis opt-level:O3 :compile --axis opt-level:O0
 ```
 
 ### Execution Control

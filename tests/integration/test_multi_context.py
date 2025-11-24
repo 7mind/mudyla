@@ -15,9 +15,9 @@ class TestMultiContext:
         """Test that the same action can be invoked with different axis values."""
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=development",
+            "--axis build-mode:development",
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Verify both contexts were executed (includes built-in platform axis)
@@ -35,9 +35,9 @@ class TestMultiContext:
         """Test that dependencies inherit context from parent action."""
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=development",
+            "--axis build-mode:development",
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Verify execution plan shows proper context inheritance
@@ -72,9 +72,9 @@ class TestMultiContext:
         """Test that duplicate invocations with same context are unified."""
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Verify unification occurred - should only have 2 actions (not 4)
@@ -92,9 +92,9 @@ class TestMultiContext:
         """Test that outputs are isolated between contexts."""
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=development",
+            "--axis build-mode:development",
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Both should create output file (last one wins for the same path)
@@ -107,9 +107,9 @@ class TestMultiContext:
         """Test that context column appears in rich table for multi-context execution."""
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=development",
+            "--axis build-mode:development",
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Verify table has Context and Action columns
@@ -128,7 +128,7 @@ class TestMultiContext:
         """Test that context format uses 'context#action' notation."""
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Verify context#action format (includes built-in platform axis)
@@ -149,9 +149,9 @@ class TestMultiContextEdgeCases:
         """Test that contradictory axis values are rejected."""
         # This should fail because it sets global axis and per-action axis
         result = mdl.run_failure([
-            "--axis=build-mode=development",  # Global axis
+            "--axis build-mode:development",  # Global axis
             ":conditional-build",
-            "--axis=build-mode=release",  # Per-action axis (different value)
+            "--axis build-mode:release",  # Per-action axis (different value)
         ])
 
         # Verify error message
@@ -175,7 +175,7 @@ class TestMultiContextEdgeCases:
         # For now, just verify the format is correct
         result = mdl.run_success([
             ":conditional-build",
-            "--axis=build-mode=release",
+            "--axis build-mode:release",
         ])
 
         # Verify multi-axis context format (includes built-in platform axis)

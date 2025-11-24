@@ -25,7 +25,7 @@ from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
-    AXIS_OPTION,
+    AXIS_OPTIONS,
     CLIParseError,
     parse_custom_inputs,
     ParsedCLIInputs,
@@ -635,7 +635,9 @@ class CLI:
                 if option == "--autocomplete":
                     continue
                 cli_flags.add(option)
-        cli_flags.add(AXIS_OPTION)
+        # Add all axis option aliases
+        for axis_opt in AXIS_OPTIONS:
+            cli_flags.add(axis_opt)
         return sorted(cli_flags)
 
     def _list_all_flags(self, document: ParsedDocument) -> list[str]:

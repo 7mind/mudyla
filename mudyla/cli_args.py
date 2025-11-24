@@ -49,24 +49,28 @@ class ParsedCLIInputs:
         return self.global_axes
 
 
-AXIS_OPTION = "--axis"
+AXIS_OPTIONS = ["--axis", "--use", "-u", "-a"]
 OPTION_PREFIX = "--"
 GOAL_PREFIX = ":"
-ASSIGNMENT_SEPARATOR = "="
+ASSIGNMENT_SEPARATORS = ["=", ":"]
 
 
 def _split_axis_assignment(token: str) -> tuple[str, str]:
-    """Split an axis assignment of the form name=value."""
-    if ASSIGNMENT_SEPARATOR not in token:
-        raise CLIParseError(
-            f"Axis specification '{token}' is invalid. Expected format name=value."
-        )
-    name, value = token.split(ASSIGNMENT_SEPARATOR, 1)
-    if name.strip() == "" or value.strip() == "":
-        raise CLIParseError(
-            f"Axis specification '{token}' is invalid. Both name and value must be non-empty."
-        )
-    return name.strip(), value.strip()
+    """Split an axis assignment of the form name=value or name:value."""
+    # Try both separators
+    for separator in ASSIGNMENT_SEPARATORS:
+        if separator in token:
+            name, value = token.split(separator, 1)
+            if name.strip() == "" or value.strip() == "":
+                raise CLIParseError(
+                    f"Axis specification '{token}' is invalid. Both name and value must be non-empty."
+                )
+            return name.strip(), value.strip()
+
+    # No valid separator found
+    raise CLIParseError(
+        f"Axis specification '{token}' is invalid. Expected format name=value or name:value."
+    )
 
 
 def parse_custom_inputs(
@@ -138,16 +142,21 @@ def parse_custom_inputs(
             # Start new action context
             current_action_name = goal_name
 
-        # Handle axis
-        elif token.startswith(AXIS_OPTION):
-            remainder = token[len(AXIS_OPTION) :]
-            if remainder.startswith(ASSIGNMENT_SEPARATOR):
+        # Handle axis (check all axis option aliases)
+        elif any(token.startswith(axis_opt) for axis_opt in AXIS_OPTIONS):
+            # Find which axis option was used
+            axis_opt = next(opt for opt in AXIS_OPTIONS if token.startswith(opt))
+            remainder = token[len(axis_opt) :]
+
+            # Check if value is attached with separator (e.g., --axis=value or --axis:value)
+            if remainder and remainder[0] in ASSIGNMENT_SEPARATORS:
                 remainder = remainder[1:]
+
             if remainder:
                 axis_name, axis_value = _split_axis_assignment(remainder)
             else:
                 if idx + 1 >= len(tokens):
-                    raise CLIParseError("Expected name=value after --axis")
+                    raise CLIParseError(f"Expected name=value or name:value after {axis_opt}")
                 axis_name, axis_value = _split_axis_assignment(tokens[idx + 1])
                 idx += 1  # Skip the consumed token
 
@@ -160,8 +169,9 @@ def parse_custom_inputs(
         # Handle arguments and flags
         elif token.startswith(OPTION_PREFIX):
             stripped = token[len(OPTION_PREFIX) :]
-            if ASSIGNMENT_SEPARATOR in stripped:
-                name, value = stripped.split(ASSIGNMENT_SEPARATOR, 1)
+            # For regular options, only use = separator
+            if "=" in stripped:
+                name, value = stripped.split("=", 1)
                 if name.strip() == "":
                     raise CLIParseError(f"Malformed argument '{token}'")
 
@@ -180,8 +190,8 @@ def parse_custom_inputs(
                 else:
                     current_flags[stripped] = True
 
-        # Handle shorthand axis notation (name=value without --axis prefix)
-        elif ASSIGNMENT_SEPARATOR in token:
+        # Handle shorthand axis notation (name=value or name:value without --axis prefix)
+        elif any(sep in token for sep in ASSIGNMENT_SEPARATORS):
             axis_name, axis_value = _split_axis_assignment(token)
 
             # Add to current context
