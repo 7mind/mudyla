@@ -1,7 +1,6 @@
 """Command-line interface for Mudyla."""
 
 import argparse
-import hashlib
 import json
 import platform
 import sys
@@ -9,22 +8,6 @@ from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
 from typing import Optional
-
-# Preset of 32 distinctive emojis for context ID prefixes (non-Windows)
-CONTEXT_EMOJIS = [
-    "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫",
-    "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛",
-    "⭐", "🌟", "💫", "✨", "🔶", "🔷", "🔸", "🔹",
-    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
-]
-
-# ASCII-compatible symbols for context ID prefixes (Windows fallback)
-CONTEXT_SYMBOLS_ASCII = [
-    "A", "B", "C", "D", "E", "F", "G", "H",
-    "J", "K", "L", "M", "N", "P", "Q", "R",
-    "S", "T", "U", "V", "W", "X", "Y", "Z",
-    "1", "2", "3", "4", "5", "6", "7", "8",
-]
 
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.builder import DAGBuilder
@@ -41,6 +24,7 @@ from .cli_args import (
 from .cli_builder import build_arg_parser
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
+from .utils.context_ids import build_context_mapping, format_action_label
 from .utils.output import OutputFormatter
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
@@ -120,9 +104,9 @@ class CLI:
 
             # Build context mapping for short IDs (unless full representations requested)
             use_short_ids = not args.full_ctx_reprs
-            context_mapping = {}
+            context_mapping: dict[str, str] = {}
             if use_short_ids:
-                context_mapping = self._build_context_mapping(pruned_graph)
+                context_mapping = build_context_mapping(pruned_graph.nodes.keys())
 
             # Show execution mode
             if not quiet_mode:
@@ -135,33 +119,15 @@ class CLI:
                 output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
 
             # Show fully-qualified goals with contexts
+            goal_keys = sorted(graph.goals, key=str)
             if use_short_ids and context_mapping:
-                # Show goals with short IDs (including emoji prefix)
-                goal_strs = []
-                for goal in sorted(graph.goals, key=str):
-                    context_str = str(goal.context_id)
-                    # Build unformatted context ID (symbol + hex) - let format_action_key handle coloring
-                    hash_obj = hashlib.sha256(context_str.encode())
-                    short_id = hash_obj.hexdigest()[:6]
-
-                    if platform.system() == "Windows":
-                        symbols = CONTEXT_SYMBOLS_ASCII
-                    else:
-                        symbols = CONTEXT_EMOJIS
-
-                    symbol_index = int(short_id[:2], 16) % len(symbols)
-                    symbol = symbols[symbol_index]
-                    formatted_id = f"{symbol}{short_id}"
-                    action_name = goal.id
-                    # Use color formatter for consistent coloring
-                    goal_strs.append(color.format_action_key(f"{formatted_id}#{action_name}"))
-                goal_keys_str = ', '.join(goal_strs)
+                goal_strs = [
+                    color.format_action_key(format_action_label(goal, use_short_ids=True))
+                    for goal in goal_keys
+                ]
             else:
-                # Show full context representations
-                goal_strs = []
-                for goal in sorted(graph.goals, key=str):
-                    goal_strs.append(color.format_action_key(str(goal)))
-                goal_keys_str = ', '.join(goal_strs)
+                goal_strs = [color.format_action_key(str(goal)) for goal in goal_keys]
+            goal_keys_str = ", ".join(goal_strs)
 
             # Display context mapping if using short IDs
             if use_short_ids and context_mapping:
@@ -178,7 +144,7 @@ class CLI:
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
                 output.print(f"\n{output.emoji('📋', '▸')} {color.bold('Execution plan:')}")
-                self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output, use_short_ids, context_mapping)
+                self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output, use_short_ids)
 
             if args.dry_run:
                 output.print(f"\n{output.emoji('ℹ️', 'i')} {color.info('Dry run - not executing')}")
@@ -275,76 +241,6 @@ class CLI:
 
             traceback.print_exc()
             return 1
-
-    @staticmethod
-    def _generate_short_context_id(context_str: str) -> str:
-        """Generate a short 6-character ID for a context.
-
-        Args:
-            context_str: Full context string (e.g., "build-mode:release+platform:linux")
-
-        Returns:
-            6-character hash-based ID
-        """
-        # Use first 6 chars of SHA256 hash
-        hash_obj = hashlib.sha256(context_str.encode())
-        return hash_obj.hexdigest()[:6]
-
-    @staticmethod
-    def _get_context_emoji(short_id: str) -> str:
-        """Get emoji/symbol prefix for a context ID.
-
-        Args:
-            short_id: 6-character context ID
-
-        Returns:
-            Emoji or ASCII character from preset list (platform-dependent)
-        """
-        # On Windows, use ASCII symbols to avoid encoding issues
-        if platform.system() == "Windows":
-            symbols = CONTEXT_SYMBOLS_ASCII
-        else:
-            symbols = CONTEXT_EMOJIS
-
-        # Use first byte of short_id to select symbol (mod 32)
-        index = int(short_id[:2], 16) % len(symbols)
-        return symbols[index]
-
-    @staticmethod
-    def _format_short_context_id(context_str: str) -> str:
-        """Format a context with emoji prefix and short ID.
-
-        Args:
-            context_str: Full context string
-
-        Returns:
-            Formatted string like "🔴79d776"
-        """
-        short_id = CLI._generate_short_context_id(context_str)
-        emoji = CLI._get_context_emoji(short_id)
-        return f"{emoji}{short_id}"
-
-    @staticmethod
-    def _build_context_mapping(graph) -> dict[str, str]:
-        """Build mapping from formatted short IDs to full context strings.
-
-        Args:
-            graph: Execution graph containing action keys with contexts
-
-        Returns:
-            Dictionary mapping formatted short ID (with emoji) to full context string
-        """
-        mapping = {}
-        contexts_seen = set()
-
-        for action_key in graph.nodes.keys():
-            context_str = str(action_key.context_id)
-            if context_str not in contexts_seen:
-                contexts_seen.add(context_str)
-                formatted_id = CLI._format_short_context_id(context_str)
-                mapping[formatted_id] = context_str
-
-        return mapping
 
     def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
         """Apply platform specific defaults."""
@@ -474,7 +370,6 @@ class CLI:
         color,
         output: OutputFormatter,
         use_short_ids: bool = False,
-        context_mapping: dict[str, str] = None,
     ) -> None:
         """Visualize execution plan as a tree.
 
@@ -485,38 +380,13 @@ class CLI:
             color: Color formatter
             output: Output formatter
             use_short_ids: Whether to use short context IDs
-            context_mapping: Mapping from short IDs to full context strings
         """
-        if context_mapping is None:
-            context_mapping = {}
-
         # Create a tree-like visualization showing dependencies
         for i, action_key in enumerate(execution_order, 1):
-            # Build action key string (without formatting yet)
-            if use_short_ids:
-                context_str = str(action_key.context_id)
-                # Get short ID with symbol/emoji but WITHOUT color formatting
-                hash_obj = hashlib.sha256(context_str.encode())
-                short_id = hash_obj.hexdigest()[:6]
-
-                if platform.system() == "Windows":
-                    symbols = CONTEXT_SYMBOLS_ASCII
-                else:
-                    symbols = CONTEXT_EMOJIS
-
-                symbol_index = int(short_id[:2], 16) % len(symbols)
-                symbol = symbols[symbol_index]
-                formatted_id = f"{symbol}{short_id}"
-                action_name = f"{formatted_id}#{action_key.id}"
-            else:
-                action_name = str(action_key)
-
+            action_name = format_action_label(action_key, use_short_ids=use_short_ids)
             node = graph.get_node(action_key)
-            is_goal = action_name in goals
+            is_goal = action_key.id.name in goals
             goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""
-
-            # Format the action with its number (left-padded to minimum width 2)
-            action_label = f"{i:>2}. {action_name}{goal_marker}"
 
             # Format action key with colors using the helper function
             action_colored = color.format_action_key(action_name)

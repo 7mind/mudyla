@@ -1,9 +1,7 @@
 """Execution engine for running actions."""
 
-import hashlib
 import json
 import os
-import platform
 import concurrent.futures
 import shutil
 import subprocess
@@ -20,26 +18,11 @@ from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph, ActionKey
 from ..utils.colors import ColorFormatter
 from ..utils.output import OutputFormatter
+from ..utils.context_ids import format_action_label
 from .runtime_registry import RuntimeRegistry
 from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
-
-# Preset of 32 distinctive emojis for context ID prefixes (non-Windows)
-CONTEXT_EMOJIS = [
-    "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫",
-    "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛",
-    "⭐", "🌟", "💫", "✨", "🔶", "🔷", "🔸", "🔹",
-    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
-]
-
-# ASCII-compatible symbols for context ID prefixes (Windows fallback)
-CONTEXT_SYMBOLS_ASCII = [
-    "A", "B", "C", "D", "E", "F", "G", "H",
-    "J", "K", "L", "M", "N", "P", "Q", "R",
-    "S", "T", "U", "V", "W", "X", "Y", "Z",
-    "1", "2", "3", "4", "5", "6", "7", "8",
-]
 
 
 @dataclass
@@ -202,23 +185,7 @@ class ExecutionEngine:
         Returns:
             Formatted string (short ID with symbol/emoji or full context)
         """
-        if self.use_short_context_ids:
-            context_str = str(action_key.context_id)
-            hash_obj = hashlib.sha256(context_str.encode())
-            short_id = hash_obj.hexdigest()[:6]
-
-            # On Windows, use ASCII symbols to avoid encoding issues
-            if platform.system() == "Windows":
-                symbols = CONTEXT_SYMBOLS_ASCII
-            else:
-                symbols = CONTEXT_EMOJIS
-
-            # Add symbol prefix (note: actual coloring happens in ColorFormatter)
-            symbol_index = int(short_id[:2], 16) % len(symbols)
-            symbol = symbols[symbol_index]
-            return f"{symbol}{short_id}#{action_key.id}"
-        else:
-            return str(action_key)
+        return format_action_label(action_key, use_short_ids=self.use_short_context_ids)
 
     def _print_action_start(self, action_name: str) -> None:
         """Print action start message.
