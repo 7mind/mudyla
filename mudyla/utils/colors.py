@@ -182,7 +182,7 @@ class ColorFormatter:
             context_str: Context string (format: "axis1:value1+axis2:value2")
 
         Returns:
-            Formatted string with axis names (magenta) and values (cyan)
+            Formatted string with axis names (magenta) and values (yellow)
         """
         if not self.enabled:
             return context_str
@@ -194,10 +194,10 @@ class ColorFormatter:
         for part in parts:
             if ":" in part:
                 axis_name, axis_value = part.split(":", 1)
-                # Format: magenta axis name + dim separator + cyan value
+                # Format: magenta axis name + dim separator + yellow value
                 axis_colored = self.colorize(axis_name, Colors.MAGENTA)
                 separator = self.dim(":")
-                value_colored = self.colorize(axis_value, Colors.CYAN)
+                value_colored = self.colorize(axis_value, Colors.YELLOW)
                 formatted_parts.append(f"{axis_colored}{separator}{value_colored}")
             else:
                 formatted_parts.append(part)
@@ -211,7 +211,7 @@ class ColorFormatter:
             short_id_with_emoji: Context ID with emoji prefix (e.g., "🔴79d776")
 
         Returns:
-            Formatted string with highlighted ID
+            Formatted string with blue bold ID
         """
         if not self.enabled:
             return short_id_with_emoji
@@ -221,7 +221,7 @@ class ColorFormatter:
         if len(short_id_with_emoji) > 1:
             emoji = short_id_with_emoji[0]
             hex_id = short_id_with_emoji[1:]
-            return emoji + self.colorize(hex_id, Colors.CYAN, bold=True)
+            return emoji + self.colorize(hex_id, Colors.BLUE, bold=True)
         return short_id_with_emoji
 
     def format_action_key(self, action_key_str: str) -> str:

@@ -421,7 +421,12 @@ class CLI:
             default_value = axis_def.get_default_value()
             if default_value:
                 axis_values[axis_name] = default_value
-                print(f"{color.dim('Using default axis value:')} {color.info(axis_name + '=' + default_value)}")
+                # Format axis name and value with consistent colors
+                from .utils.colors import Colors
+                axis_colored = color.colorize(axis_name, Colors.MAGENTA)
+                separator = color.dim(":")
+                value_colored = color.colorize(default_value, Colors.YELLOW)
+                print(f"{color.dim('Using default axis value:')} {axis_colored}{separator}{value_colored}")
 
     def _apply_default_argument_values(
         self,

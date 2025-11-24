@@ -185,7 +185,7 @@ class ExecutionEngine:
             context_str = str(action_key.context_id)
             hash_obj = hashlib.sha256(context_str.encode())
             short_id = hash_obj.hexdigest()[:6]
-            # Add emoji prefix
+            # Add emoji prefix (note: actual coloring happens in ColorFormatter)
             emoji_index = int(short_id[:2], 16) % len(CONTEXT_EMOJIS)
             emoji = CONTEXT_EMOJIS[emoji_index]
             return f"{emoji}{short_id}#{action_key.id}"

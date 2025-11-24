@@ -162,13 +162,13 @@ class TaskTableManager:
                 # Split task name into context and action if present
                 if has_context and "#" in task_name:
                     context_str, action_name = task_name.split("#", 1)
-                    # Format context with colors (emoji + cyan bold hex ID)
+                    # Format context with colors (emoji + blue bold hex ID)
                     # Check if context starts with emoji
                     if context_str and ord(context_str[0]) > 0x1F000:
-                        # Short ID with emoji: emoji + cyan bold hex
+                        # Short ID with emoji: emoji + blue bold hex
                         emoji = context_str[0]
                         hex_id = context_str[1:]
-                        context_formatted = f"{emoji}[cyan bold]{hex_id}[/cyan bold]"
+                        context_formatted = f"{emoji}[blue bold]{hex_id}[/blue bold]"
                     else:
                         # Full context: format axis:value pairs
                         # This shouldn't normally happen in the table, but handle it
