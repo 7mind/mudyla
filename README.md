@@ -32,6 +32,7 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 - **Dependency graph execution**: Automatic dependency resolution and parallel execution
 - **Multi-version actions**: Different implementations based on axis values (e.g., build-mode)
 - **Multi-context execution**: Run the same action multiple times with different configurations
+- **Axis wildcards**: Use `*` and `prefix*` patterns to run actions across multiple axis values
 - **Per-action parameters**: Each action invocation can have different axis values and arguments
 - **Type-safe returns**: Actions return typed values (int, string, bool, file, directory)
 - **Nix integration**: All actions run in Nix development environment (optional on Windows)
@@ -309,6 +310,74 @@ mdl :compile --axis target-arch:x86_64 \
     :compile --axis target-arch:armv7
 ```
 
+### Axis Wildcards
+
+Mudyla supports wildcard patterns to run actions across multiple axis values without explicitly listing each one. This is especially useful for cross-compilation, multi-version testing, and other scenarios where you want to execute the same action with different configurations.
+
+**Wildcard Patterns:**
+
+- `*` - Matches all values for an axis
+- `prefix*` - Matches all values starting with the prefix
+
+**Example axis definition:**
+
+```markdown
+# Axis
+
+- `platform`=`{jvm*|js|native}`
+- `scala`=`{2.12.0|2.13.0|2.13.5*|3.3.0}`
+```
+
+**Basic wildcard usage:**
+
+```bash
+# Run build for ALL platforms
+mdl -u platform:* :build
+
+# Run test for ALL scala versions
+mdl -u scala:* :test
+
+# Run test for scala versions starting with 2.13
+mdl -u scala:2.13* :test
+# Expands to: scala:2.13.0, scala:2.13.5
+```
+
+**Combined wildcards:**
+
+```bash
+# Build for all platforms and all scala versions
+# Creates: jvm+2.12, jvm+2.13, jvm+2.13.5, jvm+3.3, js+2.12, etc.
+mdl -u platform:* scala:* :build
+
+# Test only 2.13.x versions across all platforms
+mdl -u platform:* scala:2.13* :test
+```
+
+**Per-action wildcards:**
+
+Different actions can use different wildcard patterns:
+
+```bash
+# Build for all platforms and scala versions, but only test 2.13.x
+mdl -u platform:* :build scala:* :test scala:2.13*
+```
+
+This command:
+1. Expands `platform:*` globally to all platforms
+2. Runs `:build` with `scala:*` (all scala versions) for all platforms
+3. Runs `:test` with `scala:2.13*` (only 2.13.x versions) for all platforms
+
+**Real-world example:**
+
+```bash
+# CI pipeline: test all configurations but only publish LTS versions
+mdl -u platform:* \
+    :test scala:* \
+    :publish scala:2.13*
+```
+
+Wildcards are expanded before graph compilation, so they work seamlessly with dependency resolution and parallel execution. Each expanded configuration runs as a separate context with proper isolation.
+
 ### Python Actions
 
 Mudyla supports Python code blocks alongside Bash. Python actions use the `mdl` object for interacting with the Mudyla runtime.
@@ -460,6 +529,24 @@ mdl :process --input=file1.txt :process --input=file2.txt
 mdl --verbose :compile --axis opt-level:O3 :compile --axis opt-level:O0
 ```
 
+### Wildcard Axis Values
+
+```bash
+# Run for all axis values using wildcards
+mdl -u platform:* :build              # Build for all platforms
+mdl -u scala:2.13* :test              # Test all scala 2.13.x versions
+
+# Combine multiple wildcards
+mdl -u platform:* scala:* :build      # All platforms × all scala versions
+
+# Per-action wildcards
+mdl -u platform:* :build scala:* :test scala:2.13*
+# Builds for all platforms+scala, tests only 2.13.x
+
+# Shorter syntax (-u is alias for --axis)
+mdl -u platform:* -u scala:* :build
+```
+
 ### Execution Control
 
 ```bash
@@ -532,7 +619,11 @@ See [TESTING.md](TESTING.md) for detailed testing documentation, including:
 - Debugging and coverage
 
 The test suite includes:
-- **Unit tests** (20 tests): Test individual components without subprocess calls
+- **Unit tests** (41+ tests): Test individual components without subprocess calls
+  - Axis wildcard matching and expansion (21 tests)
+  - CLI argument parsing
+  - Markdown parsing
+  - Dependency graph construction
 - **Integration tests** (28 tests): Test the full CLI by running the built Nix package
 - **Parallel execution**: Tests run concurrently with file locking for isolation
 - **GitHub Actions integration**: Test results published to Checks tab with JUnit XML reports

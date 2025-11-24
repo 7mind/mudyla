@@ -22,6 +22,7 @@ from .cli_args import (
     ParsedCLIInputs,
 )
 from .cli_builder import build_arg_parser
+from .axis_wildcards import expand_all_wildcards
 from .utils.project_root import find_project_root
 from .utils.colors import ColorFormatter
 from .utils.context_ids import build_context_mapping, format_action_label
@@ -304,6 +305,9 @@ class CLI:
 
         parser = MarkdownParser()
         document = parser.parse_files(md_files)
+
+        # Expand wildcards in axis specifications
+        parsed_inputs = expand_all_wildcards(parsed_inputs, document)
 
         custom_args = dict(parsed_inputs.custom_args)
         axis_values = dict(parsed_inputs.axis_values)

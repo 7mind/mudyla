@@ -44,6 +44,7 @@ include = [
     "mudyla/executor/runtime_registry.py",
     "mudyla/cli_args.py",
     "mudyla/cli_builder.py",
+    "mudyla/axis_wildcards.py",
 ]
 
 [tool.hatch.build.targets.wheel]

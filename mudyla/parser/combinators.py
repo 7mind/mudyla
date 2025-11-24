@@ -24,6 +24,8 @@ class MudylaGrammar:
         # Common patterns
         self.identifier = Word(alphas + "_", alphanums + "_-")
         self.dot_separated = Word(alphas + "_", alphanums + "_-.")
+        # Axis values can be version numbers or identifiers, so allow starting with letters or digits
+        self.axis_value_pattern = Word(alphas + nums + "_", alphanums + "_-.")
         self.uppercase_identifier = Word(alphas.upper() + "_", alphas.upper() + nums + "_")
 
         backtick = Suppress("`")
@@ -46,12 +48,14 @@ class MudylaGrammar:
 
         # Axis definition: - `axis-name`=`{value1|value2*|value3}`
         # Example: - `build-mode`=`{release|development*}`
+        # Example with dots: - `scala`=`{2.12.0|2.13.0*|3.3.0}`
         pipe = Suppress("|")
         lbrace = Suppress("{")
         rbrace = Suppress("}")
 
         axis_name = self.identifier
-        axis_value = self.identifier + Optional(Literal("*"))("default_marker")
+        # Axis values can contain dots and start with digits (e.g., version numbers like 2.13.0)
+        axis_value = self.axis_value_pattern + Optional(Literal("*"))("default_marker")
         axis_values = lbrace + axis_value + ZeroOrMore(pipe + axis_value) + rbrace
 
         self.axis_def = (

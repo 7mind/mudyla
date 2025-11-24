@@ -118,12 +118,12 @@ class TestBasicOperations:
         """Test that rich table is displayed during execution."""
         result = mdl.run_success([":write-message"])
 
-        # Verify table headers (some may be heavily truncated due to many columns)
+        # Verify table headers
         mdl.assert_in_output(result, "Context")
         mdl.assert_in_output(result, "Action")
-        # Dir column should be visible
-        assert "Dir" in result.stdout or "D…" in result.stdout, "Expected Dir column in table"
-        # Other columns may be truncated to just "…" when terminal width is limited
+        # Verify other essential columns
+        mdl.assert_in_output(result, "Time")
+        mdl.assert_in_output(result, "Status")
         # Just verify the table structure exists with the box drawing characters
         assert "┃" in result.stdout, "Expected table box drawing characters"
         assert "━" in result.stdout, "Expected table box drawing characters"
