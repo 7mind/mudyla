@@ -52,7 +52,7 @@ class TestMultiContext:
         # Verify execution completed successfully
         mdl.assert_in_output(result, "Execution completed successfully")
 
-    def test_per_action_arguments(self, mdl: MudylaRunner, clean_test_output, project_root: Path):
+    def test_per_action_arguments(self, mdl: MudylaRunner, clean_test_output):
         """Test that different invocations can have different argument values."""
         result = mdl.run_success([
             ":write-message",
@@ -66,8 +66,7 @@ class TestMultiContext:
         mdl.assert_in_output(result, "Execution completed successfully")
 
         # Verify output file exists (last invocation wins in same context)
-        message_file = project_root / "test-output" / "message.txt"
-        mdl.assert_file_exists(message_file)
+        mdl.assert_file_exists("test-output/message.txt")
 
     def test_graph_unification(self, mdl: MudylaRunner, clean_test_output):
         """Test that duplicate invocations with same context are unified."""
@@ -88,7 +87,7 @@ class TestMultiContext:
         # Verify execution completed successfully
         mdl.assert_in_output(result, "Execution completed successfully")
 
-    def test_output_isolation_between_contexts(self, mdl: MudylaRunner, clean_test_output, project_root: Path):
+    def test_output_isolation_between_contexts(self, mdl: MudylaRunner, clean_test_output):
         """Test that outputs are isolated between contexts."""
         result = mdl.run_success([
             ":conditional-build",
@@ -98,8 +97,7 @@ class TestMultiContext:
         ])
 
         # Both should create output file (last one wins for the same path)
-        mode_file = project_root / "test-output" / "build-mode.txt"
-        mdl.assert_file_exists(mode_file)
+        mdl.assert_file_exists("test-output/build-mode.txt")
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")

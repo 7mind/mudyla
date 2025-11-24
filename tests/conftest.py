@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,24 +23,57 @@ def mdl_command(project_root: Path) -> list[str]:
 
 
 @pytest.fixture
+def worker_id(request):
+    """Get the pytest-xdist worker ID for parallel testing.
+
+    Returns 'master' for non-parallel runs or 'gw0', 'gw1', etc. for workers.
+    """
+    if hasattr(request.config, 'workerinput'):
+        return request.config.workerinput['workerid']
+    return 'master'
+
+
+@pytest.fixture
 def clean_test_output(project_root: Path):
-    """Clean up test output directories before and after each test."""
+    """Clean up test output directories before and after each test.
+
+    Uses file locking to serialize access in parallel execution.
+    """
+    import fcntl
+
+    # Use a lock file to serialize access to test directories
+    lock_file = project_root / ".mdl" / "test.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+
     test_output = project_root / "test-output"
     mdl_runs = project_root / ".mdl" / "runs"
 
-    # Clean before test
-    if test_output.exists():
-        shutil.rmtree(test_output)
-    if mdl_runs.exists():
-        shutil.rmtree(mdl_runs)
+    # Acquire exclusive lock
+    with open(lock_file, "w") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
 
-    yield
+        try:
+            # Clean up existing directories
+            if test_output.exists():
+                shutil.rmtree(test_output)
+            if mdl_runs.exists():
+                shutil.rmtree(mdl_runs)
 
-    # Clean after test (optional - comment out to inspect failures)
-    # if test_output.exists():
-    #     shutil.rmtree(test_output)
-    # if mdl_runs.exists():
-    #     shutil.rmtree(mdl_runs)
+            # Create fresh directories
+            test_output.mkdir(parents=True, exist_ok=True)
+            mdl_runs.mkdir(parents=True, exist_ok=True)
+
+            yield
+
+            # Cleanup after test
+            if test_output.exists():
+                shutil.rmtree(test_output)
+            if mdl_runs.exists():
+                shutil.rmtree(mdl_runs)
+
+        finally:
+            # Lock is automatically released when file is closed
+            pass
 
 
 class MudylaRunner:
@@ -105,11 +139,17 @@ class MudylaRunner:
     def assert_file_exists(self, path: Path | str) -> None:
         """Assert that a file exists."""
         file_path = Path(path)
+        # Support both absolute and relative paths
+        if not file_path.is_absolute():
+            file_path = Path.cwd() / file_path
         assert file_path.exists(), f"Expected file to exist: {file_path}"
 
     def assert_file_contains(self, path: Path | str, text: str) -> None:
         """Assert that a file exists and contains text."""
         file_path = Path(path)
+        # Support both absolute and relative paths
+        if not file_path.is_absolute():
+            file_path = Path.cwd() / file_path
         self.assert_file_exists(file_path)
         content = file_path.read_text()
         assert text in content, f"Expected '{text}' in {file_path}:\n{content}"

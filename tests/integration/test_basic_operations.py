@@ -25,7 +25,7 @@ class TestBasicOperations:
         # Verify axis information is shown
         mdl.assert_in_output(result, "build-mode")
 
-    def test_simple_action(self, mdl: MudylaRunner, clean_test_output, project_root: Path):
+    def test_simple_action(self, mdl: MudylaRunner, clean_test_output):
         """Test executing a simple action without dependencies."""
         result = mdl.run_success([":create-directory"])
 
@@ -33,14 +33,13 @@ class TestBasicOperations:
         mdl.assert_in_output(result, "Execution completed successfully")
 
         # Verify output was created
-        test_output = project_root / "test-output"
-        mdl.assert_file_exists(test_output)
+        mdl.assert_file_exists("test-output")
 
         # Verify JSON output
         mdl.assert_in_output(result, "create-directory")
         mdl.assert_in_output(result, "output-directory")
 
-    def test_action_with_dependencies(self, mdl: MudylaRunner, clean_test_output, project_root: Path):
+    def test_action_with_dependencies(self, mdl: MudylaRunner, clean_test_output):
         """Test executing an action with dependencies."""
         result = mdl.run_success([":write-message"])
 
@@ -49,15 +48,14 @@ class TestBasicOperations:
         mdl.assert_in_output(result, "write-message")
 
         # Verify outputs
-        message_file = project_root / "test-output" / "message.txt"
-        mdl.assert_file_exists(message_file)
-        mdl.assert_file_contains(message_file, "Hello, Mudyla!")
+        mdl.assert_file_exists("test-output/message.txt")
+        mdl.assert_file_contains("test-output/message.txt", "Hello, Mudyla!")
 
         # Verify JSON output contains both actions
         mdl.assert_in_output(result, "message-file")
         mdl.assert_in_output(result, "message-length")
 
-    def test_multiple_goals(self, mdl: MudylaRunner, clean_test_output, project_root: Path):
+    def test_multiple_goals(self, mdl: MudylaRunner, clean_test_output):
         """Test executing multiple goal actions."""
         result = mdl.run_success([":uppercase-message", ":count-files"])
 
@@ -68,14 +66,13 @@ class TestBasicOperations:
         mdl.assert_in_output(result, "count-files")
 
         # Verify outputs
-        uppercase_file = project_root / "test-output" / "uppercase.txt"
-        mdl.assert_file_exists(uppercase_file)
+        mdl.assert_file_exists("test-output/uppercase.txt")
 
         # Verify JSON output
         mdl.assert_in_output(result, "uppercase-file")
         mdl.assert_in_output(result, "file-count")
 
-    def test_custom_arguments(self, mdl: MudylaRunner, clean_test_output, project_root: Path):
+    def test_custom_arguments(self, mdl: MudylaRunner, clean_test_output):
         """Test passing custom arguments to actions."""
         custom_message = "Custom test message"
         result = mdl.run_success([f"--message={custom_message}", ":write-message"])
@@ -84,8 +81,7 @@ class TestBasicOperations:
         mdl.assert_in_output(result, "Execution completed successfully")
 
         # Verify custom message was used
-        message_file = project_root / "test-output" / "message.txt"
-        mdl.assert_file_contains(message_file, custom_message)
+        mdl.assert_file_contains("test-output/message.txt", custom_message)
 
         # Verify message length in output (length reported includes newline)
         mdl.assert_in_output(result, "message-length")

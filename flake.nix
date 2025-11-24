@@ -74,11 +74,17 @@
 
             source .venv/bin/activate
 
-            # Install package in development mode
-            if [ ! -f .venv/.mudyla-installed ]; then
-              echo "Installing mudyla with uv..." >&2
+            # Check if dependencies are up to date by comparing pyproject.toml timestamp
+            PYPROJECT_HASH=$(sha256sum pyproject.toml | cut -d' ' -f1)
+            INSTALLED_HASH=""
+            if [ -f .venv/.mudyla-hash ]; then
+              INSTALLED_HASH=$(cat .venv/.mudyla-hash)
+            fi
+
+            if [ "$PYPROJECT_HASH" != "$INSTALLED_HASH" ]; then
+              echo "Dependencies changed, reinstalling mudyla with uv..." >&2
               uv pip install -e ".[dev]"
-              touch .venv/.mudyla-installed
+              echo "$PYPROJECT_HASH" > .venv/.mudyla-hash
             fi
 
             #export FPATH="''${PWD}/completions"

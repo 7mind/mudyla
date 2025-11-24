@@ -5,6 +5,7 @@
 *.whl
 task-*.txt
 test-output/
+test-output-*/
 
 # Python
 __pycache__/
@@ -27,6 +28,8 @@ test-reports/
 
 # Mudyla
 .mdl/runs/
+.mdl/runs-*/
+.mdl/test.lock
 
 # Nix
 result

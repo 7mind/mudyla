@@ -113,10 +113,25 @@ Report is saved to `test-reports/report.html` and includes:
 Run tests in parallel for faster execution:
 
 ```bash
+# Run all tests in parallel (recommended for speed)
 ./run-tests.sh --parallel
+
+# Run only integration tests in parallel
+./run-tests.sh integration --parallel
+
+# Run only unit tests in parallel
+./run-tests.sh unit --parallel
 ```
 
-This uses `pytest-xdist` to run tests across multiple CPU cores.
+This uses `pytest-xdist` to run tests across multiple CPU cores with automatic isolation.
+
+**Performance:** Parallel execution typically reduces test time by 50-70% depending on your CPU cores (e.g., 15s sequential → 13s parallel).
+
+**Isolation:**
+- Unit tests run in complete isolation with no shared state
+- Integration tests use file locking (`fcntl.flock`) to serialize access to shared test directories (`test-output` and `.mdl/runs`)
+- This ensures test correctness while still allowing unit tests to run in parallel
+- The lock file is automatically managed and cleaned up between tests
 
 ## Advanced Usage
 

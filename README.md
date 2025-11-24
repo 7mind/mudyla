@@ -1,6 +1,6 @@
 # Mudyla - Multimodal Dynamic Launcher
 
-[![Test](https://github.com/7mind/mudyla/actions/workflows/test.yml/badge.svg)](https://github.com/7mind/mudyla/actions/workflows/test.yml)
+[![CI/CD](https://github.com/7mind/mudyla/actions/workflows/ci.yml/badge.svg)](https://github.com/7mind/mudyla/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Nix](https://img.shields.io/badge/Built%20with-Nix-5277C3.svg?logo=nixos&logoColor=white)](https://builtwithnix.org)
@@ -36,6 +36,19 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 - **Environment validation**: Validates required environment variables before execution
 
 ## Installation
+
+### Using pip/pipx (easiest)
+
+```bash
+# Install with pipx (recommended - isolated installation)
+pipx install mudyla
+
+# Or install with pip
+pip install mudyla
+
+# Run
+mdl --help
+```
 
 ### Using Nix Flakes
 
@@ -326,13 +339,34 @@ mdl --out results.json :goal
 
 ## Testing
 
-Run the test suite (tests the built Nix package):
+Mudyla uses pytest for comprehensive testing with unit and integration tests.
 
 ```bash
-./test.sh
+# Run all tests
+./run-tests.sh
+
+# Run only integration tests (tests the built Nix package)
+./run-tests.sh integration
+
+# Run only unit tests
+./run-tests.sh unit
+
+# Generate HTML report
+./run-tests.sh --html
+
+# Verbose output
+./run-tests.sh --verbose
 ```
 
-The test script uses `nix run . --` to test the actual built package, ensuring the Nix build is working correctly.
+See [TESTING.md](TESTING.md) for detailed testing documentation, including:
+- Writing new tests
+- Using fixtures and assertions
+- Running specific tests
+- Debugging and coverage
+
+The test suite includes:
+- **Unit tests** (20 tests): Test individual components without subprocess calls
+- **Integration tests** (28 tests): Test the full CLI by running the built Nix package
 
 ## Documentation
 
