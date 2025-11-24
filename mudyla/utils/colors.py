@@ -88,9 +88,13 @@ class ColorFormatter:
         if not self.enabled:
             return text
 
-        prefix = color
         if bold:
-            prefix = Colors.BOLD + color
+            # Extract color number from ANSI code (e.g., "\033[34m" -> "34")
+            # and combine with bold: "\033[1;34m"
+            color_num = color.replace("\033[", "").replace("m", "")
+            prefix = f"\033[1;{color_num}m"
+        else:
+            prefix = color
 
         return f"{prefix}{text}{Colors.RESET}"
 
