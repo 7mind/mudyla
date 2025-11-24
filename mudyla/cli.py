@@ -10,6 +10,14 @@ from glob import glob
 from pathlib import Path
 from typing import Optional
 
+# Preset of 32 distinctive emojis for context ID prefixes
+CONTEXT_EMOJIS = [
+    "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫",
+    "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛",
+    "⭐", "🌟", "💫", "✨", "🔶", "🔷", "🔸", "🔹",
+    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
+]
+
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.builder import DAGBuilder
 from .dag.compiler import DAGCompiler, CompilationError
@@ -108,21 +116,6 @@ class CLI:
             if use_short_ids:
                 context_mapping = self._build_context_mapping(pruned_graph)
 
-            # Show fully-qualified goals with contexts
-            if use_short_ids and context_mapping:
-                # Show goals with short IDs
-                goal_strs = []
-                for goal in sorted(graph.goals, key=str):
-                    context_str = str(goal.context_id)
-                    short_id = self._generate_short_context_id(context_str)
-                    action_name = goal.id
-                    goal_strs.append(f"{short_id}#{action_name}")
-                goal_keys_str = ', '.join(goal_strs)
-            else:
-                # Show full context representations
-                goal_keys_str = ', '.join(str(goal) for goal in sorted(graph.goals, key=str))
-            output.print(f"{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(goal_keys_str)}")
-
             # Show execution mode
             if not quiet_mode:
                 mode_label = "dry-run" if args.dry_run else ("parallel" if parallel_execution else "sequential")
@@ -132,6 +125,21 @@ class CLI:
             validator.validate_all(custom_args, all_flags, axis_values)
             if not quiet_mode:
                 output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
+
+            # Show fully-qualified goals with contexts
+            if use_short_ids and context_mapping:
+                # Show goals with short IDs (including emoji prefix)
+                goal_strs = []
+                for goal in sorted(graph.goals, key=str):
+                    context_str = str(goal.context_id)
+                    formatted_id = self._format_short_context_id(context_str)
+                    action_name = goal.id
+                    goal_strs.append(f"{formatted_id}#{action_name}")
+                goal_keys_str = ', '.join(goal_strs)
+            else:
+                # Show full context representations
+                goal_keys_str = ', '.join(str(goal) for goal in sorted(graph.goals, key=str))
+            output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {color.highlight(goal_keys_str)}")
 
             # Display context mapping if using short IDs
             if use_short_ids and context_mapping:
@@ -255,14 +263,42 @@ class CLI:
         return hash_obj.hexdigest()[:6]
 
     @staticmethod
+    def _get_context_emoji(short_id: str) -> str:
+        """Get emoji prefix for a context ID.
+
+        Args:
+            short_id: 6-character context ID
+
+        Returns:
+            Emoji character from preset list
+        """
+        # Use first byte of short_id to select emoji (mod 32)
+        index = int(short_id[:2], 16) % len(CONTEXT_EMOJIS)
+        return CONTEXT_EMOJIS[index]
+
+    @staticmethod
+    def _format_short_context_id(context_str: str) -> str:
+        """Format a context with emoji prefix and short ID.
+
+        Args:
+            context_str: Full context string
+
+        Returns:
+            Formatted string like "🔴79d776"
+        """
+        short_id = CLI._generate_short_context_id(context_str)
+        emoji = CLI._get_context_emoji(short_id)
+        return f"{emoji}{short_id}"
+
+    @staticmethod
     def _build_context_mapping(graph) -> dict[str, str]:
-        """Build mapping from short IDs to full context strings.
+        """Build mapping from formatted short IDs to full context strings.
 
         Args:
             graph: Execution graph containing action keys with contexts
 
         Returns:
-            Dictionary mapping short ID to full context string
+            Dictionary mapping formatted short ID (with emoji) to full context string
         """
         mapping = {}
         contexts_seen = set()
@@ -271,8 +307,8 @@ class CLI:
             context_str = str(action_key.context_id)
             if context_str not in contexts_seen:
                 contexts_seen.add(context_str)
-                short_id = CLI._generate_short_context_id(context_str)
-                mapping[short_id] = context_str
+                formatted_id = CLI._format_short_context_id(context_str)
+                mapping[formatted_id] = context_str
 
         return mapping
 
@@ -420,8 +456,8 @@ class CLI:
             # Format action key with short ID if enabled
             if use_short_ids:
                 context_str = str(action_key.context_id)
-                short_id = self._generate_short_context_id(context_str)
-                action_name = f"{short_id}#{action_key.id}"
+                formatted_id = self._format_short_context_id(context_str)
+                action_name = f"{formatted_id}#{action_key.id}"
             else:
                 action_name = str(action_key)
 

@@ -24,6 +24,14 @@ from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
 
+# Preset of 32 distinctive emojis for context ID prefixes (same as in cli.py)
+CONTEXT_EMOJIS = [
+    "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫",
+    "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛",
+    "⭐", "🌟", "💫", "✨", "🔶", "🔷", "🔸", "🔹",
+    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
+]
+
 
 @dataclass
 class ActionResult:
@@ -171,13 +179,16 @@ class ExecutionEngine:
             action_key: Action key to format
 
         Returns:
-            Formatted string (short ID or full context)
+            Formatted string (short ID with emoji or full context)
         """
         if self.use_short_context_ids:
             context_str = str(action_key.context_id)
             hash_obj = hashlib.sha256(context_str.encode())
             short_id = hash_obj.hexdigest()[:6]
-            return f"{short_id}#{action_key.id}"
+            # Add emoji prefix
+            emoji_index = int(short_id[:2], 16) % len(CONTEXT_EMOJIS)
+            emoji = CONTEXT_EMOJIS[emoji_index]
+            return f"{emoji}{short_id}#{action_key.id}"
         else:
             return str(action_key)
 
