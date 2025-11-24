@@ -351,6 +351,9 @@ Mudyla uses pytest for comprehensive testing with unit and integration tests.
 # Run only unit tests
 ./run-tests.sh unit
 
+# Run tests in parallel
+./run-tests.sh --parallel
+
 # Generate HTML report
 ./run-tests.sh --html
 
@@ -362,11 +365,14 @@ See [TESTING.md](TESTING.md) for detailed testing documentation, including:
 - Writing new tests
 - Using fixtures and assertions
 - Running specific tests
+- Parallel execution with file locking
+- GitHub Actions integration
 - Debugging and coverage
 
 The test suite includes:
 - **Unit tests** (20 tests): Test individual components without subprocess calls
 - **Integration tests** (28 tests): Test the full CLI by running the built Nix package
+- **GitHub Actions**: Test results published to Checks tab with JUnit XML reports
 
 ## Documentation
 

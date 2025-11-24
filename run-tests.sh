@@ -75,10 +75,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Always generate JUnit XML for GitHub Actions integration
+PYTEST_ARGS+=("--junitxml=test-reports/junit.xml")
+mkdir -p test-reports
+
 # Add HTML report if requested
 if [ "$HTML_REPORT" = true ]; then
     PYTEST_ARGS+=("--html=test-reports/report.html" "--self-contained-html")
-    mkdir -p test-reports
 fi
 
 # Add parallel execution if requested
