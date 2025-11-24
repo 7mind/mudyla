@@ -225,6 +225,8 @@ ret mode:string=development
 
 Run the same action multiple times with different configurations using per-action axis values and arguments.
 
+> **Note**: On Windows, context IDs use ASCII symbols (A-Z, 1-8) instead of emojis to avoid encoding issues. On Linux/macOS, colorful emojis are used for better visual distinction.
+
 **Multiple contexts for the same action:**
 
 ```bash

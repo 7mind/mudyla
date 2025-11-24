@@ -204,25 +204,25 @@ class ColorFormatter:
 
         return self.dim("+").join(formatted_parts)
 
-    def format_short_context_id(self, short_id_with_emoji: str) -> str:
-        """Format a short context ID with emoji.
+    def format_short_context_id(self, short_id_with_symbol: str) -> str:
+        """Format a short context ID with emoji/symbol prefix.
 
         Args:
-            short_id_with_emoji: Context ID with emoji prefix (e.g., "🔴79d776")
+            short_id_with_symbol: Context ID with emoji or ASCII prefix (e.g., "🔴79d776" or "A79d776")
 
         Returns:
             Formatted string with blue bold ID
         """
         if not self.enabled:
-            return short_id_with_emoji
+            return short_id_with_symbol
 
-        # The emoji is already there, just highlight the hex part
-        # Extract emoji (first character) and ID (rest)
-        if len(short_id_with_emoji) > 1:
-            emoji = short_id_with_emoji[0]
-            hex_id = short_id_with_emoji[1:]
-            return emoji + self.colorize(hex_id, Colors.BLUE, bold=True)
-        return short_id_with_emoji
+        # The symbol/emoji is already there, just highlight the hex part
+        # Extract symbol (first character) and ID (rest)
+        if len(short_id_with_symbol) > 1:
+            symbol = short_id_with_symbol[0]
+            hex_id = short_id_with_symbol[1:]
+            return symbol + self.colorize(hex_id, Colors.BLUE, bold=True)
+        return short_id_with_symbol
 
     def format_action_key(self, action_key_str: str) -> str:
         """Format an action key with context and action name in different colors.
@@ -240,15 +240,25 @@ class ColorFormatter:
         # Split context and action name
         context_str, action_name = action_key_str.split("#", 1)
 
-        # Format context (could be short ID with emoji or full context)
+        # Format context (could be short ID with symbol/emoji or full context)
         if not self.enabled:
             return action_key_str
 
-        # Check if it's a short ID with emoji (starts with emoji character)
-        # Emoji characters are typically in the range U+1F000 and above
-        if context_str and ord(context_str[0]) > 0x1F000:
-            # Short ID format: format the ID part
-            context_colored = self.format_short_context_id(context_str)
+        # Check if it's a short ID with symbol/emoji prefix
+        # Short IDs start with a single symbol followed by 6 hex chars
+        # Symbols can be emojis (> U+1F000) or ASCII (alphanumeric)
+        if context_str and len(context_str) == 7:
+            first_char = context_str[0]
+            # Check if it's an emoji or ASCII letter/digit
+            is_emoji = ord(first_char) > 0x1F000
+            is_ascii_symbol = first_char.isalnum()
+
+            if is_emoji or is_ascii_symbol:
+                # Short ID format: format the symbol + ID
+                context_colored = self.format_short_context_id(context_str)
+            else:
+                # Full context format: format axis:value pairs
+                context_colored = self.format_context_string(context_str)
         else:
             # Full context format: format axis:value pairs
             context_colored = self.format_context_string(context_str)

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import platform
 import concurrent.futures
 import shutil
 import subprocess
@@ -24,12 +25,20 @@ from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
 
-# Preset of 32 distinctive emojis for context ID prefixes (same as in cli.py)
+# Preset of 32 distinctive emojis for context ID prefixes (non-Windows)
 CONTEXT_EMOJIS = [
     "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫",
     "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛",
     "⭐", "🌟", "💫", "✨", "🔶", "🔷", "🔸", "🔹",
     "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
+]
+
+# ASCII-compatible symbols for context ID prefixes (Windows fallback)
+CONTEXT_SYMBOLS_ASCII = [
+    "A", "B", "C", "D", "E", "F", "G", "H",
+    "J", "K", "L", "M", "N", "P", "Q", "R",
+    "S", "T", "U", "V", "W", "X", "Y", "Z",
+    "1", "2", "3", "4", "5", "6", "7", "8",
 ]
 
 
@@ -179,16 +188,23 @@ class ExecutionEngine:
             action_key: Action key to format
 
         Returns:
-            Formatted string (short ID with emoji or full context)
+            Formatted string (short ID with symbol/emoji or full context)
         """
         if self.use_short_context_ids:
             context_str = str(action_key.context_id)
             hash_obj = hashlib.sha256(context_str.encode())
             short_id = hash_obj.hexdigest()[:6]
-            # Add emoji prefix (note: actual coloring happens in ColorFormatter)
-            emoji_index = int(short_id[:2], 16) % len(CONTEXT_EMOJIS)
-            emoji = CONTEXT_EMOJIS[emoji_index]
-            return f"{emoji}{short_id}#{action_key.id}"
+
+            # On Windows, use ASCII symbols to avoid encoding issues
+            if platform.system() == "Windows":
+                symbols = CONTEXT_SYMBOLS_ASCII
+            else:
+                symbols = CONTEXT_EMOJIS
+
+            # Add symbol prefix (note: actual coloring happens in ColorFormatter)
+            symbol_index = int(short_id[:2], 16) % len(symbols)
+            symbol = symbols[symbol_index]
+            return f"{symbol}{short_id}#{action_key.id}"
         else:
             return str(action_key)
 

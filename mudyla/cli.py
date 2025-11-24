@@ -10,12 +10,20 @@ from glob import glob
 from pathlib import Path
 from typing import Optional
 
-# Preset of 32 distinctive emojis for context ID prefixes
+# Preset of 32 distinctive emojis for context ID prefixes (non-Windows)
 CONTEXT_EMOJIS = [
     "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫",
     "🟥", "🟧", "🟨", "🟩", "🟦", "🟪", "🟫", "⬛",
     "⭐", "🌟", "💫", "✨", "🔶", "🔷", "🔸", "🔹",
     "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
+]
+
+# ASCII-compatible symbols for context ID prefixes (Windows fallback)
+CONTEXT_SYMBOLS_ASCII = [
+    "A", "B", "C", "D", "E", "F", "G", "H",
+    "J", "K", "L", "M", "N", "P", "Q", "R",
+    "S", "T", "U", "V", "W", "X", "Y", "Z",
+    "1", "2", "3", "4", "5", "6", "7", "8",
 ]
 
 from .ast.models import ParsedDocument, ActionDefinition
@@ -271,17 +279,23 @@ class CLI:
 
     @staticmethod
     def _get_context_emoji(short_id: str) -> str:
-        """Get emoji prefix for a context ID.
+        """Get emoji/symbol prefix for a context ID.
 
         Args:
             short_id: 6-character context ID
 
         Returns:
-            Emoji character from preset list
+            Emoji or ASCII character from preset list (platform-dependent)
         """
-        # Use first byte of short_id to select emoji (mod 32)
-        index = int(short_id[:2], 16) % len(CONTEXT_EMOJIS)
-        return CONTEXT_EMOJIS[index]
+        # On Windows, use ASCII symbols to avoid encoding issues
+        if platform.system() == "Windows":
+            symbols = CONTEXT_SYMBOLS_ASCII
+        else:
+            symbols = CONTEXT_EMOJIS
+
+        # Use first byte of short_id to select symbol (mod 32)
+        index = int(short_id[:2], 16) % len(symbols)
+        return symbols[index]
 
     @staticmethod
     def _format_short_context_id(context_str: str) -> str:
