@@ -157,3 +157,16 @@ echo "Report generated: $REPORT_FILE"
 ret report-file:file=$REPORT_FILE
 ret success:bool=0
 ```
+
+# action: failing-action
+
+Deliberately fails to support error-handling tests.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Intentionally failing action stdout"
+echo "Intentionally failing action stderr" >&2
+exit 1
+```

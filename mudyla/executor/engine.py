@@ -166,6 +166,7 @@ class ExecutionEngine:
         github_actions: bool = False,
         without_nix: bool = False,
         verbose: bool = False,
+        no_output_on_fail: bool = False,
         keep_run_dir: bool = False,
         no_color: bool = False,
         simple_log: bool = False,
@@ -186,6 +187,7 @@ class ExecutionEngine:
         self.github_actions = github_actions
         self.without_nix = without_nix
         self.verbose = verbose
+        self.no_output_on_fail = no_output_on_fail
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
         self.simple_log = simple_log
@@ -291,15 +293,18 @@ class ExecutionEngine:
         Args:
             result: The failed action result
         """
+        suppress_outputs = self.no_output_on_fail and not (self.github_actions or self.verbose)
         error_msg = f"Action '{result.action_name}' failed!"
         self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error(error_msg)}")
         self.output.print(f"{self.output.emoji('📂', '▸')} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
         self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
-        if result.stdout_path.exists():
+        if result.stdout_path.exists() and not suppress_outputs:
             self.output.print(result.stdout_path.read_text())
         self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
-        if result.stderr_path.exists():
+        if result.stderr_path.exists() and not suppress_outputs:
             self.output.print(result.stderr_path.read_text())
+        if suppress_outputs:
+            self.output.print(self.color.dim("Output suppressed; re-run with --verbose or inspect log files for details."))
         if result.error_message:
             self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error('Error:')} {result.error_message}")
 

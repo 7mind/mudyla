@@ -180,3 +180,18 @@ class TestBasicOperations:
             assert "message-length" in write_message_output, f"Missing message-length in: {write_message_output}"
         except json.JSONDecodeError as e:
             pytest.fail(f"Invalid JSON output: {e}\n{json_text}")
+
+    def test_failure_output_visible_by_default(self, mdl: MudylaRunner, clean_test_output):
+        """Ensure failed actions surface their outputs when no suppression flag is used."""
+        result = mdl.run_failure([":failing-action"])
+
+        mdl.assert_in_output(result, "Intentionally failing action stdout")
+        mdl.assert_in_output(result, "Intentionally failing action stderr")
+
+    def test_failure_output_suppressed_with_flag(self, mdl: MudylaRunner, clean_test_output):
+        """Ensure --no-out-on-fail suppresses failed action outputs."""
+        result = mdl.run_failure(["--no-out-on-fail", ":failing-action"])
+
+        mdl.assert_not_in_output(result, "Intentionally failing action stdout")
+        mdl.assert_not_in_output(result, "Intentionally failing action stderr")
+        mdl.assert_in_output(result, "Output suppressed")

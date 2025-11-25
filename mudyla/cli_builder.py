@@ -72,6 +72,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--no-out-on-fail",
+        dest="no_out_on_fail",
+        action="store_true",
+        help="Do not print stdout/stderr for failed actions (except in verbose or GitHub Actions modes)",
+    )
+
+    parser.add_argument(
         "--keep-run-dir",
         dest="keep_run_dir",
         action="store_true",

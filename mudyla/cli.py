@@ -176,6 +176,7 @@ class CLI:
                 github_actions=args.github_actions,
                 without_nix=args.without_nix,
                 verbose=args.verbose,
+                no_output_on_fail=args.no_out_on_fail,
                 keep_run_dir=args.keep_run_dir,
                 no_color=args.no_color,
                 simple_log=args.simple_log,

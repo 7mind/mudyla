@@ -14,6 +14,7 @@ def test_cli_parser_defaults_and_options_present():
     assert defaults["github_actions"] is False
     assert defaults["without_nix"] is False
     assert defaults["verbose"] is False
+    assert defaults["no_out_on_fail"] is False
     assert defaults["keep_run_dir"] is False
     assert defaults["no_color"] is False
     # Note: 'goals' was removed from argparse and is now parsed from unknown arguments
@@ -42,3 +43,4 @@ def test_autocomplete_flags_include_cli_and_document_entries():
     assert "--dry-run" in flags
     assert "--list-actions" in flags
     assert "--verbose" in flags
+    assert "--no-out-on-fail" in flags
