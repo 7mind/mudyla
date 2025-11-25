@@ -113,6 +113,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Show full context representations instead of short IDs",
     )
 
+    parser.add_argument(
+        "--full-output",
+        dest="full_output",
+        action="store_true",
+        help="Include outputs from all tasks in the output JSON, not just goals",
+    )
+
     # Note: We don't add a positional 'goals' argument here because we need to
     # preserve the order of all arguments (goals, axes, args, flags) as they appear
     # on the command line. All unrecognized arguments (including :goals) will be

@@ -196,10 +196,13 @@ class CLI:
                 return 1
 
             # Get outputs using ActionKeys (with context) instead of just action names
-            goal_outputs = result.get_goal_outputs(graph.goals)
+            if args.full_output:
+                outputs_to_report = result.get_all_outputs(pruned_graph.nodes.keys())
+            else:
+                outputs_to_report = result.get_goal_outputs(graph.goals)
             output.print(f"\n{output.emoji('✅', '✓')} {color.success('Execution completed successfully!')}")
 
-            output_json = json.dumps(goal_outputs, indent=2)
+            output_json = json.dumps(outputs_to_report, indent=2)
             output.print(f"\n{output.emoji('📊', '▸')} {color.bold('Outputs:')}")
 
             if not args.no_color:

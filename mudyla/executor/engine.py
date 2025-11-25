@@ -63,18 +63,41 @@ class ExecutionResult:
             Dictionary with nested structure by axes, then action name
             Format: {axis1-name: {axis1-value: {axis2-name: {axis2-value: {action-name: {...}}}}}}
         """
+        return self._build_nested_outputs(goal_keys)
+
+    def get_all_outputs(self, all_keys) -> dict[str, dict[str, Any]]:
+        """Get outputs for all actions, not just goals.
+
+        Args:
+            all_keys: List of all ActionKeys in the graph
+
+        Returns:
+            Dictionary with nested structure by axes, then action name
+            Format: {axis1-name: {axis1-value: {axis2-name: {axis2-value: {action-name: {...}}}}}}
+        """
+        return self._build_nested_outputs(all_keys)
+
+    def _build_nested_outputs(self, action_keys) -> dict[str, dict[str, Any]]:
+        """Build nested output structure for given action keys.
+
+        Args:
+            action_keys: List of ActionKeys to include
+
+        Returns:
+            Dictionary with nested structure by axes, then action name
+        """
         result = {}
-        for goal_key in goal_keys:
+        for action_key in action_keys:
             # Convert ActionKey to string format
-            goal_key_str = str(goal_key)
+            action_key_str = str(action_key)
 
             # Find matching action result
-            if goal_key_str in self.action_results:
-                action_result = self.action_results[goal_key_str]
+            if action_key_str in self.action_results:
+                action_result = self.action_results[action_key_str]
 
                 # Get the axis values from the context (already sorted by name)
-                axis_values = goal_key.context_id.axis_values
-                action_name = goal_key.id.name
+                axis_values = action_key.context_id.axis_values
+                action_name = action_key.id.name
 
                 # Build nested structure: navigate through axes in sorted order
                 current = result
@@ -92,14 +115,14 @@ class ExecutionResult:
                 # At the deepest level, add the action outputs
                 if action_name in current:
                     raise RuntimeError(
-                        f"Internal error: duplicate output for action '{action_name}' in context '{goal_key.context_id}'. "
+                        f"Internal error: duplicate output for action '{action_name}' in context '{action_key.context_id}'. "
                         "This indicates a bug in context isolation."
                     )
 
                 current[action_name] = action_result.outputs
             else:
                 # This shouldn't happen - log warning but don't fail
-                print(f"Warning: No results found for goal {goal_key_str}", file=sys.stderr)
+                print(f"Warning: No results found for action {action_key_str}", file=sys.stderr)
 
         return result
 
