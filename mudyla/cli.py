@@ -373,6 +373,60 @@ class CLI:
             if arg_def.default_value is not None:
                 custom_args[arg_name] = arg_def.default_value
 
+    def _compute_sharing_counts(
+        self,
+        graph,
+        execution_order,
+        goals: list[str],
+    ) -> dict:
+        """Compute how many unique goal contexts use each action.
+
+        An action is "shared" if multiple goal contexts depend on it (directly or
+        transitively). This helps visualize context reduction benefits.
+
+        Args:
+            graph: The execution graph
+            execution_order: List of action keys in execution order
+            goals: List of goal action names
+
+        Returns:
+            Dictionary mapping ActionKey to count of goal contexts that use it
+        """
+        from .dag.graph import ActionKey
+
+        # Find all goal action keys
+        goal_keys = [ak for ak in execution_order if ak.id.name in goals]
+
+        # For each action, collect which goal contexts reach it
+        action_to_goal_contexts: dict[ActionKey, set[str]] = {}
+
+        def collect_reachable_goals(action_key: ActionKey, visited: set[ActionKey]) -> set[str]:
+            """Recursively find all goal contexts that depend on this action."""
+            if action_key in visited:
+                return set()
+            visited.add(action_key)
+
+            contexts: set[str] = set()
+
+            # If this is a goal, add its context
+            if action_key.id.name in goals:
+                contexts.add(str(action_key.context_id))
+
+            # Check all dependents (actions that depend on this one)
+            node = graph.get_node(action_key)
+            for dep in node.dependents:
+                contexts.update(collect_reachable_goals(dep.action, visited))
+
+            return contexts
+
+        # Compute for each action
+        for action_key in execution_order:
+            contexts = collect_reachable_goals(action_key, set())
+            action_to_goal_contexts[action_key] = contexts
+
+        # Convert to counts
+        return {ak: len(contexts) for ak, contexts in action_to_goal_contexts.items()}
+
     def _visualize_execution_plan(
         self,
         graph,
@@ -392,6 +446,9 @@ class CLI:
             output: Output formatter
             use_short_ids: Whether to use short context IDs
         """
+        # Compute sharing counts: how many unique goal contexts use each action
+        sharing_counts = self._compute_sharing_counts(graph, execution_order, goals)
+
         # Create a tree-like visualization showing dependencies
         for i, action_key in enumerate(execution_order, 1):
             action_name = format_action_label(action_key, use_short_ids=use_short_ids)
@@ -399,9 +456,16 @@ class CLI:
             is_goal = action_key.id.name in goals
             goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""
 
+            # Add sharing indicator if action is shared by multiple contexts
+            share_count = sharing_counts.get(action_key, 1)
+            if share_count > 1 and not is_goal:
+                share_marker = f" {color.dim(f'({output.emoji('⏬', '^')}{share_count} ctx)')}"
+            else:
+                share_marker = ""
+
             # Format action key with colors using the helper function
             action_colored = color.format_action_key(action_name)
-            formatted_label = f"{i:>2}. {action_colored}{goal_marker}"
+            formatted_label = f"{i:>2}. {action_colored}{goal_marker}{share_marker}"
 
             if not node.dependencies:
                 # No dependencies - just print the action

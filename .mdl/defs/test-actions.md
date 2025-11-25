@@ -20,6 +20,8 @@
 
 - `build-mode`=`{release|development*}`
 - `cross-platform`=`{jvm*|js|native}`
+- `demo-platform`=`{jvm*|js}`
+- `demo-scala`=`{2.13*|3.3}`
 
 # action: create-directory
 

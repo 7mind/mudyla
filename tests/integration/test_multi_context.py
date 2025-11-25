@@ -226,3 +226,103 @@ class TestMultiContextEdgeCases:
         mdl.assert_in_output(result, "platform-build")
 
         mdl.assert_in_output(result, "Execution completed successfully")
+
+
+@pytest.mark.integration
+class TestTransitiveContextReduction:
+    """Test transitive context reduction with a realistic build pipeline.
+
+    These tests demonstrate how axis-independent actions are shared across
+    contexts, even in deep dependency chains. Perfect for presentations.
+    """
+
+    def test_two_scala_versions_same_platform(self, mdl: MudylaRunner, clean_test_output):
+        """Two Scala versions on JVM: fetch-deps and gen-sources are shared.
+
+        Pipeline depth: 7 levels
+        Without sharing: 2 × 7 = 14 actions
+        With sharing: 1 (fetch-deps) + 1 (gen-sources) + 2×5 = 12 actions
+        """
+        result = mdl.run_success([
+            ":demo-publish",
+            "--axis demo-platform:jvm",
+            "--axis demo-scala:2.13",
+            ":demo-publish",
+            "--axis demo-platform:jvm",
+            "--axis demo-scala:3.3",
+        ])
+
+        # 12 actions total (saved 2 by sharing)
+        mdl.assert_in_output(result, "12 required action(s)")
+
+        # Global context for fetch-deps (no axes)
+        mdl.assert_in_output(result, "global")
+        mdl.assert_in_output(result, "#demo-fetch-deps")
+
+        # Platform-only context for gen-sources (shared across scala versions)
+        mdl.assert_in_output(result, "demo-platform:jvm")
+        mdl.assert_in_output(result, "#demo-gen-sources")
+
+        # Full contexts for the rest
+        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:2.13")
+        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:3.3")
+
+        mdl.assert_in_output(result, "Execution completed successfully")
+
+    def test_two_platforms_two_scala_versions(self, mdl: MudylaRunner, clean_test_output):
+        """2×2 matrix: fetch-deps global, gen-sources per-platform.
+
+        Without sharing: 4 × 7 = 28 actions
+        With sharing: 1 + 2 + 4×5 = 23 actions (saved 5)
+        """
+        result = mdl.run_success([
+            ":demo-publish", "--axis demo-platform:jvm", "--axis demo-scala:2.13",
+            ":demo-publish", "--axis demo-platform:jvm", "--axis demo-scala:3.3",
+            ":demo-publish", "--axis demo-platform:js", "--axis demo-scala:2.13",
+            ":demo-publish", "--axis demo-platform:js", "--axis demo-scala:3.3",
+        ])
+
+        # 23 actions total (saved 5 by sharing)
+        mdl.assert_in_output(result, "23 required action(s)")
+
+        # Global context for fetch-deps (shared by ALL 4 combinations)
+        mdl.assert_in_output(result, "global")
+
+        # Two platform-only contexts for gen-sources
+        mdl.assert_in_output(result, "demo-platform:jvm")
+        mdl.assert_in_output(result, "demo-platform:js")
+
+        # Four full contexts for the goals
+        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:2.13")
+        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:3.3")
+        mdl.assert_in_output(result, "demo-platform:js+demo-scala:2.13")
+        mdl.assert_in_output(result, "demo-platform:js+demo-scala:3.3")
+
+        mdl.assert_in_output(result, "Execution completed successfully")
+
+    def test_context_reduction_preserves_outputs(self, mdl: MudylaRunner, clean_test_output):
+        """Verify that shared actions' outputs are correctly propagated.
+
+        When demo-gen-sources runs once for platform:jvm, both Scala versions
+        should receive the same generated sources.
+        """
+        result = mdl.run_success([
+            ":demo-publish",
+            "--axis demo-platform:jvm",
+            "--axis demo-scala:2.13",
+            ":demo-publish",
+            "--axis demo-platform:jvm",
+            "--axis demo-scala:3.3",
+            "--full-output",  # Include all outputs, not just goals
+        ])
+
+        # Verify the shared outputs appear in the result
+        # gen-sources only has platform context, not scala
+        mdl.assert_in_output(result, "demo-gen-sources")
+        mdl.assert_in_output(result, "generated-dir")
+
+        # Both publish actions should have completed
+        mdl.assert_in_output(result, "mylib_2.13-1.0.0.jar")
+        mdl.assert_in_output(result, "mylib_3-1.0.0.jar")
+
+        mdl.assert_in_output(result, "Execution completed successfully")

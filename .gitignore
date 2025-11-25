@@ -1,6 +1,7 @@
 .scala-build/
 .bsp/
 .metals/
+target/
 
 *.whl
 task-*.txt
