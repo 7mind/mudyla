@@ -437,7 +437,7 @@ class CLI:
         output: OutputFormatter,
         use_short_ids: bool = False,
     ) -> None:
-        """Visualize execution plan as a tree.
+        """Visualize execution plan as a rich table.
 
         Args:
             graph: The execution graph
@@ -447,44 +447,61 @@ class CLI:
             output: Output formatter
             use_short_ids: Whether to use short context IDs
         """
+        from rich.console import Console
+        from rich.table import Table
+
         # Compute sharing counts: how many unique goal contexts use each action
         sharing_counts = self._compute_sharing_counts(graph, execution_order, goals)
 
-        # Create a tree-like visualization showing dependencies
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("#", justify="right")
+        table.add_column("Context", style="dim")
+        table.add_column("Action", style="cyan")
+        table.add_column("Goal", justify="center")
+        table.add_column("Deps", style="dim")
+        table.add_column("Shared", justify="right", style="blue")
+
         for i, action_key in enumerate(execution_order, 1):
-            action_name = format_action_label(action_key, use_short_ids=use_short_ids)
             node = graph.get_node(action_key)
             is_goal = action_key.id.name in goals
-            goal_marker = f" {output.emoji('🎯', '[GOAL]')}" if is_goal else ""
 
-            # Add sharing indicator if action is shared by multiple contexts
-            share_count = sharing_counts.get(action_key, 1)
-            if share_count > 1 and not is_goal:
-                share_marker = f" {color.dim(f'({output.emoji('⏬', '^')}{share_count} ctx)')}"
+            # Number column
+            num_str = str(i)
+
+            # Context column
+            if use_short_ids:
+                context_str = format_action_label(action_key, use_short_ids=True).split("#")[0]
             else:
-                share_marker = ""
+                context_str = str(action_key.context_id) if action_key.context_id else "default"
 
-            # Format action key with colors using the helper function
-            action_colored = color.format_action_key(action_name)
-            formatted_label = f"{i:>2}. {action_colored}{goal_marker}{share_marker}"
+            # Action column
+            action_str = action_key.id.name
 
-            if not node.dependencies:
-                # No dependencies - just print the action
-                output.print(f"  {formatted_label}")
-            else:
-                # Has dependencies - show them
-                dep_names = []
-                # Sort dependencies by their action name for deterministic output
+            # Goal column
+            goal_str = "🎯" if is_goal else ""
+
+            # Dependencies column
+            if node.dependencies:
                 sorted_deps = sorted(node.dependencies, key=lambda d: d.action.id.name)
+                dep_parts = []
                 for dep in sorted_deps:
                     dep_num = execution_order.index(dep.action) + 1
-                    weak_marker = "(weak)" if dep.weak else ""
-                    dep_names.append(f"{dep_num}{weak_marker}")
+                    if dep.weak:
+                        dep_parts.append(f"~{dep_num}")
+                    else:
+                        dep_parts.append(str(dep_num))
+                deps_str = ", ".join(dep_parts)
+            else:
+                deps_str = "-"
 
-                deps_str = ",".join(dep_names)
-                arrow = output.emoji("←", "<-")
-                output.print(f"  {formatted_label} {color.dim(f'{arrow} [{deps_str}]')}")
+            # Shared column - show how many contexts share this action
+            share_count = sharing_counts.get(action_key, 1)
+            shared_str = str(share_count) if share_count > 1 else "-"
 
+            table.add_row(num_str, context_str, action_str, goal_str, deps_str, shared_str)
+
+        console = Console()
+        console.print(table)
         output.print("")  # Empty line after plan
 
     def _list_actions(self, document: ParsedDocument, no_color: bool = False) -> None:
