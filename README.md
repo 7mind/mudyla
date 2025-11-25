@@ -24,6 +24,7 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 - Parallel build: [![asciicast](https://asciinema.org/a/757430.svg)](https://asciinema.org/a/757430)
 - Checkpoint recovery: [![asciicast](https://asciinema.org/a/757433.svg)](https://asciinema.org/a/757433)
 - Weak dependencies: [![asciicast](https://asciinema.org/a/757574.svg)](https://asciinema.org/a/757574)
+- Context reduction: [![asciicast](https://asciinema.org/a/758167.svg)](https://asciinema.org/a/758167)
 
 ## Features
 
@@ -309,6 +310,73 @@ mdl :compile --axis target-arch:x86_64 \
     :compile --axis target-arch:aarch64 \
     :compile --axis target-arch:armv7
 ```
+
+### Context Reduction
+
+When building for multiple configurations (e.g., platforms × Scala versions), some actions don't care about all axes. Mudyla automatically detects this and **shares** those actions across contexts, reducing redundant work.
+
+**How it works:**
+
+Each action declares which axes it cares about through its `when` conditions. When Mudyla builds the execution graph, it reduces each action's context to only include the axes that action actually needs. Actions with the same reduced context are unified and executed only once.
+
+**Example: Build Pipeline**
+
+Consider a 7-level build pipeline with two axes: `platform` (jvm, js) and `scala` (2.13, 3.3):
+
+```
+demo-fetch-deps     → no axis conditions (global)
+demo-gen-sources    → only cares about platform
+demo-compile-core   → cares about platform + scala
+demo-compile-mods   → cares about platform + scala
+demo-run-tests      → cares about platform + scala
+demo-package        → cares about platform + scala
+demo-publish        → cares about platform + scala
+```
+
+When running for a 2×2 matrix (2 platforms × 2 Scala versions):
+
+```bash
+mdl :demo-publish --axis 'demo-platform:*' --axis 'demo-scala:*'
+```
+
+**Without context reduction:** 4 × 7 = 28 actions
+**With context reduction:** 1 + 2 + 4×5 = 23 actions (saved 5)
+
+- `demo-fetch-deps` runs **once** (shared by all 4 goal contexts)
+- `demo-gen-sources` runs **twice** (once per platform, shared across Scala versions)
+- Everything else runs **4 times** (once per platform+scala combination)
+
+**Execution plan shows sharing:**
+
+```
+▸ Execution plan:
+   1. 🌍global#demo-fetch-deps (⏬4 ctx)
+   2. 🟥c880ff#demo-gen-sources (⏬2 ctx) <- [1]
+   3. 🟦8c3ad4#demo-compile-core <- [2]
+   4. 🟠217fcf#demo-compile-core <- [2]
+   ...
+```
+
+The `(⏬N ctx)` indicator shows how many goal contexts share each action:
+- `(⏬4 ctx)` means all 4 goals share this action
+- `(⏬2 ctx)` means 2 goals share this action
+
+**Context legend:**
+
+```
+▸ Contexts:
+  🌍global: default                              ← no axes (shared globally)
+  🟥c880ff: demo-platform:jvm                    ← platform only
+  ⬛0f79f1: demo-platform:js                     ← platform only
+  🟦8c3ad4: demo-platform:jvm+demo-scala:2.13   ← full context
+  🟠217fcf: demo-platform:jvm+demo-scala:3.3    ← full context
+```
+
+**Benefits:**
+
+1. **Reduced execution time**: Shared actions run once instead of N times
+2. **Consistent outputs**: All contexts that share an action get the same outputs
+3. **Automatic optimization**: No manual configuration needed - Mudyla infers sharing from axis conditions
 
 ### Axis Wildcards
 
