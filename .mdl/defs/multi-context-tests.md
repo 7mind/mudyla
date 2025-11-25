@@ -203,3 +203,78 @@ echo "{\"env\": \"$ENV\", \"message\": \"$MESSAGE\"}"
 
 **Outputs:**
 - `context-info`: Context information (from stdout)
+
+---
+
+# action: generate-sources
+
+Generates source files. This action doesn't have any axis-specific behavior -
+it produces the same output regardless of platform/scala version.
+Used to test shared dependency scenarios.
+
+```bash
+mkdir -p test-output/generated
+
+echo "Generated sources at $(date)" > test-output/generated/sources.txt
+echo "Source generation complete"
+
+ret sources-dir:directory=test-output/generated
+ret generation-id:string=gen-$(date +%s%N)
+```
+
+---
+
+# action: platform-build
+
+Builds for a specific platform. Depends on generate-sources.
+
+## definition when `cross-platform: jvm`
+
+```bash
+SOURCES_DIR="${action.generate-sources.sources-dir}"
+GENERATION_ID="${action.generate-sources.generation-id}"
+
+mkdir -p "test-output/builds/jvm"
+
+echo "Building for platform: jvm" > "test-output/builds/jvm/build.log"
+echo "Using sources from: $SOURCES_DIR" >> "test-output/builds/jvm/build.log"
+echo "Generation ID: $GENERATION_ID" >> "test-output/builds/jvm/build.log"
+
+ret build-artifact:file=test-output/builds/jvm/build.log
+ret platform:string=jvm
+ret used-generation-id:string=$GENERATION_ID
+```
+
+## definition when `cross-platform: js`
+
+```bash
+SOURCES_DIR="${action.generate-sources.sources-dir}"
+GENERATION_ID="${action.generate-sources.generation-id}"
+
+mkdir -p "test-output/builds/js"
+
+echo "Building for platform: js" > "test-output/builds/js/build.log"
+echo "Using sources from: $SOURCES_DIR" >> "test-output/builds/js/build.log"
+echo "Generation ID: $GENERATION_ID" >> "test-output/builds/js/build.log"
+
+ret build-artifact:file=test-output/builds/js/build.log
+ret platform:string=js
+ret used-generation-id:string=$GENERATION_ID
+```
+
+## definition when `cross-platform: native`
+
+```bash
+SOURCES_DIR="${action.generate-sources.sources-dir}"
+GENERATION_ID="${action.generate-sources.generation-id}"
+
+mkdir -p "test-output/builds/native"
+
+echo "Building for platform: native" > "test-output/builds/native/build.log"
+echo "Using sources from: $SOURCES_DIR" >> "test-output/builds/native/build.log"
+echo "Generation ID: $GENERATION_ID" >> "test-output/builds/native/build.log"
+
+ret build-artifact:file=test-output/builds/native/build.log
+ret platform:string=native
+ret used-generation-id:string=$GENERATION_ID
+```

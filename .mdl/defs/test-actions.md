@@ -19,6 +19,7 @@
 # Axis
 
 - `build-mode`=`{release|development*}`
+- `cross-platform`=`{jvm*|js|native}`
 
 # action: create-directory
 

@@ -318,13 +318,19 @@ class ActionDefinition:
 
         return most_specific[0]
 
-    def get_required_axis(self) -> set[str]:
-        """Get the set of axis names required by this action."""
-        axis_names = set()
+    def get_required_axes(self) -> set[str]:
+        """Get the set of axis names required by this action.
+
+        An action requires an axis if any of its versions has a condition
+        on that axis (AxisCondition) or on platform (PlatformCondition).
+        """
+        axis_names: set[str] = set()
         for version in self.versions:
             for condition in version.conditions:
                 if isinstance(condition, AxisCondition):
                     axis_names.add(condition.axis_name)
+                elif isinstance(condition, PlatformCondition):
+                    axis_names.add("platform")
         return axis_names
 
     def get_all_expansions(self) -> list[Expansion]:

@@ -20,19 +20,26 @@ class TestMultiContext:
             "--axis build-mode:release",
         ])
 
-        # Verify both contexts were executed (includes built-in platform axis)
-        mdl.assert_in_output(result, "build-mode:development+platform")
-        mdl.assert_in_output(result, "build-mode:release+platform")
+        # Verify both contexts were executed
+        # conditional-build only cares about build-mode axis
+        mdl.assert_in_output(result, "build-mode:development")
+        mdl.assert_in_output(result, "build-mode:release")
         mdl.assert_in_output(result, "conditional-build")
 
-        # Verify both contexts have their own dependencies
+        # create-directory has no axis conditions, so it gets default context
+        # and is SHARED between both conditional-build contexts
         mdl.assert_in_output(result, "create-directory")
 
-        # Verify 4 actions total (2 contexts × 2 actions each)
-        mdl.assert_in_output(result, "4 required action(s)")
+        # Verify 3 actions (1 shared create-directory + 2 conditional-build)
+        mdl.assert_in_output(result, "3 required action(s)")
 
     def test_context_inheritance_for_dependencies(self, mdl: MudylaRunner, clean_test_output):
-        """Test that dependencies inherit context from parent action."""
+        """Test that dependencies get their own reduced context.
+
+        Dependencies no longer inherit full context from parent. Instead, each
+        action gets a context with only the axes it cares about. This allows
+        axis-independent dependencies to be shared.
+        """
         result = mdl.run_success([
             ":conditional-build",
             "--axis build-mode:development",
@@ -40,14 +47,14 @@ class TestMultiContext:
             "--axis build-mode:release",
         ])
 
-        # Verify execution plan shows proper context inheritance
-        # Development context should have its own create-directory (includes platform axis)
-        mdl.assert_in_output(result, "build-mode:development+platform")
+        # conditional-build only cares about build-mode axis
+        mdl.assert_in_output(result, "build-mode:development")
+        mdl.assert_in_output(result, "build-mode:release")
         mdl.assert_in_output(result, "conditional-build")
 
-        # Release context should have its own create-directory
-        mdl.assert_in_output(result, "build-mode:release+platform")
+        # create-directory has no axis conditions, gets default context
         mdl.assert_in_output(result, "create-directory")
+        mdl.assert_in_output(result, "default")
 
         # Verify execution completed successfully
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -77,11 +84,12 @@ class TestMultiContext:
             "--axis build-mode:release",
         ])
 
-        # Verify unification occurred - should only have 2 actions (not 4)
+        # Verify unification occurred - should only have 2 actions
+        # (1 shared create-directory with default context + 1 conditional-build)
         mdl.assert_in_output(result, "2 required action(s)")
 
-        # Verify both actions in the unified graph (includes platform axis)
-        mdl.assert_in_output(result, "build-mode:release+platform")
+        # conditional-build only cares about build-mode
+        mdl.assert_in_output(result, "build-mode:release")
         mdl.assert_in_output(result, "create-directory")
         mdl.assert_in_output(result, "conditional-build")
 
@@ -131,8 +139,9 @@ class TestMultiContext:
             "--axis build-mode:release",
         ])
 
-        # Verify context#action format (includes built-in platform axis)
-        mdl.assert_in_output(result, "build-mode:release+platform")
+        # Verify context#action format
+        # conditional-build only cares about build-mode
+        mdl.assert_in_output(result, "build-mode:release")
         mdl.assert_in_output(result, "#create-directory")
         mdl.assert_in_output(result, "#conditional-build")
 
@@ -158,26 +167,62 @@ class TestMultiContextEdgeCases:
         mdl.assert_in_output(result, "Contradictory axis values")
 
     def test_default_context_when_no_multi_context(self, mdl: MudylaRunner, clean_test_output):
-        """Test that single-context execution shows simple action names."""
+        """Test that actions without axis conditions get default context."""
         result = mdl.run_success([":create-directory"])
 
-        # For single context, should show context in execution plan (includes platform axis)
-        mdl.assert_in_output(result, "build-mode:development+platform")
+        # create-directory has no axis conditions, so it gets default context
+        mdl.assert_in_output(result, "default")
         mdl.assert_in_output(result, "#create-directory")
 
-        # But rich table should just show Task column (not Context + Action)
-        # because there's only one context
-        # Note: This might show either format depending on implementation
+        # Verify execution completed
+        mdl.assert_in_output(result, "Execution completed successfully")
 
     def test_complex_multi_axis_context(self, mdl: MudylaRunner, clean_test_output):
-        """Test complex contexts with multiple axis values."""
-        # Note: This test requires actions that use multiple axes
-        # For now, just verify the format is correct
+        """Test that actions only get axes they care about."""
         result = mdl.run_success([
             ":conditional-build",
             "--axis build-mode:release",
         ])
 
-        # Verify multi-axis context format (includes built-in platform axis)
-        mdl.assert_in_output(result, "build-mode:release+platform")
+        # conditional-build only cares about build-mode, not cross-platform or platform
+        mdl.assert_in_output(result, "build-mode:release")
         mdl.assert_in_output(result, "#conditional-build")
+
+        # create-directory has no conditions, gets default
+        mdl.assert_in_output(result, "default")
+        mdl.assert_in_output(result, "#create-directory")
+
+    def test_shared_dependency_across_contexts(self, mdl: MudylaRunner, clean_test_output):
+        """Test that axis-independent dependencies are shared across contexts.
+
+        When platform-build depends on generate-sources, and we run platform-build
+        for multiple platforms, generate-sources runs only ONCE because it doesn't
+        care about the cross-platform axis.
+
+        This tests the reduced context feature - actions only get contexts
+        containing axes they actually care about.
+        """
+        result = mdl.run_success([
+            ":platform-build",
+            "--axis cross-platform:jvm",
+            ":platform-build",
+            "--axis cross-platform:js",
+        ])
+
+        # With reduced contexts: 3 actions (1 shared generate-sources + 2 platform-build)
+        # generate-sources gets empty/default context since it has no axis conditions
+        mdl.assert_in_output(result, "3 required action(s)")
+
+        # Both platform-build contexts should appear
+        mdl.assert_in_output(result, "cross-platform:jvm")
+        mdl.assert_in_output(result, "cross-platform:js")
+
+        # generate-sources should have default context (shown in contexts list)
+        mdl.assert_in_output(result, "default")
+        mdl.assert_in_output(result, "#generate-sources")
+
+        # Both generate-sources and platform-build should appear in plan
+        mdl.assert_in_output(result, "generate-sources")
+        mdl.assert_in_output(result, "platform-build")
+
+        mdl.assert_in_output(result, "Execution completed successfully")

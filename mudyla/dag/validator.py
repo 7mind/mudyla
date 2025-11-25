@@ -228,7 +228,7 @@ class DAGValidator:
         required_axis = set()
         for node in pruned_graph.nodes.values():
             if node.action.is_multi_version:
-                required_axis.update(node.action.get_required_axis())
+                required_axis.update(node.action.get_required_axes())
 
         # Check all required axis are provided
         for axis_name in required_axis:
@@ -245,7 +245,7 @@ class DAGValidator:
                     actions_needing_axis = [
                         node.action.name
                         for node in pruned_graph.nodes.values()
-                        if axis_name in node.action.get_required_axis()
+                        if axis_name in node.action.get_required_axes()
                     ]
                     errors.append(
                         f"Axis '{axis_name}' must be specified (required by: {', '.join(actions_needing_axis)})"

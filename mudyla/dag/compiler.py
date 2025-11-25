@@ -148,18 +148,19 @@ class DAGCompiler:
     ) -> ActionGraph:
         """Build a dependency graph for a single action invocation.
 
-        All actions in this graph share the same context (context inheritance).
+        Each action gets a reduced context based on the axes it cares about.
+        This allows axis-independent actions to be shared across contexts.
 
         Args:
             invocation: Contextual invocation to build graph for
 
         Returns:
-            Action graph with all dependencies in the same context
+            Action graph with context-appropriate keys
 
         Raises:
             CompilationError: If graph building fails
         """
-        context_id = invocation.execution_context.context_id
+        full_context_id = invocation.execution_context.context_id
         axis_values = invocation.execution_context.axis_values
         goal_action_name = invocation.action_name
 
@@ -167,14 +168,17 @@ class DAGCompiler:
         if goal_action_name not in self.document.actions:
             raise CompilationError(f"Action '{goal_action_name}' not found")
 
-        # Build nodes for all actions (they all use the same context)
+        # Build nodes for all actions with their reduced contexts
         nodes: Dict[ActionKey, ActionNode] = {}
 
         for action_name, action in self.document.actions.items():
-            # Create action key with this context
-            action_key = ActionKey.from_name(action_name, context_id)
+            # Compute reduced context based on axes this action cares about
+            required_axes = action.get_required_axes()
+            reduced_context_id = full_context_id.reduce_to_axes(required_axes)
+            action_key = ActionKey.from_name(action_name, reduced_context_id)
 
-            # Select appropriate version based on axis values
+            # Select appropriate version based on FULL axis values
+            # (version selection needs all axes to pick the right version)
             try:
                 selected_version = action.get_version(axis_values, self.current_platform)
             except ValueError:
@@ -182,26 +186,37 @@ class DAGCompiler:
                 # The validator will check if this action is actually required
                 selected_version = None
 
-            # Extract dependencies
+            # Extract dependencies with their own reduced contexts
             dependencies: Set[Dependency] = set()
             if selected_version:
                 # Implicit dependencies from expansions
                 for expansion in selected_version.expansions:
                     if isinstance(expansion, (ActionExpansion, WeakActionExpansion)):
                         dep_name = expansion.get_dependency_action()
-                        # Dependencies inherit the same context
-                        dep_key = ActionKey.from_name(dep_name, context_id)
+                        # Get dependency's reduced context based on its required axes
+                        dep_action = self.document.actions.get(dep_name)
+                        if dep_action:
+                            dep_required_axes = dep_action.get_required_axes()
+                            dep_context_id = full_context_id.reduce_to_axes(dep_required_axes)
+                        else:
+                            dep_context_id = reduced_context_id
+                        dep_key = ActionKey.from_name(dep_name, dep_context_id)
                         is_weak = isinstance(expansion, WeakActionExpansion)
                         dependencies.add(Dependency(action=dep_key, weak=is_weak))
 
                 # Explicit dependencies
                 for dep_decl in selected_version.dependency_declarations:
-                    # Dependencies inherit the same context
-                    dep_key = ActionKey.from_name(dep_decl.action_name, context_id)
+                    dep_name = dep_decl.action_name
+                    # Get dependency's reduced context based on its required axes
+                    dep_action = self.document.actions.get(dep_name)
+                    if dep_action:
+                        dep_required_axes = dep_action.get_required_axes()
+                        dep_context_id = full_context_id.reduce_to_axes(dep_required_axes)
+                    else:
+                        dep_context_id = reduced_context_id
+                    dep_key = ActionKey.from_name(dep_name, dep_context_id)
                     dependencies.add(Dependency(action=dep_key, weak=dep_decl.weak))
 
-            # All nodes in this graph share the same execution context
-            # Store the args/flags from the invocation
             node = ActionNode(
                 key=action_key,
                 action=action,
@@ -220,8 +235,11 @@ class DAGCompiler:
                         Dependency(action=action_key, weak=dep.weak)
                     )
 
-        # Goal is the invoked action
-        goal_key = ActionKey.from_name(goal_action_name, context_id)
+        # Goal uses the goal action's reduced context
+        goal_action = self.document.actions[goal_action_name]
+        goal_required_axes = goal_action.get_required_axes()
+        goal_context_id = full_context_id.reduce_to_axes(goal_required_axes)
+        goal_key = ActionKey.from_name(goal_action_name, goal_context_id)
         goal_keys = {goal_key}
 
         return ActionGraph(nodes=nodes, goals=goal_keys)

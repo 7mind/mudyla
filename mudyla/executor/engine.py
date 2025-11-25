@@ -684,25 +684,22 @@ class ExecutionEngine:
             action_outputs: Outputs from previous actions (keyed by ActionKey string)
             args: Arguments for this action (may be per-action or global)
             flags: Flags for this action (may be per-action or global)
-            action_key: The ActionKey for this action (to filter outputs by context)
+            action_key: The ActionKey for this action (to resolve dependencies)
 
         Returns:
             ExecutionContext for the action
         """
-        # Transform action_outputs to use simple action names for same-context actions
-        # This allows ${action.dependency-name.var} to work in scripts
-        context_filtered_outputs: dict[str, dict[str, Any]] = {}
-        for output_key_str, outputs in action_outputs.items():
-            # Parse the output key to extract action name and context
-            # Format is either "action-name" or "context#action-name"
-            if "#" in output_key_str:
-                context_str, action_name = output_key_str.split("#", 1)
-                # Only include outputs from the same context
-                if context_str == str(action_key.context_id):
-                    context_filtered_outputs[action_name] = outputs
-            else:
-                # Old format without context (backward compatibility)
-                context_filtered_outputs[output_key_str] = outputs
+        # Map dependency action names to their outputs using the graph's dependencies.
+        # With reduced contexts, dependencies may be in different contexts than the
+        # action itself. We use the actual dependency ActionKeys from the graph to
+        # resolve the correct outputs.
+        dependency_outputs: dict[str, dict[str, Any]] = {}
+        node = self.graph.get_node(action_key)
+        for dep in node.dependencies:
+            dep_key_str = str(dep.action)
+            if dep_key_str in action_outputs:
+                # Use the dependency's action name as the key for ${action.name.var}
+                dependency_outputs[dep.action.id.name] = action_outputs[dep_key_str]
 
         return ExecutionContext(
             system_vars={
@@ -713,7 +710,7 @@ class ExecutionEngine:
             env_vars=dict(os.environ) | self.environment_vars,
             args=args,
             flags=flags,
-            action_outputs=context_filtered_outputs,
+            action_outputs=dependency_outputs,
         )
 
     def _build_exec_command(

@@ -57,6 +57,18 @@ class ContextId:
         """Create an empty context (for default/no axes)."""
         return cls(axis_values=())
 
+    def reduce_to_axes(self, axis_names: set[str]) -> "ContextId":
+        """Create a reduced context with only specified axes.
+
+        Args:
+            axis_names: Set of axis names to keep
+
+        Returns:
+            New ContextId with only the specified axes
+        """
+        filtered = tuple((name, value) for name, value in self.axis_values if name in axis_names)
+        return ContextId(axis_values=filtered)
+
 
 @dataclass(frozen=True)
 class ExecutionContext:

@@ -17,6 +17,10 @@ CONTEXT_EMOJIS: tuple[str, ...] = (
     "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
 )
 
+# Special emoji for the default/global context (no axes)
+DEFAULT_CONTEXT_EMOJI = "🌍"
+DEFAULT_CONTEXT_SYMBOL_ASCII = "*"
+
 # ASCII-compatible symbols for context ID prefixes (Windows fallback)
 CONTEXT_SYMBOLS_ASCII: tuple[str, ...] = (
     "A", "B", "C", "D", "E", "F", "G", "H",
@@ -46,7 +50,14 @@ def _symbol_for_short_id(short_id: str) -> str:
 
 
 def format_short_context_id(context_str: str) -> str:
-    """Format a context as <symbol><short-hash> (e.g. 🔴79d776)."""
+    """Format a context as <symbol><short-hash> (e.g. 🔴79d776).
+
+    The default context (no axes) gets a special globe emoji.
+    """
+    if context_str == "default":
+        prefix = DEFAULT_CONTEXT_SYMBOL_ASCII if platform.system() == "Windows" else DEFAULT_CONTEXT_EMOJI
+        return f"{prefix}global"
+
     short_id = generate_short_context_id(context_str)
     prefix = _symbol_for_short_id(short_id)
     return f"{prefix}{short_id}"
