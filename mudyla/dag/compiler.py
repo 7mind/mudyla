@@ -215,7 +215,23 @@ class DAGCompiler:
                     else:
                         dep_context_id = reduced_context_id
                     dep_key = ActionKey.from_name(dep_name, dep_context_id)
-                    dependencies.add(Dependency(action=dep_key, weak=dep_decl.weak))
+
+                    if dep_decl.soft and dep_decl.retainer_action:
+                        # Get retainer's reduced context
+                        retainer_action = self.document.actions.get(dep_decl.retainer_action)
+                        if retainer_action:
+                            retainer_required_axes = retainer_action.get_required_axes()
+                            retainer_context_id = full_context_id.reduce_to_axes(retainer_required_axes)
+                        else:
+                            retainer_context_id = reduced_context_id
+                        retainer_key = ActionKey.from_name(dep_decl.retainer_action, retainer_context_id)
+                        dependencies.add(Dependency(
+                            action=dep_key,
+                            soft=True,
+                            retainer_action=retainer_key,
+                        ))
+                    else:
+                        dependencies.add(Dependency(action=dep_key, weak=dep_decl.weak))
 
             node = ActionNode(
                 key=action_key,

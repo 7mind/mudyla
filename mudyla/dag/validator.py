@@ -56,31 +56,37 @@ class DAGValidator:
         except ValidationError as e:
             errors.append(str(e))
 
-        # 3. Validate environment variables
+        # 3. Validate retainer actions have no dependencies
+        try:
+            self._validate_retainer_actions()
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 4. Validate environment variables
         try:
             self._validate_environment_variables()
         except ValidationError as e:
             errors.append(str(e))
 
-        # 4. Validate arguments
+        # 5. Validate arguments
         try:
             self._validate_arguments(args)
         except ValidationError as e:
             errors.append(str(e))
 
-        # 5. Validate flags
+        # 6. Validate flags
         try:
             self._validate_flags(flags)
         except ValidationError as e:
             errors.append(str(e))
 
-        # 6. Validate axis values
+        # 7. Validate axis values
         try:
             self._validate_axis_values(axis_values)
         except ValidationError as e:
             errors.append(str(e))
 
-        # 7. Validate action outputs
+        # 8. Validate action outputs
         try:
             self._validate_action_outputs()
         except ValidationError as e:
@@ -106,6 +112,47 @@ class DAGValidator:
                         f"Action '{node.action.name}' depends on '{dep.action}' "
                         f"which does not exist (at {node.action.location})"
                     )
+                # Validate soft dependency retainer actions
+                # Note: If the soft dep target IS in the graph (was retained), we don't need
+                # the retainer anymore. Only validate retainer if target is NOT in graph.
+                if dep.soft and dep.retainer_action:
+                    if dep.action not in self.graph.nodes and dep.retainer_action not in self.graph.nodes:
+                        errors.append(
+                            f"Action '{node.action.name}' has soft dependency on '{dep.action}' "
+                            f"with retainer '{dep.retainer_action}' which does not exist "
+                            f"(at {node.action.location})"
+                        )
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_retainer_actions(self) -> None:
+        """Validate that retainer actions have no dependencies.
+
+        Retainer actions are used to decide whether soft dependencies should be
+        retained. They must be self-contained and not depend on other actions.
+        """
+        errors = []
+
+        # Collect all retainer actions
+        retainer_keys: set[ActionKey] = set()
+        for node in self.graph.nodes.values():
+            for dep in node.dependencies:
+                if dep.soft and dep.retainer_action:
+                    retainer_keys.add(dep.retainer_action)
+
+        # Validate each retainer has no dependencies
+        for retainer_key in retainer_keys:
+            if retainer_key not in self.graph.nodes:
+                continue  # Already caught by _validate_dependencies_exist
+
+            retainer_node = self.graph.nodes[retainer_key]
+            if retainer_node.dependencies:
+                dep_names = ", ".join(str(d.action) for d in retainer_node.dependencies)
+                errors.append(
+                    f"Retainer action '{retainer_key}' must have no dependencies, "
+                    f"but depends on: {dep_names} (at {retainer_node.action.location})"
+                )
 
         if errors:
             raise ValidationError("\n".join(errors))

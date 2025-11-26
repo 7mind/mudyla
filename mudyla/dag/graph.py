@@ -60,10 +60,13 @@ class ActionKey:
 class Dependency:
     """Represents a dependency between actions.
 
-    A dependency can be either strong (regular) or weak. Weak dependencies
-    are only retained if the target action is already required by a strong
-    dependency path from a goal. This is similar to weak dependencies in
-    distage dependency injection.
+    A dependency can be:
+    - Strong (regular): Target action is always retained
+    - Weak: Target is retained only if already required by strong path
+    - Soft: Like weak, but a retainer action decides whether to retain
+
+    Soft dependencies run a retainer action when the target is only reachable
+    via soft dependencies. If the retainer calls retain(), the target is kept.
     """
 
     action: ActionKey
@@ -72,7 +75,15 @@ class Dependency:
     weak: bool = False
     """Whether this is a weak dependency (does not force retention)"""
 
+    soft: bool = False
+    """Whether this is a soft dependency (requires retainer to decide)"""
+
+    retainer_action: Optional[ActionKey] = None
+    """For soft dependencies, the action that decides whether to retain"""
+
     def __str__(self) -> str:
+        if self.soft and self.retainer_action:
+            return f"soft {self.action} retain.{self.retainer_action}"
         qualifier = "weak " if self.weak else ""
         return f"{qualifier}{self.action}"
 
@@ -103,16 +114,20 @@ class ActionNode:
     """Per-action flags (for multi-context support)"""
 
     def get_dependency_keys(self) -> set[ActionKey]:
-        """Get all dependency action keys (both strong and weak)."""
+        """Get all dependency action keys (strong, weak, and soft)."""
         return {dep.action for dep in self.dependencies}
 
     def get_strong_dependency_keys(self) -> set[ActionKey]:
-        """Get only strong dependency action keys."""
-        return {dep.action for dep in self.dependencies if not dep.weak}
+        """Get only strong dependency action keys (not weak or soft)."""
+        return {dep.action for dep in self.dependencies if not dep.weak and not dep.soft}
 
     def get_weak_dependency_keys(self) -> set[ActionKey]:
-        """Get only weak dependency action keys."""
-        return {dep.action for dep in self.dependencies if dep.weak}
+        """Get only weak dependency action keys (not soft)."""
+        return {dep.action for dep in self.dependencies if dep.weak and not dep.soft}
+
+    def get_soft_dependencies(self) -> set[Dependency]:
+        """Get soft dependencies with their retainer info."""
+        return {dep for dep in self.dependencies if dep.soft}
 
     def __hash__(self) -> int:
         return hash(self.key)
@@ -202,7 +217,7 @@ class ActionGraph:
             self._collect_dependencies(dep.action, visited)
 
     def _collect_strong_dependencies(self, key: ActionKey, visited: set[ActionKey]) -> None:
-        """Recursively collect only strong dependencies."""
+        """Recursively collect only strong dependencies (not weak or soft)."""
         if key in visited:
             return
 
@@ -210,7 +225,7 @@ class ActionGraph:
         node = self.get_node(key)
 
         for dep in node.dependencies:
-            if not dep.weak:
+            if not dep.weak and not dep.soft:
                 self._collect_strong_dependencies(dep.action, visited)
 
     def topological_sort(self) -> list[ActionKey]:
@@ -294,20 +309,67 @@ class ActionGraph:
 
         return None
 
-    def prune_to_goals(self) -> "ActionGraph":
+    def get_pending_soft_dependencies(self) -> list[Dependency]:
+        """Get soft dependencies that need retainer decisions.
+
+        Returns soft dependencies whose targets are not already reachable via
+        strong dependencies. These need their retainers to run before we can
+        finalize the pruned graph.
+
+        Only considers soft dependencies from nodes that are reachable via
+        strong dependencies from goals.
+
+        Returns:
+            List of soft dependencies needing retainer decisions
+        """
+        # Collect actions reachable via strong dependencies only
+        retained_via_strong: set[ActionKey] = set()
+        for goal in self.goals:
+            self._collect_strong_dependencies(goal, retained_via_strong)
+
+        pending_soft: list[Dependency] = []
+
+        # Only check soft dependencies in nodes reachable via strong deps
+        for key in retained_via_strong:
+            if key not in self.nodes:
+                continue
+            node = self.nodes[key]
+            for dep in node.dependencies:
+                if dep.soft and dep.retainer_action:
+                    # If target is already retained via strong path, no retainer needed
+                    if dep.action not in retained_via_strong:
+                        pending_soft.append(dep)
+
+        return pending_soft
+
+    def prune_to_goals(self, retained_soft_targets: set[ActionKey] | None = None) -> "ActionGraph":
         """Create a new graph containing only actions required for goals.
 
-        This implements weak dependency semantics: weak dependencies are only
-        retained if the target action is already required via a strong dependency
-        path from a goal.
+        This implements weak and soft dependency semantics:
+        - Weak dependencies are only retained if the target action is already
+          required via a strong dependency path from a goal.
+        - Soft dependencies are retained if they are in retained_soft_targets
+          (decided by running retainers).
+
+        Args:
+            retained_soft_targets: Set of soft dependency targets to retain
+                                   (determined by retainer execution).
 
         Returns:
             New pruned graph
         """
-        # First, collect actions reachable via strong dependencies only
+        retained_soft_targets = retained_soft_targets or set()
+
+        # Collect actions reachable via strong dependencies only
         retained_actions: set[ActionKey] = set()
         for goal in self.goals:
             self._collect_strong_dependencies(goal, retained_actions)
+
+        # Add soft dependency targets that were retained by their retainers
+        # We need to also add their transitive strong dependencies
+        for target in retained_soft_targets:
+            if target in self.nodes:
+                self._collect_strong_dependencies(target, retained_actions)
 
         pruned_nodes: dict[ActionKey, ActionNode] = {}
 
@@ -316,7 +378,7 @@ class ActionGraph:
             if key not in retained_actions:
                 continue
 
-            # Filter dependencies: keep all dependencies (strong and weak)
+            # Filter dependencies: keep all dependencies (strong, weak, soft)
             # whose targets are in the retained set
             pruned_dependencies = {
                 dep for dep in node.dependencies
@@ -343,10 +405,13 @@ class ActionGraph:
         return ActionGraph(nodes=pruned_nodes, goals=pruned_goals)
 
     def get_execution_order(self) -> list[ActionKey]:
-        """Get execution order (topological sort of pruned graph).
+        """Get execution order (topological sort of the graph).
 
         Returns:
             List of action keys in execution order
+
+        Note: This method assumes the graph is already pruned if needed.
+        If you need to prune first, call prune_to_goals() and then
+        get_execution_order() on the result.
         """
-        pruned = self.prune_to_goals()
-        return pruned.topological_sort()
+        return self.topological_sort()

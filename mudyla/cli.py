@@ -12,8 +12,10 @@ from typing import Optional
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.builder import DAGBuilder
 from .dag.compiler import DAGCompiler, CompilationError
+from .dag.graph import ActionKey, Dependency
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
+from .executor.retainer_executor import RetainerExecutor
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
     AXIS_OPTIONS,
@@ -101,7 +103,18 @@ class CLI:
             compiler = DAGCompiler(document, setup.parsed_inputs)
             compiler.validate_action_invocations()
             graph = compiler.compile()
-            pruned_graph = graph.prune_to_goals()
+
+            # Execute retainers for soft dependencies to determine which to retain
+            retainer_executor = RetainerExecutor(
+                graph=graph,
+                document=document,
+                project_root=project_root,
+                environment_vars=document.environment_vars,
+                passthrough_env_vars=document.passthrough_env_vars,
+                without_nix=args.without_nix,
+            )
+            retained_soft_targets = retainer_executor.execute_retainers()
+            pruned_graph = graph.prune_to_goals(retained_soft_targets)
 
             # Build context mapping for short IDs (unless full representations requested)
             use_short_ids = not args.full_ctx_reprs
@@ -485,12 +498,16 @@ class CLI:
                 sorted_deps = sorted(node.dependencies, key=lambda d: d.action.id.name)
                 dep_parts = []
                 for dep in sorted_deps:
+                    if dep.action not in execution_order:
+                        continue  # Skip dependencies not in execution order (e.g., pruned soft deps)
                     dep_num = execution_order.index(dep.action) + 1
                     if dep.weak:
                         dep_parts.append(f"~{dep_num}")
+                    elif dep.soft:
+                        dep_parts.append(f"?{dep_num}")  # Show soft deps with question mark
                     else:
                         dep_parts.append(str(dep_num))
-                deps_str = ", ".join(dep_parts)
+                deps_str = ", ".join(dep_parts) if dep_parts else "-"
             else:
                 deps_str = "-"
 

@@ -45,7 +45,15 @@ class DependencyDeclaration:
     weak: bool = False
     """Whether this is a weak dependency (does not force retention)"""
 
+    soft: bool = False
+    """Whether this is a soft dependency (requires retainer to decide retention)"""
+
+    retainer_action: str | None = None
+    """For soft dependencies, the action that decides whether to retain"""
+
     def __str__(self) -> str:
+        if self.soft and self.retainer_action:
+            return f"soft {self.action_name} retain.{self.retainer_action}"
         prefix = "weak" if self.weak else "dep"
         return f"{prefix} {self.action_name}"
 

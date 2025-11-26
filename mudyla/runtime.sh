@@ -14,6 +14,20 @@ weak() {
     :
 }
 
+# soft pseudo-command (no-op, used for soft dependency declaration)
+soft() {
+    # Soft dependencies are extracted at parse time, this is a no-op at runtime
+    :
+}
+
+# retain pseudo-command (signals that a soft dependency should be retained)
+retain() {
+    # Creates a signal file to indicate the soft dependency should be retained
+    if [ -n "${MDL_RETAIN_SIGNAL_FILE:-}" ]; then
+        touch "$MDL_RETAIN_SIGNAL_FILE"
+    fi
+}
+
 # ret pseudo-command (captures return values)
 ret() {
     local declaration="$1"

@@ -60,6 +60,48 @@ class MudilaContext:
         # Dependencies are extracted at parse time, this is a no-op at runtime
         pass
 
+    def weak(self, dependency: str) -> None:
+        """
+        Declare a weak dependency (no-op at runtime, used for parsing).
+
+        Args:
+            dependency: Dependency string (e.g., "action.optional")
+
+        Example:
+            mdl.weak("action.optional-feature")
+        """
+        # Weak dependencies are extracted at parse time, this is a no-op at runtime
+        pass
+
+    def soft(self, dependency: str, retainer: str) -> None:
+        """
+        Declare a soft dependency (no-op at runtime, used for parsing).
+
+        Args:
+            dependency: Dependency string (e.g., "action.feature")
+            retainer: Retainer action string (e.g., "action.check-feature")
+
+        Example:
+            mdl.soft("action.optional-feature", "action.check-optional")
+        """
+        # Soft dependencies are extracted at parse time, this is a no-op at runtime
+        pass
+
+    def retain(self) -> None:
+        """
+        Signal that a soft dependency should be retained.
+
+        Call this in a retainer action to indicate the soft dependency target
+        should be included in the execution graph.
+
+        Example:
+            if some_condition:
+                mdl.retain()
+        """
+        retain_signal_file = os.environ.get("MDL_RETAIN_SIGNAL_FILE")
+        if retain_signal_file:
+            Path(retain_signal_file).touch()
+
     def ret(self, name: str, value: Any, type_str: str) -> None:
         """
         Return a value from the action.

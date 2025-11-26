@@ -90,11 +90,19 @@ class DAGBuilder:
                         is_weak = isinstance(expansion, WeakActionExpansion)
                         dependencies.add(Dependency(action=dep_key, weak=is_weak))
 
-                # Explicit dependencies from dep/weak declarations
+                # Explicit dependencies from dep/weak/soft declarations
                 for dep_decl in selected_version.dependency_declarations:
                     # Dependencies in same context
                     dep_key = ActionKey.from_name(dep_decl.action_name, context_id)
-                    dependencies.add(Dependency(action=dep_key, weak=dep_decl.weak))
+                    if dep_decl.soft and dep_decl.retainer_action:
+                        retainer_key = ActionKey.from_name(dep_decl.retainer_action, context_id)
+                        dependencies.add(Dependency(
+                            action=dep_key,
+                            soft=True,
+                            retainer_action=retainer_key,
+                        ))
+                    else:
+                        dependencies.add(Dependency(action=dep_key, weak=dep_decl.weak))
 
             node = ActionNode(
                 key=action_key,

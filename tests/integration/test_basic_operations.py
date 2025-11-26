@@ -111,8 +111,8 @@ class TestBasicOperations:
         mdl.assert_in_output(result, "create-directory")
         mdl.assert_in_output(result, "final-report")
 
-        # Verify dependency notation
-        mdl.assert_in_output(result, "<-")
+        # Verify dependency notation (dependencies shown as numbers)
+        mdl.assert_in_output(result, "Deps")
 
     def test_rich_table_display(self, mdl: MudylaRunner, clean_test_output):
         """Test that rich table is displayed during execution."""
