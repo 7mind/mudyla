@@ -491,7 +491,7 @@ class CLI:
             action_str = action_key.id.name
 
             # Goal column
-            goal_str = "🎯" if is_goal else ""
+            goal_str = output.emoji("🎯", "*") if is_goal else ""
 
             # Dependencies column
             if node.dependencies:
@@ -524,8 +524,10 @@ class CLI:
     def _list_actions(self, document: ParsedDocument, no_color: bool = False) -> None:
         """List all available actions."""
         from .utils.colors import ColorFormatter
+        from .utils.output import OutputFormatter
 
         color = ColorFormatter(no_color=no_color)
+        output = OutputFormatter(color)
 
         # Show available axes first
         if document.axis:
@@ -563,7 +565,8 @@ class CLI:
             # Format action name
             if is_root:
                 # Root actions are bold with goal emoji
-                formatted_name = f"🎯 {color.bold(color.highlight(action_name))}"
+                goal_marker = output.emoji("🎯", "*")
+                formatted_name = f"{goal_marker} {color.bold(color.highlight(action_name))}"
             else:
                 formatted_name = f"  {color.highlight(action_name)}"
 
