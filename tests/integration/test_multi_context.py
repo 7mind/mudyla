@@ -133,17 +133,20 @@ class TestMultiContext:
         mdl.assert_in_output(result, "conditional-build")
 
     def test_context_format_in_output(self, mdl: MudylaRunner, clean_test_output):
-        """Test that context format uses 'context#action' notation."""
+        """Test that context format uses 'context#action' notation for goals."""
         result = mdl.run_success([
             ":conditional-build",
             "--axis build-mode:release",
         ])
 
-        # Verify context#action format
-        # conditional-build only cares about build-mode
+        # Verify context#action format appears in Goals section
+        # conditional-build is a goal, so it should have # format
         mdl.assert_in_output(result, "build-mode:release")
-        mdl.assert_in_output(result, "#create-directory")
         mdl.assert_in_output(result, "#conditional-build")
+
+        # create-directory is a dependency (not a goal), so it appears in tables
+        # where Context and Action are separate columns (no # in between)
+        mdl.assert_in_output(result, "create-directory")
 
         # Verify NOT using old action@context format
         mdl.assert_not_in_output(result, "create-directory@")
@@ -186,11 +189,12 @@ class TestMultiContextEdgeCases:
 
         # conditional-build only cares about build-mode, not cross-platform or platform
         mdl.assert_in_output(result, "build-mode:release")
-        mdl.assert_in_output(result, "#conditional-build")
+        mdl.assert_in_output(result, "#conditional-build")  # Goal has # format
 
-        # create-directory has no conditions, gets default
+        # create-directory has no conditions, gets default context
+        # It appears in tables where Context and Action are separate columns
         mdl.assert_in_output(result, "default")
-        mdl.assert_in_output(result, "#create-directory")
+        mdl.assert_in_output(result, "create-directory")
 
     def test_shared_dependency_across_contexts(self, mdl: MudylaRunner, clean_test_output):
         """Test that axis-independent dependencies are shared across contexts.
@@ -218,12 +222,12 @@ class TestMultiContextEdgeCases:
         mdl.assert_in_output(result, "cross-platform:js")
 
         # generate-sources should have default context (shown in contexts list)
+        # It's a dependency, not a goal, so it appears in tables without # format
         mdl.assert_in_output(result, "default")
-        mdl.assert_in_output(result, "#generate-sources")
-
-        # Both generate-sources and platform-build should appear in plan
         mdl.assert_in_output(result, "generate-sources")
-        mdl.assert_in_output(result, "platform-build")
+
+        # platform-build is a goal, so it has # format in Goals section
+        mdl.assert_in_output(result, "#platform-build")
 
         mdl.assert_in_output(result, "Execution completed successfully")
 
@@ -256,16 +260,21 @@ class TestTransitiveContextReduction:
         mdl.assert_in_output(result, "12 required action(s)")
 
         # Global context for fetch-deps (no axes)
+        # fetch-deps is a dependency, not a goal, so it appears in tables without # format
         mdl.assert_in_output(result, "global")
-        mdl.assert_in_output(result, "#demo-fetch-deps")
+        mdl.assert_in_output(result, "demo-fetch-deps")
 
         # Platform-only context for gen-sources (shared across scala versions)
+        # gen-sources is also a dependency, appears in tables without # format
         mdl.assert_in_output(result, "demo-platform:jvm")
-        mdl.assert_in_output(result, "#demo-gen-sources")
+        mdl.assert_in_output(result, "demo-gen-sources")
 
-        # Full contexts for the rest
+        # Full contexts for the goals
         mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:2.13")
         mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:3.3")
+
+        # demo-publish is a goal, so it has # format in Goals section
+        mdl.assert_in_output(result, "#demo-publish")
 
         mdl.assert_in_output(result, "Execution completed successfully")
 
