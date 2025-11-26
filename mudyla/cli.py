@@ -557,8 +557,8 @@ class CLI:
         for action_name in root_actions + non_root_actions:
             action = document.actions[action_name]
             info = metadata[action_name]
-            deps = info["dependencies"]
-            is_root = len(deps) == 0
+            typed_deps = info["typed_dependencies"]
+            is_root = len(typed_deps) == 0
 
             # Format action name
             if is_root:
@@ -575,8 +575,17 @@ class CLI:
                     if stripped_line:
                         print(f"    {color.dim(stripped_line)}")
 
-            if deps:
-                dep_str = ', '.join(sorted(deps))
+            if typed_deps:
+                dep_strs = []
+                for dep_name in sorted(typed_deps.keys()):
+                    dep_type = typed_deps[dep_name]
+                    if dep_type == "weak":
+                        dep_strs.append(f"~{dep_name}")
+                    elif dep_type == "soft":
+                        dep_strs.append(f"?{dep_name}")
+                    else:
+                        dep_strs.append(dep_name)
+                dep_str = ', '.join(dep_strs)
                 print(f"    {color.dim('Dependencies:')} {dep_str}")
 
             args_used = info["args_used"]
@@ -639,7 +648,7 @@ class CLI:
         root_actions: list[str] = []
         non_root_actions: list[str] = []
         for action_name, action in document.actions.items():
-            deps = action.get_action_dependencies()
+            deps = action.get_typed_action_dependencies()
             if len(deps) == 0:
                 root_actions.append(action_name)
             else:
@@ -695,6 +704,7 @@ class CLI:
 
         return {
             "dependencies": action.get_action_dependencies(),
+            "typed_dependencies": action.get_typed_action_dependencies(),
             "args_used": args_used,
             "flags_used": flags_used,
             "env_vars": all_env_vars,

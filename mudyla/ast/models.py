@@ -367,6 +367,46 @@ class ActionDefinition:
         self._dependency_cache = deps
         return deps
 
+    def get_typed_action_dependencies(self) -> dict[str, str]:
+        """Get all action dependencies with their types.
+
+        Returns:
+            Dict mapping action name to dependency type: "strong", "weak", or "soft"
+        """
+        from .expansions import ActionExpansion, WeakActionExpansion
+
+        deps: dict[str, str] = {}
+
+        # Get dependencies from expansions (implicit deps from variable usage)
+        for expansion in self.get_all_expansions():
+            if isinstance(expansion, WeakActionExpansion):
+                action_name = expansion.get_dependency_action()
+                # Weak expansion, unless already a strong dep
+                if action_name not in deps:
+                    deps[action_name] = "weak"
+            elif isinstance(expansion, ActionExpansion):
+                action_name = expansion.get_dependency_action()
+                # Strong expansion always marks as strong
+                deps[action_name] = "strong"
+
+        # Get dependencies from explicit declarations (dep/weak/soft statements)
+        for version in self.versions:
+            for dep_decl in version.dependency_declarations:
+                action_name = dep_decl.action_name
+                if dep_decl.soft:
+                    # Soft dep, unless already strong
+                    if deps.get(action_name) != "strong":
+                        deps[action_name] = "soft"
+                elif dep_decl.weak:
+                    # Weak dep, unless already strong or soft
+                    if action_name not in deps:
+                        deps[action_name] = "weak"
+                else:
+                    # Strong dep always wins
+                    deps[action_name] = "strong"
+
+        return deps
+
 
 @dataclass(frozen=True)
 class ParsedDocument:
