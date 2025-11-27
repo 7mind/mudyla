@@ -708,6 +708,7 @@ The project includes a complete CI/CD pipeline:
 
 ## Documentation
 
+- [Feature Guide](docs/drafts/20251127-feature-guide.md)
 - [Full Specification](docs/drafts/20251120-final-spec.md)
 - [Example Actions](example.md)
 - [Testing Guide](TESTING.md)
