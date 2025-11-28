@@ -165,6 +165,7 @@ class RetainerExecutor:
 
         return ExecutionContext(
             system_vars={"project-root": str(self.project_root)},
+            axis_values={},
             env_vars=env_vars,
             args={},
             flags={},

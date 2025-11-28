@@ -106,22 +106,30 @@ ret info-file:file=$INFO_FILE
 ## definition when `build-mode: development`
 
 ```bash
-echo "Running in DEVELOPMENT mode"
-MODE_FILE="${action.create-directory.output-directory}/build-mode.txt"
-echo "development" > "$MODE_FILE"
+set -euo pipefail
 
-ret build-mode:string=development
+MODE="${sys.axis.build-mode}"
+echo "Axis build-mode from sys: $MODE"
+echo "Running in ${MODE^^} mode"
+MODE_FILE="${action.create-directory.output-directory}/build-mode.txt"
+echo "$MODE" > "$MODE_FILE"
+
+ret build-mode:string=$MODE
 ret mode-file:file=$MODE_FILE
 ```
 
 ## definition when `build-mode: release`
 
 ```bash
-echo "Running in RELEASE mode"
-MODE_FILE="${action.create-directory.output-directory}/build-mode.txt"
-echo "release" > "$MODE_FILE"
+set -euo pipefail
 
-ret build-mode:string=release
+MODE="${sys.axis.build-mode}"
+echo "Axis build-mode from sys: $MODE"
+echo "Running in ${MODE^^} mode"
+MODE_FILE="${action.create-directory.output-directory}/build-mode.txt"
+echo "$MODE" > "$MODE_FILE"
+
+ret build-mode:string=$MODE
 ret mode-file:file=$MODE_FILE
 ```
 

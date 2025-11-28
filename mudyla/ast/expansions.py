@@ -45,6 +45,19 @@ class SystemExpansion(Expansion):
         return ExpansionType.SYSTEM
 
     def resolve(self, context: dict[str, Any]) -> str:
+        if self.variable_name.startswith("axis."):
+            axis_values = context.get("axis")
+            axis_name = self.variable_name[len("axis.") :]
+            if axis_values is None or axis_name == "":
+                raise ValueError(
+                    f"Axis values not available when resolving '{self.variable_name}'"
+                )
+            if axis_name not in axis_values:
+                raise ValueError(
+                    f"Axis '{axis_name}' not found in context for expansion '{self.original_text}'"
+                )
+            return str(axis_values[axis_name])
+
         sys_vars = context.get("sys", {})
         if self.variable_name not in sys_vars:
             raise ValueError(

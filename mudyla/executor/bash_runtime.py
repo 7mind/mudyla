@@ -38,6 +38,7 @@ class BashRuntime(LanguageRuntime):
         # Build resolution context for expansions
         resolution_context = {
             "sys": context.system_vars,
+            "axis": context.axis_values,
             "env": context.env_vars,
             "args": context.args,
             "flags": context.flags,

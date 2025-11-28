@@ -706,12 +706,17 @@ class ExecutionEngine:
                 # Use the dependency's action name as the key for ${action.name.var}
                 dependency_outputs[dep.action.id.name] = action_outputs[dep_key_str]
 
+        axis_values = action_key.context_id.to_dict()
+        axis_sys_vars = {f"axis.{name}": value for name, value in axis_values.items()}
+
         return ExecutionContext(
             system_vars={
                 "project-root": str(self.project_root),
                 "run-dir": str(self.run_directory),
                 "action-dir": str(action_dir),
+                **axis_sys_vars,
             },
+            axis_values=axis_values,
             env_vars=dict(os.environ) | self.environment_vars,
             args=args,
             flags=flags,

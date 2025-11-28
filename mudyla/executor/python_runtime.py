@@ -38,6 +38,7 @@ class PythonRuntime(LanguageRuntime):
         context_json_path = working_dir / "context.json"
         context_data = {
             "sys": context.system_vars,
+            "axis": context.axis_values,
             "env": context.env_vars,
             "args": context.args,
             "flags": context.flags,

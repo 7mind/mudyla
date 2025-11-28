@@ -32,6 +32,21 @@ class MudilaContext:
         return self._data.get("env", {})
 
     @property
+    def axis(self) -> dict[str, str]:
+        """Axis values for the current context."""
+        axis_values = self._data.get("axis")
+        if axis_values is None:
+            raise KeyError("Axis values are not available in this context")
+        return axis_values
+
+    def axis_value(self, axis_name: str) -> str:
+        """Get a specific axis value, failing fast if missing."""
+        axis_values = self.axis
+        if axis_name not in axis_values:
+            raise KeyError(f"Axis '{axis_name}' not found in context")
+        return axis_values[axis_name]
+
+    @property
     def args(self) -> dict[str, Any]:
         """Command-line arguments."""
         return self._data.get("args", {})

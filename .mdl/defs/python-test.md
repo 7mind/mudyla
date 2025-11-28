@@ -113,3 +113,47 @@ with output_path.open("w") as f:
 
 mdl.ret("result-file", str(output_path), "file")
 ```
+
+# action: python-axis-context
+
+Python action that asserts axis values are available in the runtime context.
+
+## definition when `build-mode: development`
+
+```python
+from pathlib import Path
+
+mode_from_accessor = mdl.axis_value("build-mode")
+mode_from_map = mdl.axis["build-mode"]
+
+if mode_from_accessor != mode_from_map:
+    raise ValueError("Axis values mismatch between accessor and map")
+
+project_root = Path(mdl.sys["project-root"])
+output_path = project_root / "test-output" / "python-axis.txt"
+output_path.parent.mkdir(parents=True, exist_ok=True)
+output_path.write_text(f"mode={mode_from_accessor}")
+
+mdl.ret("axis-mode", mode_from_accessor, "string")
+mdl.ret("axis-file", str(output_path), "file")
+```
+
+## definition when `build-mode: release`
+
+```python
+from pathlib import Path
+
+mode_from_accessor = mdl.axis_value("build-mode")
+mode_from_map = mdl.axis["build-mode"]
+
+if mode_from_accessor != mode_from_map:
+    raise ValueError("Axis values mismatch between accessor and map")
+
+project_root = Path(mdl.sys["project-root"])
+output_path = project_root / "test-output" / "python-axis.txt"
+output_path.parent.mkdir(parents=True, exist_ok=True)
+output_path.write_text(f"mode={mode_from_accessor}")
+
+mdl.ret("axis-mode", mode_from_accessor, "string")
+mdl.ret("axis-file", str(output_path), "file")
+```

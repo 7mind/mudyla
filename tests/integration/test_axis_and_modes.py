@@ -51,6 +51,20 @@ class TestAxisValues:
         result_release = mdl.run_success(["--verbose", "--axis build-mode:release", ":conditional-build"])
         mdl.assert_in_output(result_release, "RELEASE")
 
+    def test_axis_values_available_in_bash_scripts(self, mdl: MudylaRunner, clean_test_output):
+        """Test that bash scripts can read axis values through sys.axis expansions."""
+        result = mdl.run_success(["--verbose", "--axis build-mode:release", ":conditional-build"])
+
+        mdl.assert_in_output(result, "Axis build-mode from sys: release")
+        mdl.assert_file_contains("test-output/build-mode.txt", "release")
+
+    def test_axis_values_available_in_python_scripts(self, mdl: MudylaRunner, clean_test_output):
+        """Test that python scripts can access axis values via the runtime context."""
+        result = mdl.run_success(["--axis build-mode:release", ":python-axis-context"])
+
+        mdl.assert_file_contains("test-output/python-axis.txt", "mode=release")
+        mdl.assert_in_output(result, "python-axis-context")
+
 
 @pytest.mark.integration
 class TestExecutionModes:

@@ -13,6 +13,7 @@ class ExecutionContext:
     """Context available to actions during execution."""
 
     system_vars: dict[str, str]  # sys.* variables (e.g., project-root)
+    axis_values: dict[str, str]  # Axis values for the current context
     env_vars: dict[str, str]  # Environment variables
     args: dict[str, Any]  # Command-line arguments
     flags: dict[str, bool]  # Command-line flags
