@@ -20,6 +20,7 @@ from .models import (
     ActionDefinition,
     ActionVersion,
     AxisCondition,
+    DocumentProperties,
     ParsedDocument,
 )
 
@@ -42,5 +43,6 @@ __all__ = [
     "ActionDefinition",
     "ActionVersion",
     "AxisCondition",
+    "DocumentProperties",
     "ParsedDocument",
 ]

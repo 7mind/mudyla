@@ -92,7 +92,12 @@ class CLI:
                 self._list_actions(document, args.no_color)
                 return 0
 
-            parallel_execution = not args.sequential and not args.verbose and not args.github_actions
+            parallel_execution = args.parallel or (
+                not args.sequential
+                and not args.verbose
+                and not args.github_actions
+                and not document.properties.sequential_execution_default
+            )
 
             output.print(f"{output.emoji('📚', '▸')} {color.dim('Found')} {color.bold(str(len(setup.markdown_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
 

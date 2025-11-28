@@ -150,6 +150,18 @@ That's it! Mudyla will:
 
 ## Action Definition Format
 
+### Document Properties
+
+Add optional global settings at the top of a definitions file:
+
+```markdown
+# properties
+
+- `sequential`   # default to sequential execution for this document
+```
+
+When `sequential` is present, runs start in sequential mode unless overridden with `--par` or `--seq`.
+
 ### Basic Action (Bash)
 
 ```markdown

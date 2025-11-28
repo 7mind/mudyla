@@ -106,11 +106,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Show action directories in the rich table (off by default)",
     )
 
-    parser.add_argument(
+    execution_mode_group = parser.add_mutually_exclusive_group()
+    execution_mode_group.add_argument(
         "--seq",
         dest="sequential",
         action="store_true",
         help="Force sequential execution (disables parallel execution)",
+    )
+    execution_mode_group.add_argument(
+        "--par",
+        dest="parallel",
+        action="store_true",
+        help="Force parallel execution (overrides sequential defaults)",
     )
 
     parser.add_argument(

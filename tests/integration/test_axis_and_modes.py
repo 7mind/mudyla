@@ -96,6 +96,20 @@ class TestExecutionModes:
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
 
+    def test_properties_enable_sequential_by_default(self, mdl: MudylaRunner, clean_test_output):
+        """Test that properties section can default execution to sequential."""
+        defs_path = "tests/fixtures/defs/properties-sequential.md"
+        result = mdl.run_success(["--defs", defs_path, ":property-sequential"])
+
+        mdl.assert_in_output(result, "Execution mode: sequential")
+
+    def test_parallel_flag_overrides_properties_default(self, mdl: MudylaRunner, clean_test_output):
+        """Test that --par forces parallel execution even with sequential properties."""
+        defs_path = "tests/fixtures/defs/properties-sequential.md"
+        result = mdl.run_success(["--defs", defs_path, "--par", ":property-sequential"])
+
+        mdl.assert_in_output(result, "Execution mode: parallel")
+
     def test_continue_from_previous_run(self, mdl: MudylaRunner, clean_test_output):
         """Test continuing from a previous run."""
         from pathlib import Path

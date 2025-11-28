@@ -15,6 +15,7 @@ from ..ast.models import (
     AxisCondition,
     AxisDefinition,
     AxisValue,
+    DocumentProperties,
     Condition,
     DependencyDeclaration,
     FlagDefinition,
@@ -152,12 +153,14 @@ class MarkdownParser:
         all_axis: dict[str, AxisDefinition] = {}
         all_environment: dict[str, str] = {}
         all_passthrough: list[str] = []
+        properties = DocumentProperties()
 
         for file_path in file_paths:
             content = file_path.read_text()
-            actions, arguments, flags, axis, environment_vars, passthrough = self._parse_file(
+            actions, arguments, flags, axis, environment_vars, passthrough, file_properties = self._parse_file(
                 file_path, content
             )
+            properties = properties.merge(file_properties)
 
             # Check for duplicate actions
             for action_name, action in actions.items():
@@ -191,6 +194,7 @@ class MarkdownParser:
             axis=all_axis,
             environment_vars=all_environment,
             passthrough_env_vars=all_passthrough,
+            properties=properties,
         )
 
     def _parse_file(
@@ -202,11 +206,12 @@ class MarkdownParser:
         dict[str, AxisDefinition],
         dict[str, str],
         list[str],
+        DocumentProperties,
     ]:
         """Parse a single markdown file.
 
         Returns:
-            Tuple of (actions, arguments, flags, axis, environment_vars, passthrough)
+            Tuple of (actions, arguments, flags, axis, environment_vars, passthrough, properties)
         """
         sections = self._extract_sections(content)
 
@@ -216,6 +221,7 @@ class MarkdownParser:
         axis = {}
         environment_vars = {}
         passthrough = []
+        properties = DocumentProperties()
 
         for section in sections:
             title_lower = section.title.lower().strip()
@@ -232,6 +238,8 @@ class MarkdownParser:
             elif title_lower == "passthrough":
                 # Legacy support for top-level passthrough section
                 passthrough = self._parse_passthrough_section(section, file_path)
+            elif title_lower == "properties":
+                properties = self._parse_properties_section(section, file_path)
             else:
                 # Check if it's an action
                 action_match = self.ACTION_HEADER_PATTERN.match(section.title.strip())
@@ -240,7 +248,7 @@ class MarkdownParser:
                     action = self._parse_action(section, action_name, file_path)
                     actions[action_name] = action
 
-        return actions, arguments, flags, axis, environment_vars, passthrough
+        return actions, arguments, flags, axis, environment_vars, passthrough, properties
 
     def _extract_sections(self, content: str) -> list[Section]:
         """Extract all top-level (# ...) sections with accurate source lines."""
@@ -563,6 +571,38 @@ class MarkdownParser:
                     environment_vars[env_def["var_name"]] = env_def["value"]
 
         return environment_vars, passthrough_vars
+
+    def _parse_properties_section(
+        self, section: Section, file_path: Path
+    ) -> DocumentProperties:
+        """Parse document-level properties."""
+        sequential_default = False
+
+        for offset, raw_line in enumerate(section.content.splitlines(), start=section.line_number + 1):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            if not stripped.startswith("-"):
+                raise ValueError(
+                    f"{file_path}:{offset}: Invalid property declaration '{raw_line.strip()}'"
+                )
+
+            property_name = stripped[1:].strip()
+            if property_name.startswith("`") and property_name.endswith("`") and len(property_name) >= 2:
+                property_name = property_name[1:-1].strip()
+
+            if property_name == "":
+                raise ValueError(f"{file_path}:{offset}: Property name cannot be empty")
+
+            normalized = property_name.lower()
+            if normalized == "sequential":
+                sequential_default = True
+            else:
+                raise ValueError(
+                    f"{file_path}:{offset}: Unknown property '{property_name}'"
+                )
+
+        return DocumentProperties(sequential_execution_default=sequential_default)
 
     def _parse_action(
         self, section: Section, action_name: str, file_path: Path

@@ -17,6 +17,8 @@ def test_cli_parser_defaults_and_options_present():
     assert defaults["no_out_on_fail"] is False
     assert defaults["keep_run_dir"] is False
     assert defaults["no_color"] is False
+    assert defaults["sequential"] is False
+    assert defaults["parallel"] is False
     # Note: 'goals' was removed from argparse and is now parsed from unknown arguments
     # to preserve command-line order for multi-context execution
 
@@ -44,3 +46,4 @@ def test_autocomplete_flags_include_cli_and_document_entries():
     assert "--list-actions" in flags
     assert "--verbose" in flags
     assert "--no-out-on-fail" in flags
+    assert "--par" in flags

@@ -154,6 +154,22 @@ class AxisDefinition:
 
 
 @dataclass(frozen=True)
+class DocumentProperties:
+    """Global properties derived from markdown definitions."""
+
+    sequential_execution_default: bool = False
+    """Whether sequential execution should be the default"""
+
+    def merge(self, other: "DocumentProperties") -> "DocumentProperties":
+        """Combine properties with another instance."""
+        return DocumentProperties(
+            sequential_execution_default=(
+                self.sequential_execution_default or other.sequential_execution_default
+            )
+        )
+
+
+@dataclass(frozen=True)
 class Condition(ABC):
     """Base class for version selection conditions."""
 
@@ -429,6 +445,9 @@ class ParsedDocument:
 
     passthrough_env_vars: list[str]
     """Environment variables to pass through from parent environment"""
+
+    properties: DocumentProperties = field(default_factory=DocumentProperties)
+    """Global document-level properties"""
 
     def get_action(self, name: str) -> ActionDefinition:
         """Get action by name.
