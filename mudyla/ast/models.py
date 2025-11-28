@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .expansions import Expansion
+from .expansions import Expansion, SystemExpansion
 from .types import ReturnType
 
 
@@ -345,16 +345,26 @@ class ActionDefinition:
     def get_required_axes(self) -> set[str]:
         """Get the set of axis names required by this action.
 
-        An action requires an axis if any of its versions has a condition
-        on that axis (AxisCondition) or on platform (PlatformCondition).
+        An action requires an axis if any of its versions:
+        1. Has a condition on that axis (AxisCondition) or platform (PlatformCondition)
+        2. Uses ${sys.axis.X} expansions in the script
         """
         axis_names: set[str] = set()
         for version in self.versions:
+            # Check version conditions
             for condition in version.conditions:
                 if isinstance(condition, AxisCondition):
                     axis_names.add(condition.axis_name)
                 elif isinstance(condition, PlatformCondition):
                     axis_names.add("platform")
+
+            # Check expansions for ${sys.axis.X} references
+            for expansion in version.expansions:
+                if isinstance(expansion, SystemExpansion):
+                    if expansion.variable_name.startswith("axis."):
+                        axis_name = expansion.variable_name[len("axis."):]
+                        if axis_name:  # Skip empty axis names
+                            axis_names.add(axis_name)
         return axis_names
 
     def get_all_expansions(self) -> list[Expansion]:

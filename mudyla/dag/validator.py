@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from ..ast.expansions import ArgsExpansion, EnvExpansion, FlagsExpansion, ActionExpansion, WeakActionExpansion
+from ..ast.expansions import ArgsExpansion, EnvExpansion, FlagsExpansion, ActionExpansion, WeakActionExpansion, SystemExpansion
 from ..ast.models import ParsedDocument
 from .graph import ActionGraph, ActionKey
 
@@ -89,6 +89,12 @@ class DAGValidator:
         # 8. Validate action outputs
         try:
             self._validate_action_outputs()
+        except ValidationError as e:
+            errors.append(str(e))
+
+        # 9. Validate system expansions (e.g., sys.axis.X references)
+        try:
+            self._validate_system_expansions()
         except ValidationError as e:
             errors.append(str(e))
 
@@ -375,6 +381,74 @@ class DAGValidator:
                             f"{{{', '.join(sorted(missing))}}} from '{dep_action}', "
                             f"but '{dep_action}' only provides "
                             f"{{{', '.join(sorted(provided_outputs))}}}"
+                        )
+
+        if errors:
+            raise ValidationError("\n".join(errors))
+
+    def _validate_system_expansions(self) -> None:
+        """Validate that all system expansions (e.g., sys.axis.X) reference defined items.
+
+        This checks that:
+        - ${sys.axis.X} references exist in the axis definitions
+        - Other sys.* variables are known system variables
+        """
+        errors = []
+
+        pruned_graph = self._required_graph
+
+        # Known system variables that don't require validation
+        KNOWN_SYS_VARS = {"project-root", "run-dir", "action-dir"}
+
+        for node in pruned_graph.nodes.values():
+            if not node.selected_version:
+                continue
+
+            for expansion in node.selected_version.expansions:
+                if isinstance(expansion, SystemExpansion):
+                    var_name = expansion.variable_name
+
+                    # Check if this is an axis reference: sys.axis.X
+                    if var_name.startswith("axis."):
+                        axis_name = var_name[len("axis."):]
+                        if not axis_name:
+                            errors.append(
+                                f"Action '{node.action.name}' has invalid system expansion "
+                                f"'{expansion.original_text}': axis name cannot be empty "
+                                f"(at {node.selected_version.location})"
+                            )
+                            continue
+
+                        # Validate that the axis is defined
+                        if axis_name not in self.document.axis:
+                            # Filter out built-in axes for the error message
+                            user_defined_axes = [
+                                name for name in self.document.axis.keys()
+                                if self.document.axis[name].location.file_path != "<built-in>"
+                            ]
+
+                            if user_defined_axes:
+                                errors.append(
+                                    f"Action '{node.action.name}' references undefined axis "
+                                    f"'{axis_name}' in '{expansion.original_text}'. "
+                                    f"Defined axes: {', '.join(sorted(user_defined_axes))} "
+                                    f"(at {node.selected_version.location})"
+                                )
+                            else:
+                                errors.append(
+                                    f"Action '{node.action.name}' references axis '{axis_name}' "
+                                    f"in '{expansion.original_text}', but no custom axes are defined. "
+                                    f"Add an 'Axis' section to your markdown file to define '{axis_name}' "
+                                    f"(at {node.selected_version.location})"
+                                )
+                    elif var_name not in KNOWN_SYS_VARS:
+                        # Unknown system variable
+                        errors.append(
+                            f"Action '{node.action.name}' uses unknown system variable "
+                            f"'{var_name}' in '{expansion.original_text}'. "
+                            f"Valid system variables: {', '.join(sorted(KNOWN_SYS_VARS))} "
+                            f"or use sys.axis.X for axis values "
+                            f"(at {node.selected_version.location})"
                         )
 
         if errors:
