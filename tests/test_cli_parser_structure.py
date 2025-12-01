@@ -28,9 +28,16 @@ def test_autocomplete_argument_accepts_modes():
 
     default_mode = parser.parse_args(["--autocomplete"])
     flags_mode = parser.parse_args(["--autocomplete", "flags"])
+    axis_names_mode = parser.parse_args(["--autocomplete", "axis-names"])
+    axis_values_mode = parser.parse_args(
+        ["--autocomplete", "axis-values", "--autocomplete-axis", "platform"]
+    )
 
     assert default_mode.autocomplete == "actions"
     assert flags_mode.autocomplete == "flags"
+    assert axis_names_mode.autocomplete == "axis-names"
+    assert axis_values_mode.autocomplete == "axis-values"
+    assert axis_values_mode.autocomplete_axis == "platform"
 
 
 def test_autocomplete_flags_include_cli_and_document_entries():
@@ -47,3 +54,37 @@ def test_autocomplete_flags_include_cli_and_document_entries():
     assert "--verbose" in flags
     assert "--no-out-on-fail" in flags
     assert "--par" in flags
+
+
+def test_autocomplete_axis_names_returns_defined_axes():
+    cli = CLI()
+    project_root = find_project_root()
+    md_files = cli._discover_markdown_files(
+        "tests/fixtures/defs/valid-axis-reference.md", project_root
+    )
+    document = MarkdownParser().parse_files(md_files)
+
+    axis_names = cli._list_axis_names(document)
+
+    assert "platform" in axis_names
+    assert "environment" in axis_names
+
+
+def test_autocomplete_axis_values_returns_values_for_axis():
+    cli = CLI()
+    project_root = find_project_root()
+    md_files = cli._discover_markdown_files(
+        "tests/fixtures/defs/valid-axis-reference.md", project_root
+    )
+    document = MarkdownParser().parse_files(md_files)
+
+    platform_values = cli._list_axis_values(document, "platform")
+    env_values = cli._list_axis_values(document, "environment")
+    unknown_values = cli._list_axis_values(document, "nonexistent")
+
+    assert "jvm" in platform_values
+    assert "js" in platform_values
+    assert "native" in platform_values
+    assert "dev" in env_values
+    assert "prod" in env_values
+    assert unknown_values == []

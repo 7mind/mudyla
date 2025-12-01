@@ -1,14 +1,138 @@
 #compdef mdl
 
-_mdl() {
-  local -a actions flags
+_mdl_complete_axis_value() {
+  local axis_name="$1"
+  local sep="$2"
+  local values
+  values=(${(f)"$(mdl --autocomplete axis-values --autocomplete-axis "$axis_name" 2>/dev/null)"})
+  if [[ ${#values[@]} -gt 0 ]]; then
+    local -a completions
+    for val in $values; do
+      completions+=("${axis_name}${sep}${val}")
+    done
+    compadd -a completions
+    return 0
+  fi
+  return 1
+}
 
-  if [[ ${words[$CURRENT]} == -* ]]; then
+_mdl_complete_axis_names() {
+  local axis_names
+  axis_names=(${(f)"$(mdl --autocomplete axis-names 2>/dev/null)"})
+  if [[ ${#axis_names[@]} -gt 0 ]]; then
+    local -a completions
+    for name in $axis_names; do
+      completions+=("${name}=")
+    done
+    compadd -S '' -a completions
+    return 0
+  fi
+  return 1
+}
+
+_mdl() {
+  local -a actions flags axis_names
+  local cur="${words[$CURRENT]}"
+  local prev="${words[$CURRENT-1]}"
+
+  # Axis option aliases
+  local -a axis_options
+  axis_options=(--axis --use -u -a)
+
+  # Check if previous word is an axis option
+  if (( $axis_options[(Ie)$prev] )); then
+    # Previous word is an axis option
+    if [[ "$cur" == *=* ]]; then
+      # Has = separator, suggest values
+      local axis_name="${cur%%=*}"
+      _mdl_complete_axis_value "$axis_name" "="
+      return
+    elif [[ "$cur" == *:* ]]; then
+      # Has : separator, suggest values
+      local axis_name="${cur%%:*}"
+      _mdl_complete_axis_value "$axis_name" ":"
+      return
+    else
+      # No separator yet, suggest axis names with =
+      _mdl_complete_axis_names
+      return
+    fi
+  fi
+
+  # Check if current word starts with an axis option (e.g., --axis=...)
+  for axis_opt in $axis_options; do
+    if [[ "$cur" == "${axis_opt}="* ]] || [[ "$cur" == "${axis_opt}:"* ]]; then
+      local sep="="
+      [[ "$cur" == "${axis_opt}:"* ]] && sep=":"
+      local remainder="${cur#${axis_opt}${sep}}"
+
+      if [[ "$remainder" == *=* ]]; then
+        # Format: --axis=platform=value
+        local axis_name="${remainder%%=*}"
+        local values
+        values=(${(f)"$(mdl --autocomplete axis-values --autocomplete-axis "$axis_name" 2>/dev/null)"})
+        if [[ ${#values[@]} -gt 0 ]]; then
+          local prefix="${axis_opt}${sep}${axis_name}="
+          local -a completions
+          for val in $values; do
+            completions+=("${prefix}${val}")
+          done
+          compadd -a completions
+          return
+        fi
+      elif [[ "$remainder" == *:* ]]; then
+        # Format: --axis=platform:value
+        local axis_name="${remainder%%:*}"
+        local values
+        values=(${(f)"$(mdl --autocomplete axis-values --autocomplete-axis "$axis_name" 2>/dev/null)"})
+        if [[ ${#values[@]} -gt 0 ]]; then
+          local prefix="${axis_opt}${sep}${axis_name}:"
+          local -a completions
+          for val in $values; do
+            completions+=("${prefix}${val}")
+          done
+          compadd -a completions
+          return
+        fi
+      else
+        # Format: --axis=axisnam - suggest axis names
+        axis_names=(${(f)"$(mdl --autocomplete axis-names 2>/dev/null)"})
+        if [[ ${#axis_names[@]} -gt 0 ]]; then
+          local -a completions
+          for name in $axis_names; do
+            completions+=("${axis_opt}${sep}${name}=")
+          done
+          compadd -S '' -a completions
+          return
+        fi
+      fi
+    fi
+  done
+
+  # Shorthand axis notation: axis_name=value or axis_name:value
+  if [[ "$cur" != -* ]]; then
+    if [[ "$cur" == *=* ]]; then
+      local axis_name="${cur%%=*}"
+      if _mdl_complete_axis_value "$axis_name" "="; then
+        return
+      fi
+    elif [[ "$cur" == *:* ]] && [[ "$cur" != :* ]]; then
+      # axis_name:value (but not :action)
+      local axis_name="${cur%%:*}"
+      if _mdl_complete_axis_value "$axis_name" ":"; then
+        return
+      fi
+    fi
+  fi
+
+  # Flags completion
+  if [[ ${cur} == -* ]]; then
     flags=(${(f)"$(mdl --autocomplete flags 2>/dev/null)"})
     _describe -t flags 'mudyla flag' flags
     return
   fi
 
+  # Actions completion
   actions=(${(f)"$(mdl --autocomplete actions 2>/dev/null)"})
   _describe -t actions 'mudyla action' actions -P ':'
 }

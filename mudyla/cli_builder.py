@@ -33,7 +33,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--autocomplete",
         nargs="?",
         const="actions",
-        choices=["actions", "flags"],
+        choices=["actions", "flags", "axis-names", "axis-values"],
+        help=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
+        "--autocomplete-axis",
+        type=str,
         help=argparse.SUPPRESS,
     )
 

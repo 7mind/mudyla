@@ -296,6 +296,13 @@ class CLI:
                 suggestions = self._list_action_names_ordered(document)
             elif mode == "flags":
                 suggestions = self._list_all_flags(document)
+            elif mode == "axis-names":
+                suggestions = self._list_axis_names(document)
+            elif mode == "axis-values":
+                axis_name = args.autocomplete_axis
+                if not axis_name:
+                    return 1
+                suggestions = self._list_axis_values(document, axis_name)
             else:
                 return 1
 
@@ -304,6 +311,17 @@ class CLI:
             return 0
         except Exception:
             return 1
+
+    def _list_axis_names(self, document: ParsedDocument) -> list[str]:
+        """Return all axis names defined in the document."""
+        return sorted(document.axis.keys())
+
+    def _list_axis_values(self, document: ParsedDocument, axis_name: str) -> list[str]:
+        """Return all values for a specific axis."""
+        if axis_name not in document.axis:
+            return []
+        axis_def = document.axis[axis_name]
+        return [av.value for av in axis_def.values]
 
     def _build_formatters(self, no_color: bool) -> tuple[ColorFormatter, OutputFormatter]:
         color = ColorFormatter(no_color=no_color)
