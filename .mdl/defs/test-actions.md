@@ -16,6 +16,9 @@
 - `HOME`
 - `USER`: The current user
 
+## more vars
+- `DISPLAY`
+
 # Axis
 
 - `build-mode`=`{release|development*}`
