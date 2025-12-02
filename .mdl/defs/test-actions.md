@@ -14,7 +14,7 @@
 # passthrough
 
 - `HOME`
-- `USER`
+- `USER`: The current user
 
 # Axis
 

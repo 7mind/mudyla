@@ -529,7 +529,7 @@ class MarkdownParser:
     def _parse_environment_section(
         self, section: Section, file_path: Path
     ) -> tuple[dict[str, str], list[str]]:
-        """Parse environment section with environment vars and passthrough subsection.
+        """Parse environment section with environment vars and passthrough vars.
 
         Returns:
             Tuple of (environment_vars, passthrough_vars)
@@ -537,38 +537,30 @@ class MarkdownParser:
         environment_vars = {}
         passthrough_vars = []
 
-        # Split content into main section and passthrough subsection
         content_lines = section.content.split("\n")
-        in_passthrough = False
 
         for line in content_lines:
             stripped = line.strip()
 
-            # Check for passthrough subsection header
-            if stripped.startswith("##") and "passthrough" in stripped.lower():
-                in_passthrough = True
-                continue
-
-            # Skip empty lines
-            if not stripped:
+            if stripped.startswith("#") or not stripped:
                 continue
 
             # Add leading "- " if not present for parser
             if not stripped.startswith("-"):
-                line = "- " + stripped
+                line_for_parser = "- " + stripped
             else:
-                line = stripped
+                line_for_parser = stripped
 
-            if in_passthrough:
-                # Parse as passthrough variable
-                var_name = parse_passthrough_definition(line)
-                if var_name:
-                    passthrough_vars.append(var_name)
-            else:
-                # Try parsing as environment variable with value first
-                env_def = parse_environment_definition(line)
-                if env_def:
-                    environment_vars[env_def["var_name"]] = env_def["value"]
+            # Try parsing as passthrough variable first
+            var_name = parse_passthrough_definition(line_for_parser)
+            if var_name:
+                passthrough_vars.append(var_name)
+                continue
+
+            # If not a passthrough, try as an environment variable with a value
+            env_def = parse_environment_definition(line_for_parser)
+            if env_def:
+                environment_vars[env_def["var_name"]] = env_def["value"]
 
         return environment_vars, passthrough_vars
 
