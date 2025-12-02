@@ -456,6 +456,9 @@ class ParsedDocument:
     passthrough_env_vars: list[str]
     """Environment variables to pass through from parent environment"""
 
+    required_env_vars: list[str] = field(default_factory=list)
+    """Environment variables that must be present in the parent environment"""
+
     properties: DocumentProperties = field(default_factory=DocumentProperties)
     """Global document-level properties"""
 

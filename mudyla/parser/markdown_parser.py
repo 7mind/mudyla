@@ -153,13 +153,21 @@ class MarkdownParser:
         all_axis: dict[str, AxisDefinition] = {}
         all_environment: dict[str, str] = {}
         all_passthrough: list[str] = []
+        all_required_env: list[str] = []
         properties = DocumentProperties()
 
         for file_path in file_paths:
             content = file_path.read_text()
-            actions, arguments, flags, axis, environment_vars, passthrough, file_properties = self._parse_file(
-                file_path, content
-            )
+            (
+                actions,
+                arguments,
+                flags,
+                axis,
+                environment_vars,
+                passthrough,
+                required_env,
+                file_properties,
+            ) = self._parse_file(file_path, content)
             properties = properties.merge(file_properties)
 
             # Check for duplicate actions
@@ -179,9 +187,11 @@ class MarkdownParser:
             all_axis.update(axis)
             all_environment.update(environment_vars)
             all_passthrough.extend(passthrough)
+            all_required_env.extend(required_env)
 
         # Remove duplicate passthrough vars
         all_passthrough = list(set(all_passthrough))
+        all_required_env = list(set(all_required_env))
 
         # Add built-in platform axis if not already defined by user
         if "platform" not in all_axis:
@@ -194,6 +204,7 @@ class MarkdownParser:
             axis=all_axis,
             environment_vars=all_environment,
             passthrough_env_vars=all_passthrough,
+            required_env_vars=all_required_env,
             properties=properties,
         )
 
@@ -206,12 +217,13 @@ class MarkdownParser:
         dict[str, AxisDefinition],
         dict[str, str],
         list[str],
+        list[str],
         DocumentProperties,
     ]:
         """Parse a single markdown file.
 
         Returns:
-            Tuple of (actions, arguments, flags, axis, environment_vars, passthrough, properties)
+            Tuple of (actions, arguments, flags, axis, environment_vars, passthrough, required_env, properties)
         """
         sections = self._extract_sections(content)
 
@@ -221,6 +233,7 @@ class MarkdownParser:
         axis = {}
         environment_vars = {}
         passthrough = []
+        required_env = []
         properties = DocumentProperties()
 
         for section in sections:
@@ -234,10 +247,16 @@ class MarkdownParser:
             elif title_lower == "axis":
                 axis = self._parse_axis_section(section, file_path)
             elif title_lower == "environment":
-                environment_vars, passthrough = self._parse_environment_section(section, file_path)
+                environment_vars, passthrough_from_env, required_from_env = self._parse_environment_section(section, file_path)
+                passthrough.extend(passthrough_from_env)
+                required_env.extend(required_from_env)
+                environment_vars.update(environment_vars)
+
             elif title_lower == "passthrough":
                 # Legacy support for top-level passthrough section
-                passthrough = self._parse_passthrough_section(section, file_path)
+                passthrough.extend(self._parse_passthrough_section(section, file_path))
+            elif title_lower == "required-env":
+                required_env.extend(self._parse_required_env_section(section, file_path))
             elif title_lower == "properties":
                 properties = self._parse_properties_section(section, file_path)
             else:
@@ -248,7 +267,7 @@ class MarkdownParser:
                     action = self._parse_action(section, action_name, file_path)
                     actions[action_name] = action
 
-        return actions, arguments, flags, axis, environment_vars, passthrough, properties
+        return actions, arguments, flags, axis, environment_vars, passthrough, required_env, properties
 
     def _extract_sections(self, content: str) -> list[Section]:
         """Extract all top-level (# ...) sections with accurate source lines."""
@@ -526,23 +545,52 @@ class MarkdownParser:
 
         return passthrough
 
+    def _parse_required_env_section(
+        self, section: Section, file_path: Path
+    ) -> list[str]:
+        """Parse required-env section using parser combinators."""
+        required = []
+        for line in section.content.split("\n"):
+            if line.strip() and not line.strip().startswith("-"):
+                line = "- " + line
+            var_name = parse_passthrough_definition(line)
+            if var_name:
+                required.append(var_name)
+        return required
+
     def _parse_environment_section(
         self, section: Section, file_path: Path
-    ) -> tuple[dict[str, str], list[str]]:
+    ) -> tuple[dict[str, str], list[str], list[str]]:
         """Parse environment section with environment vars and passthrough vars.
 
         Returns:
-            Tuple of (environment_vars, passthrough_vars)
+            Tuple of (environment_vars, passthrough_vars, required_env_vars)
         """
         environment_vars = {}
         passthrough_vars = []
+        required_env_vars = []
 
         content_lines = section.content.split("\n")
+        
+        in_passthrough = False
+        in_required_env = False
 
         for line in content_lines:
             stripped = line.strip()
 
-            if stripped.startswith("#") or not stripped:
+            # Check for subsection headers
+            if stripped.startswith("##"):
+                header_lower = stripped.lower()
+                if "passthrough" in header_lower:
+                    in_passthrough = True
+                    in_required_env = False
+                    continue
+                elif "required-env" in header_lower:
+                    in_required_env = True
+                    in_passthrough = False
+                    continue
+
+            if not stripped:
                 continue
 
             # Add leading "- " if not present for parser
@@ -551,19 +599,24 @@ class MarkdownParser:
             else:
                 line_for_parser = stripped
 
-            # Try parsing as passthrough variable first
-            var_name = parse_passthrough_definition(line_for_parser)
-            if var_name:
-                passthrough_vars.append(var_name)
-                continue
+            if in_passthrough:
+                var_name = parse_passthrough_definition(line_for_parser)
+                if var_name:
+                    passthrough_vars.append(var_name)
+            elif in_required_env:
+                var_name = parse_passthrough_definition(line_for_parser)
+                if var_name:
+                    required_env_vars.append(var_name)
+            else:
+                # Try parsing as environment variable with value first
+                env_def = parse_environment_definition(line_for_parser)
+                if env_def:
+                    environment_vars[env_def["var_name"]] = env_def["value"]
+                # A line could be a passthrough/required var even if not in a specific subsection
+                # but for now we keep the explicit subsection requirement.
 
-            # If not a passthrough, try as an environment variable with a value
-            env_def = parse_environment_definition(line_for_parser)
-            if env_def:
-                environment_vars[env_def["var_name"]] = env_def["value"]
-
-        return environment_vars, passthrough_vars
-
+        return environment_vars, passthrough_vars, required_env_vars
+		
     def _parse_properties_section(
         self, section: Section, file_path: Path
     ) -> DocumentProperties:

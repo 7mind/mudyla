@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import platform
 import sys
 from dataclasses import dataclass
@@ -80,6 +81,7 @@ class CLI:
 
         try:
             setup = self._prepare_execution_setup(args, parsed_inputs, color, output)
+            self._validate_required_env(setup.document)
 
             document = setup.document
             goals = setup.goals
@@ -269,6 +271,15 @@ class CLI:
             traceback.print_exc()
             return 1
 
+    def _validate_required_env(self, document: ParsedDocument):
+        missing_vars = []
+        for var in document.required_env_vars:
+            if var not in os.environ:
+                missing_vars.append(var)
+        
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
     def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
         """Apply platform specific defaults."""
         system = platform.system()
@@ -279,6 +290,7 @@ class CLI:
 
         if args.github_actions and system == "Windows" and not args.no_color:
             args.no_color = True
+
 
     def _handle_autocomplete(self, args: argparse.Namespace) -> int:
         """Handle autocomplete mode without noisy output."""
