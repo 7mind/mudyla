@@ -77,11 +77,13 @@ class MudylaGrammar:
             backtick
         )
 
-        # Passthrough env var: - `VARIABLE_NAME`
+        # Passthrough env var: - `VARIABLE_NAME` or - `VARIABLE_NAME`: comment
         # Example: - `HOME`
+        # Example: - `USER`: The current user
         self.passthrough_def = (
             Suppress("-") +
-            backtick + self.uppercase_identifier("var_name") + backtick
+            backtick + self.uppercase_identifier("var_name") + backtick +
+            Optional(Suppress(oneOf(": -")) + restOfLine)
         )
 
         # Vars definition: - `VARIABLE_NAME`: description
