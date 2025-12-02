@@ -1,3 +1,6 @@
+# required-env
+- `PATH`
+
 # arguments
 
 - `args.output-dir`: Output directory for test results
