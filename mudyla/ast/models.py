@@ -367,6 +367,26 @@ class ActionDefinition:
                             axis_names.add(axis_name)
         return axis_names
 
+    def get_required_args(self) -> set[str]:
+        """Get the set of argument names required by this action."""
+        from .expansions import ArgsExpansion
+        
+        arg_names: set[str] = set()
+        for expansion in self.get_all_expansions():
+            if isinstance(expansion, ArgsExpansion):
+                arg_names.add(expansion.argument_name)
+        return arg_names
+
+    def get_required_flags(self) -> set[str]:
+        """Get the set of flag names required by this action."""
+        from .expansions import FlagsExpansion
+        
+        flag_names: set[str] = set()
+        for expansion in self.get_all_expansions():
+            if isinstance(expansion, FlagsExpansion):
+                flag_names.add(expansion.flag_name)
+        return flag_names
+
     def get_all_expansions(self) -> list[Expansion]:
         """Get all expansions from all versions."""
         expansions = []

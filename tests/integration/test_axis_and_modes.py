@@ -140,8 +140,16 @@ class TestExecutionModes:
         first_run_dir = run_dirs[0]
 
         # Verify meta.json files exist
-        assert (first_run_dir / "create-directory" / "meta.json").exists()
-        assert (first_run_dir / "write-message" / "meta.json").exists()
+        # Handle potentially context-prefixed directory names
+        def find_action_dir(base_dir: Path, action_name: str) -> Path:
+            for p in base_dir.iterdir():
+                if p.is_dir():
+                    if p.name == action_name or p.name.endswith(f"#{action_name}"):
+                        return p
+            raise AssertionError(f"Directory for action '{action_name}' not found in {base_dir}")
+
+        assert (find_action_dir(first_run_dir, "create-directory") / "meta.json").exists()
+        assert (find_action_dir(first_run_dir, "write-message") / "meta.json").exists()
 
         # Second run - should restore from previous
         result2 = mdl.run_success(["--keep-run-dir", "--continue", ":create-directory", ":write-message"])

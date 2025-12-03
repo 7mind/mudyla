@@ -106,9 +106,6 @@ class DAGCompiler:
                     if default_value:
                         merged_axes[axis_name] = default_value
 
-            # Create context ID from all axis values
-            context_id = ContextId.from_dict(merged_axes)
-
             # Merge args: global + per-action
             merged_args = dict(self.cli_inputs.global_args)
             merged_args.update(invocation.args)
@@ -127,11 +124,14 @@ class DAGCompiler:
                 if flag_name not in merged_flags:
                     merged_flags[flag_name] = False
 
+            # Create context ID from all axis values, args, and flags
+            context_id = ContextId.from_dict(merged_axes, merged_args, merged_flags)
+
             # Create execution context
             execution_context = ExecutionContext(
                 context_id=context_id,
-                args=merged_args,
-                flags=merged_flags,
+                # args and flags are now in context_id, but ExecutionContext keeps them for convenient access
+                # (and they are properties that delegate to context_id)
             )
 
             contextual_invocations.append(
@@ -148,8 +148,8 @@ class DAGCompiler:
     ) -> ActionGraph:
         """Build a dependency graph for a single action invocation.
 
-        Each action gets a reduced context based on the axes it cares about.
-        This allows axis-independent actions to be shared across contexts.
+        Each action gets a reduced context based on the axes, args, and flags it cares about.
+        This allows independent actions to be shared across contexts.
 
         Args:
             invocation: Contextual invocation to build graph for
@@ -172,9 +172,12 @@ class DAGCompiler:
         nodes: Dict[ActionKey, ActionNode] = {}
 
         for action_name, action in self.document.actions.items():
-            # Compute reduced context based on axes this action cares about
+            # Compute reduced context based on what this action cares about
             required_axes = action.get_required_axes()
-            reduced_context_id = full_context_id.reduce_to_axes(required_axes)
+            required_args = action.get_required_args()
+            required_flags = action.get_required_flags()
+            
+            reduced_context_id = full_context_id.reduce(required_axes, required_args, required_flags)
             action_key = ActionKey.from_name(action_name, reduced_context_id)
 
             # Select appropriate version based on FULL axis values
@@ -189,17 +192,22 @@ class DAGCompiler:
             # Extract dependencies with their own reduced contexts
             dependencies: Set[Dependency] = set()
             if selected_version:
+                # Helper to calculate reduced context for a dependency
+                def get_dep_context_id(dep_name: str) -> ContextId:
+                    dep_action = self.document.actions.get(dep_name)
+                    if dep_action:
+                        return full_context_id.reduce(
+                            dep_action.get_required_axes(),
+                            dep_action.get_required_args(),
+                            dep_action.get_required_flags()
+                        )
+                    return reduced_context_id
+
                 # Implicit dependencies from expansions
                 for expansion in selected_version.expansions:
                     if isinstance(expansion, (ActionExpansion, WeakActionExpansion)):
                         dep_name = expansion.get_dependency_action()
-                        # Get dependency's reduced context based on its required axes
-                        dep_action = self.document.actions.get(dep_name)
-                        if dep_action:
-                            dep_required_axes = dep_action.get_required_axes()
-                            dep_context_id = full_context_id.reduce_to_axes(dep_required_axes)
-                        else:
-                            dep_context_id = reduced_context_id
+                        dep_context_id = get_dep_context_id(dep_name)
                         dep_key = ActionKey.from_name(dep_name, dep_context_id)
                         is_weak = isinstance(expansion, WeakActionExpansion)
                         dependencies.add(Dependency(action=dep_key, weak=is_weak))
@@ -207,23 +215,11 @@ class DAGCompiler:
                 # Explicit dependencies
                 for dep_decl in selected_version.dependency_declarations:
                     dep_name = dep_decl.action_name
-                    # Get dependency's reduced context based on its required axes
-                    dep_action = self.document.actions.get(dep_name)
-                    if dep_action:
-                        dep_required_axes = dep_action.get_required_axes()
-                        dep_context_id = full_context_id.reduce_to_axes(dep_required_axes)
-                    else:
-                        dep_context_id = reduced_context_id
+                    dep_context_id = get_dep_context_id(dep_name)
                     dep_key = ActionKey.from_name(dep_name, dep_context_id)
 
                     if dep_decl.soft and dep_decl.retainer_action:
-                        # Get retainer's reduced context
-                        retainer_action = self.document.actions.get(dep_decl.retainer_action)
-                        if retainer_action:
-                            retainer_required_axes = retainer_action.get_required_axes()
-                            retainer_context_id = full_context_id.reduce_to_axes(retainer_required_axes)
-                        else:
-                            retainer_context_id = reduced_context_id
+                        retainer_context_id = get_dep_context_id(dep_decl.retainer_action)
                         retainer_key = ActionKey.from_name(dep_decl.retainer_action, retainer_context_id)
                         dependencies.add(Dependency(
                             action=dep_key,
@@ -238,8 +234,10 @@ class DAGCompiler:
                 action=action,
                 selected_version=selected_version,
                 dependencies=dependencies,
-                args=invocation.execution_context.args,
-                flags=invocation.execution_context.flags,
+                # args and flags are now in key.context_id
+                # We keep them here for backward compatibility but they should match key
+                args=reduced_context_id.get_args_dict(),
+                flags=reduced_context_id.get_flags_dict(),
             )
             nodes[action_key] = node
 
@@ -253,8 +251,11 @@ class DAGCompiler:
 
         # Goal uses the goal action's reduced context
         goal_action = self.document.actions[goal_action_name]
-        goal_required_axes = goal_action.get_required_axes()
-        goal_context_id = full_context_id.reduce_to_axes(goal_required_axes)
+        goal_context_id = full_context_id.reduce(
+            goal_action.get_required_axes(),
+            goal_action.get_required_args(),
+            goal_action.get_required_flags()
+        )
         goal_key = ActionKey.from_name(goal_action_name, goal_context_id)
         goal_keys = {goal_key}
 

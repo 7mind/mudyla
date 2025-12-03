@@ -18,8 +18,13 @@ def project_root() -> Path:
 
 @pytest.fixture(scope="session")
 def mdl_command(project_root: Path) -> list[str]:
-    """Return the command to run mudyla via nix."""
-    return ["nix", "run", str(project_root), "--"]
+    """Return the command to run mudyla via python module.
+    
+    Using python -m mudyla allows running against local changes without
+    waiting for nix rebuilds.
+    """
+    import sys
+    return [sys.executable, "-m", "mudyla"]
 
 
 @pytest.fixture

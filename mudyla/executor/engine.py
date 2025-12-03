@@ -84,7 +84,7 @@ class ExecutionResult:
             action_keys: List of ActionKeys to include
 
         Returns:
-            Dictionary with nested structure by axes, then action name
+            Dictionary with nested structure by axes, args, flags, then action name
         """
         result = {}
         for action_key in action_keys:
@@ -95,22 +95,38 @@ class ExecutionResult:
             if action_key_str in self.action_results:
                 action_result = self.action_results[action_key_str]
 
-                # Get the axis values from the context (already sorted by name)
-                axis_values = action_key.context_id.axis_values
                 action_name = action_key.id.name
+                context_id = action_key.context_id
+                
+                # Collect all differentiation components in order
+                # 1. Axis values
+                # 2. Arguments
+                # 3. Flags
+                
+                path_components = []
+                for name, value in context_id.axis_values:
+                    path_components.append((name, value))
+                
+                # Arguments are tuples of (name, value)
+                for name, value in context_id.args:
+                    path_components.append((f"args.{name}", value))
+                    
+                # Flags are tuples of (name, bool)
+                for name, value in context_id.flags:
+                    path_components.append((f"flags.{name}", str(value).lower()))
 
-                # Build nested structure: navigate through axes in sorted order
+                # Build nested structure: navigate through all components
                 current = result
-                for axis_name, axis_value in axis_values:
-                    # Create axis_name level if needed
-                    if axis_name not in current:
-                        current[axis_name] = {}
-                    current = current[axis_name]
+                for comp_name, comp_value in path_components:
+                    # Create component name level if needed
+                    if comp_name not in current:
+                        current[comp_name] = {}
+                    current = current[comp_name]
 
-                    # Create axis_value level if needed
-                    if axis_value not in current:
-                        current[axis_value] = {}
-                    current = current[axis_value]
+                    # Create component value level if needed
+                    if comp_value not in current:
+                        current[comp_value] = {}
+                    current = current[comp_value]
 
                 # At the deepest level, add the action outputs
                 if action_name in current:
