@@ -63,13 +63,13 @@ See [Installation Guide](docs/installation.md) for more details.
 
 1.  **Create `.mdl/defs/actions.md`**:
 
-    ```markdown
+    ````markdown
     # action: hello-world
     ```bash
     echo "Hello, World!"
     ret message:string=Hello
-    \```
     ```
+    ````
 
 2.  **Run**:
 

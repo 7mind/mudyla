@@ -6,9 +6,9 @@ Actions are the core units of work in Mudyla. They are defined in Markdown files
 
 An action is defined by a header starting with `# action: <name>`. The name must be kebab-case.
 
-```markdown
+````markdown
 # action: build-app
-```
+````
 
 ## Runtimes
 
@@ -18,7 +18,7 @@ Mudyla supports Bash and Python actions.
 
 Bash actions use standard shell script syntax.
 
-```markdown
+````markdown
 # action: bash-example
 
 ```bash
@@ -26,7 +26,7 @@ set -euo pipefail
 echo "Running in Bash"
 ret status:string="success"
 ```
-```
+````
 
 **Features:**
 *   **Expansions**: Use `${sys.root}`, `${env.VAR}`, `${args.arg}` syntax.
@@ -37,7 +37,7 @@ ret status:string="success"
 
 Python actions allow for complex logic using the `mdl` object.
 
-```markdown
+````markdown
 # action: python-example
 
 ```python
@@ -45,7 +45,7 @@ import os
 print("Running in Python")
 mdl.ret("status", "success", "string")
 ```
-```
+````
 
 **Features:**
 *   **`mdl` API**: Access args, flags, env, and dependencies via the `mdl` object.
@@ -66,8 +66,8 @@ Actions must return typed values. These are validated at runtime.
 
 You can define document-wide properties at the top of the Markdown file.
 
-```markdown
+````markdown
 # properties
 
 - `sequential` # Forces sequential execution for actions in this file
-```
+````

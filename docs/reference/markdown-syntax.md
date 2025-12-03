@@ -6,25 +6,25 @@ Mudyla parses Markdown files in `.mdl/defs/`.
 
 ### Arguments
 
-```markdown
+````markdown
 # arguments
 
 - `args.name`: Description
   - type: `string` | `int` | `file` | `directory`
   - default: `"value"`
-```
+````
 
 ### Flags
 
-```markdown
+````markdown
 # flags
 
 - `flags.debug`: Enable debug mode
-```
+````
 
 ### Environment
 
-```markdown
+````markdown
 # environment
 
 - `LANG=C.UTF-8`
@@ -33,19 +33,19 @@ Mudyla parses Markdown files in `.mdl/defs/`.
 
 - `HOME`
 - `PATH`
-```
+````
 
 ### Axes
 
-```markdown
+````markdown
 # Axis
 
 - `mode`=`{dev*|prod}`
-```
+````
 
 ## Action Sections
 
-```markdown
+````markdown
 # action: name
 
 ## vars
@@ -56,7 +56,7 @@ Mudyla parses Markdown files in `.mdl/defs/`.
 ```bash
 ...
 ```
-```
+````
 
 (Note: Code blocks use triple backticks).
 
@@ -74,4 +74,3 @@ Inside Bash blocks:
 ```bash
 ret name:type=value
 ```
-

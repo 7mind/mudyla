@@ -6,19 +6,19 @@ Mudyla is designed for multi-dimensional builds (e.g., cross-compilation, testin
 
 Axes define the dimensions of your build matrix.
 
-```markdown
+````markdown
 # Axis
 
 - `os`=`{linux*|windows|macos}`
 - `python`=`{3.10|3.11*}`
-```
+````
 (The `*` denotes the default value).
 
 ## Multi-Version Actions
 
 You can define different implementations for an action based on axis values or the current platform.
 
-```markdown
+````markdown
 # action: install
 
 ## definition when `os: linux`
@@ -35,7 +35,7 @@ choco install ...
 ```bash
 echo "Generic install"
 ```
-```
+````
 
 **Specificity**: The most specific matching definition (most conditions) is selected.
 
@@ -50,5 +50,3 @@ Mudyla optimizes the graph by reducing contexts. If an action `fetch-source` doe
 
 *   **Shared Execution**: Actions are unified if their effective contexts (relevant axes) are identical.
 *   **Visual Output**: The execution plan shows `(⏬ N ctx)` indicating an action is shared by N contexts.
-
-```

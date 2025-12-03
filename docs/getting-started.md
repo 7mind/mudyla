@@ -20,7 +20,7 @@ my-project/
 
 Edit `.mdl/defs/build.md` to define your first actions.
 
-```markdown
+````markdown
 # arguments
 
 - `args.out`: Output directory
@@ -45,7 +45,7 @@ mkdir -p "${args.out}"
 echo "${action.hello.greeting}" > "${args.out}/hello.txt"
 ret file:file="${args.out}/hello.txt"
 ```
-```
+````
 
 ## 3. Run Actions
 
@@ -71,4 +71,3 @@ cat dist/hello.txt
 *   Learn about [Actions](concepts/actions.md) in depth.
 *   Explore [Dependencies](concepts/dependencies.md).
 *   Use [Python actions](concepts/actions.md#python-actions) for more complex logic.
-
