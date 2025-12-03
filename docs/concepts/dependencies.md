@@ -18,18 +18,43 @@ dep action.compile
 
 ## Soft Dependencies (`soft`)
 
-Soft dependencies allow an action to depend on another *only if* a decider action retains it. This is useful for feature flags.
+Soft dependencies allow an action to depend on another *only if* a decider action (the "retainer") explicitly signals that it should be kept. This is useful for feature flags or conditional execution based on runtime checks.
 
 Syntax: `soft action.<target> retain.action.<decider>`
 
 ```bash
 # In action: pipeline
-soft action.extra-tests retain.action.should-test
+soft action.extra-tests retain.action.check-feature-flag
 ```
 
-The `extra-tests` action will only run if:
-1.  `should-test` runs successfully.
-2.  `should-test` calls `mdl.retain()` (Python) or returns specific signal (implementation detail: usually via Python API `mdl.retain()`).
+The `extra-tests` action will **only** run if:
+1.  `check-feature-flag` runs successfully.
+2.  `check-feature-flag` explicitly signals retention.
+
+### Implementing a Retainer
+
+The retainer action must signal its decision using the `retain` command (Bash) or `mdl.retain()` (Python).
+
+**Bash Retainer:**
+
+```bash
+# action: check-feature-flag
+# ... check logic ...
+if [ "$FEATURE_ENABLED" = "true" ]; then
+    retain
+fi
+```
+
+**Python Retainer:**
+
+```python
+# action: check-feature-flag
+# ... check logic ...
+if feature_enabled:
+    mdl.retain()
+```
+
+If the function/command is *not* called, the soft dependency target (`extra-tests`) is dropped from the execution graph (unless it is required by some other strong dependency).
 
 ## Weak Dependencies (`weak`)
 

@@ -67,10 +67,16 @@ Mudyla parses Markdown files in `.mdl/defs/`.
 *   `soft action.name retain.action.decider`
 *   `weak action.name`
 
-## Return Values (Bash)
+## Commands (Bash)
 
-Inside Bash blocks:
+Inside Bash blocks, Mudyla injects specific helper functions:
 
+**Return Output:**
 ```bash
 ret name:type=value
+```
+
+**Signal Retention (for Soft Dependencies):**
+```bash
+retain
 ```
