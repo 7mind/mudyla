@@ -6,7 +6,7 @@ execution. For multi-context support, use DAGCompiler instead.
 
 import platform
 
-from ..ast.expansions import ActionExpansion, WeakActionExpansion
+from ..ast.expansions import ActionExpansion, WeakActionExpansion, RetainedExpansion
 from ..ast.models import ParsedDocument
 from .context import ContextId
 from .graph import ActionGraph, ActionNode, ActionKey, Dependency
@@ -83,11 +83,11 @@ class DAGBuilder:
             if selected_version:
                 # Implicit dependencies from ${action.*} and ${action.weak.*} expansions
                 for expansion in selected_version.expansions:
-                    if isinstance(expansion, (ActionExpansion, WeakActionExpansion)):
+                    if isinstance(expansion, (ActionExpansion, WeakActionExpansion, RetainedExpansion)):
                         dep_name = expansion.get_dependency_action()
                         # Dependencies in same context
                         dep_key = ActionKey.from_name(dep_name, context_id)
-                        is_weak = isinstance(expansion, WeakActionExpansion)
+                        is_weak = isinstance(expansion, (WeakActionExpansion, RetainedExpansion))
                         dependencies.add(Dependency(action=dep_key, weak=is_weak))
 
                 # Explicit dependencies from dep/weak/soft declarations

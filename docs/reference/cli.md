@@ -13,6 +13,7 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--verbose`: Stream output to console (simple format).
 *   `--github-actions`: Stream output with GitHub Actions grouping markers.
 *   `--without-nix`: Run without Nix isolation (default on Windows).
+*   `--force-nix`: Force Nix integration even if it would normally be skipped (e.g., on Windows).
 
 ## Arguments & Flags
 

@@ -17,12 +17,30 @@ Declares a dependency.
 ### `mdl.retain()`
 Used in **retainer actions** for soft dependencies. Signals that the soft dependency target should be kept.
 
+### `mdl.is_retained(action_name)`
+Checks if an action was retained/executed. Useful for weak/soft dependencies.
+Returns `True` if the action's output is available, `False` otherwise.
+```python
+if mdl.is_retained("optional-action"):
+    print("Optional action ran!")
+```
+
 ## Properties
 
 ### `mdl.actions`
-Access outputs of other actions.
+Access outputs of other actions (Strong dependency).
+Raises an error if the action output is missing.
 ```python
 val = mdl.actions["other-action"]["output-name"]
+```
+
+### `mdl.actions` (Weak/Soft Access)
+To access outputs safely for **soft** or **weak** dependencies, use dictionary methods to avoid errors if the action was pruned.
+
+```python
+# Safe access for weak/soft dependencies
+outputs = mdl.actions.get("optional-action", {})
+val = outputs.get("output-name", "") # Default to empty if missing
 ```
 
 ### `mdl.args`

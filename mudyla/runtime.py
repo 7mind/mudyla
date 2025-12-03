@@ -61,6 +61,20 @@ class MudilaContext:
         """Outputs from previous actions."""
         return self._data.get("actions", {})
 
+    def is_retained(self, action_name: str) -> bool:
+        """
+        Check if an action was retained (its output is available).
+        
+        Useful for checking weak/soft dependencies.
+        
+        Args:
+            action_name: Name of the action to check
+            
+        Returns:
+            True if the action was retained and executed, False otherwise
+        """
+        return action_name in self.actions
+
     def dep(self, dependency: str) -> None:
         """
         Declare a dependency (no-op at runtime, used for parsing).

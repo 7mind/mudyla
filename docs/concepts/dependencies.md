@@ -56,11 +56,49 @@ if feature_enabled:
 
 If the function/command is *not* called, the soft dependency target (`extra-tests`) is dropped from the execution graph (unless it is required by some other strong dependency).
 
+### Checking Retention Status
+
+You can check if a soft or weak dependency was retained (executed) without accessing its output.
+
+**Bash:** Use `${retained.weak.<action>}` or `${retained.soft.<action>}` (returns "1" or "0").
+
+```bash
+if [ "${retained.soft.extra-tests}" = "1" ]; then
+    echo "Tests were run!"
+fi
+```
+
+**Python:** Use `mdl.is_retained("action-name")`.
+
+```python
+if mdl.is_retained("extra-tests"):
+    print("Tests were run!")
+```
+
+### Accessing Outputs
+
+Since a soft dependency target might be pruned (skipped), you **must** use the `weak` expansion syntax to access its outputs safely.
+
+*   **Correct**: `${action.weak.extra-tests.result}` -> Returns `""` (empty string) if action was skipped.
+*   **Incorrect**: `${action.extra-tests.result}` -> **Crashes** with an error if action was skipped.
+
+```bash
+# Safe access
+RESULT="${action.weak.extra-tests.result}"
+if [ -n "$RESULT" ]; then
+    echo "Tests ran: $RESULT"
+else
+    echo "Tests skipped"
+fi
+```
+
+**Warning**: Using the strong syntax `${action.extra-tests.result}` implicitly creates a **strong dependency**, which forces the action to run regardless of the retainer's decision, effectively defeating the purpose of `soft`.
+
 ## Weak Dependencies (`weak`)
 
 Weak dependencies are "best-effort". They run only if the target action is *already* part of the execution graph (retained by a strong dependency elsewhere).
 
-Syntax: `weak action.<target>` or `${action.weak.<target>.output}`.
+Syntax: `weak action.<target>` or implicit via `${action.weak.<target>.output}`.
 
 ```bash
 # In action: report
@@ -68,7 +106,7 @@ weak action.optional-metrics
 echo "Metrics: ${action.weak.optional-metrics.file}"
 ```
 
-If `optional-metrics` is running (because someone else needs it), `report` will wait for it and get the file. If not, the expansion resolves to an empty string, and `report` runs without it.
+If `optional-metrics` is running (because someone else needs it), `report` will wait for it and get the file. If not, the expansion resolves to an empty string `""`, and `report` runs without it.
 
 ## Environment Dependencies
 

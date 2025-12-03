@@ -194,3 +194,25 @@ class FlagsExpansion(Expansion):
             raise ValueError(f"Flag '{self.flag_name}' not found in context")
         # Flags are always 0 or 1
         return "1" if flags[self.flag_name] else "0"
+
+
+@dataclass(frozen=True)
+class RetainedExpansion(Expansion):
+    """Retained check expansion: ${retained.weak.action-name} or ${retained.soft.action-name}"""
+
+    action_name: str
+
+    def get_type(self) -> ExpansionType:
+        return ExpansionType.RETAINED
+
+    def resolve(self, context: dict[str, Any]) -> str:
+        actions = context.get("actions", {})
+        return "1" if self.action_name in actions else "0"
+
+    def get_dependency_action(self) -> str:
+        """Get the action name this expansion depends on."""
+        return self.action_name
+
+    def is_weak(self) -> bool:
+        """Return True to indicate this is a weak dependency."""
+        return True

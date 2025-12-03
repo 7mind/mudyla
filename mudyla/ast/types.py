@@ -43,3 +43,4 @@ class ExpansionType(Enum):
     ENV = "env"
     ARGS = "args"
     FLAGS = "flags"
+    RETAINED = "retained"

@@ -11,6 +11,7 @@ from ..ast.expansions import (
     EnvExpansion,
     ArgsExpansion,
     FlagsExpansion,
+    RetainedExpansion,
 )
 
 
@@ -78,6 +79,8 @@ class ExpansionParser:
             return cls._parse_args_expansion(original_text, parts)
         elif prefix == "flags":
             return cls._parse_flags_expansion(original_text, parts)
+        elif prefix == "retained":
+            return cls._parse_retained_expansion(original_text, parts)
         else:
             raise ValueError(
                 f"Unknown expansion prefix '{prefix}' in: {original_text}. "
@@ -189,3 +192,32 @@ class ExpansionParser:
             )
         flag_name = parts[1]
         return FlagsExpansion(original_text=original_text, flag_name=flag_name)
+
+    @classmethod
+    def _parse_retained_expansion(
+        cls, original_text: str, parts: list[str]
+    ) -> RetainedExpansion:
+        """Parse retained expansion: ${retained.weak.action-name} or ${retained.soft.action-name}"""
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid retained expansion: {original_text}. "
+                "Expected format: ${{retained.weak.action-name}} or ${{retained.soft.action-name}}"
+            )
+        
+        rest_parts = parts[1].split(".", 1)
+        if len(rest_parts) != 2:
+             raise ValueError(
+                f"Invalid retained expansion: {original_text}. "
+                "Expected format: ${{retained.weak.action-name}} or ${{retained.soft.action-name}}"
+            )
+            
+        type_qualifier = rest_parts[0]
+        action_name = rest_parts[1]
+        
+        if type_qualifier not in ("weak", "soft"):
+             raise ValueError(
+                f"Invalid retained expansion: {original_text}. "
+                "Expected 'weak' or 'soft' qualifier."
+            )
+
+        return RetainedExpansion(original_text=original_text, action_name=action_name)

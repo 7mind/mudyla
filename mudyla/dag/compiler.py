@@ -11,7 +11,7 @@ import platform
 from dataclasses import dataclass
 from typing import Dict, List, Set
 
-from ..ast.expansions import ActionExpansion, WeakActionExpansion
+from ..ast.expansions import ActionExpansion, WeakActionExpansion, RetainedExpansion
 from ..ast.models import ParsedDocument
 from ..cli_args import ParsedCLIInputs, ActionInvocation
 from .context import ContextId, ExecutionContext
@@ -205,11 +205,12 @@ class DAGCompiler:
 
                 # Implicit dependencies from expansions
                 for expansion in selected_version.expansions:
-                    if isinstance(expansion, (ActionExpansion, WeakActionExpansion)):
+                    if isinstance(expansion, (ActionExpansion, WeakActionExpansion, RetainedExpansion)):
                         dep_name = expansion.get_dependency_action()
                         dep_context_id = get_dep_context_id(dep_name)
                         dep_key = ActionKey.from_name(dep_name, dep_context_id)
-                        is_weak = isinstance(expansion, WeakActionExpansion)
+                        # RetainedExpansion behaves like WeakActionExpansion for dependency purposes
+                        is_weak = isinstance(expansion, (WeakActionExpansion, RetainedExpansion))
                         dependencies.add(Dependency(action=dep_key, weak=is_weak))
 
                 # Explicit dependencies

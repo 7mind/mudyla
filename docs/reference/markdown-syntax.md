@@ -67,6 +67,17 @@ Mudyla parses Markdown files in `.mdl/defs/`.
 *   `soft action.name retain.action.decider`
 *   `weak action.name`
 
+## Expansions
+
+*   `${sys.project-root}`
+*   `${env.VAR_NAME}`
+*   `${args.arg-name}`
+*   `${flags.flag-name}`
+*   `${action.action-name.output}` (Strong dependency)
+*   `${action.weak.action-name.output}` (Weak access, returns "" if missing)
+*   `${retained.weak.action-name}` (Returns "1" if present, "0" if missing)
+*   `${retained.soft.action-name}` (Alias for above)
+
 ## Commands (Bash)
 
 Inside Bash blocks, Mudyla injects specific helper functions:

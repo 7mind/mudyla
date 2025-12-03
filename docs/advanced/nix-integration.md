@@ -18,8 +18,12 @@ By default, Mudyla executes Bash actions using `nix develop`.
 ## Running Without Nix
 
 You can disable Nix integration using `--without-nix`. This is useful for:
-*   Windows (default).
-*   Docker containers.
-*   Quick local testing.
+*   Windows (automatically enabled on Windows).
+*   Environments without Nix installed (e.g., some Docker containers).
+*   Quick local testing when full Nix isolation is not needed.
 
 When disabled, Mudyla uses the system `bash` (or Git Bash on Windows) and inherits the full parent environment.
+
+## Forcing Nix Integration
+
+Even if Mudyla detects an environment where Nix is typically disabled (like Windows), you can force Nix integration using the `--force-nix` flag. This requires a working Nix installation and is primarily useful for development or debugging Nix-related issues on platforms where it's usually skipped.
