@@ -283,10 +283,38 @@ class CLI:
     def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
         """Apply platform specific defaults."""
         system = platform.system()
-        if system == "Windows" and not args.without_nix:
-            args.without_nix = True
-            if not quiet_mode:
-                print("Note: Running on Windows - automatically enabling --without-nix mode")
+        
+        # Determine Nix usage
+        use_nix_env = os.environ.get("MUDYLA_USE_NIX", "").lower()
+        
+        # Nix is enabled by default only on Linux
+        nix_default_on = system == "Linux"
+        
+        using_nix = False
+        reason = ""
+        
+        if args.force_nix:
+            using_nix = True
+            reason = "forced with --force-nix"
+        elif args.without_nix:
+            using_nix = False
+            reason = "disabled with --without-nix"
+        elif use_nix_env == "force-on":
+            using_nix = True
+            reason = "forced with MUDYLA_USE_NIX=force-on"
+        elif use_nix_env == "force-off":
+            using_nix = False
+            reason = "disabled with MUDYLA_USE_NIX=force-off"
+        else:
+            using_nix = nix_default_on
+            reason = f"default for {system}"
+            
+        # Update args
+        args.without_nix = not using_nix
+        
+        if not quiet_mode:
+            state = "Yes" if using_nix else "No"
+            print(f"Using Nix: {state} ({reason})")
 
         if args.github_actions and system == "Windows" and not args.no_color:
             args.no_color = True

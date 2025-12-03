@@ -71,6 +71,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--force-nix",
+        dest="force_nix",
+        action="store_true",
+        help="Force running with Nix (overrides defaults and environment variables)",
+    )
+
+    parser.add_argument(
         "--verbose",
         dest="verbose",
         action="store_true",
