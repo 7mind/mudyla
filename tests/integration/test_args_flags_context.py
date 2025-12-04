@@ -38,10 +38,11 @@ class TestArgsFlagsContext:
         # So build should be shared.
         
         mdl.assert_in_output(result, "flags.check:true")
-        mdl.assert_in_output(result, "flags.check:false")
+        # Implicit flags no longer show as "flags.check:false" in context name, they map to default
+        # But the split should still happen (true vs default)
         
         # Shared compile -> Shared build -> 2 tests
-        # Actions: compile, build, test(true), test(false) = 4 actions
+        # Actions: compile, build, test(true), test(false/default) = 4 actions
         mdl.assert_in_output(result, "4 required action(s)")
 
     def test_independent_action_sharing(self, mdl: MudylaRunner, clean_test_output):

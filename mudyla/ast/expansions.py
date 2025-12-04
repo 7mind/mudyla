@@ -200,9 +200,9 @@ class FlagsExpansion(Expansion):
 
     def resolve(self, context: dict[str, Any]) -> str:
         flags = context.get("flags", {})
+        # Treat missing flags as False (0)
         if self.flag_name not in flags:
-            raise ValueError(f"Flag '{self.flag_name}' not found in context")
-        # Flags are always 0 or 1
+            return "0"
         return "1" if flags[self.flag_name] else "0"
 
 

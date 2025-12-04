@@ -119,11 +119,6 @@ class DAGCompiler:
             merged_flags = dict(self.cli_inputs.global_flags)
             merged_flags.update(invocation.flags)
 
-            # Initialize all defined flags to False if not present
-            for flag_name in self.document.flags:
-                if flag_name not in merged_flags:
-                    merged_flags[flag_name] = False
-
             # Create context ID from all axis values, args, and flags
             context_id = ContextId.from_dict(merged_axes, merged_args, merged_flags)
 
