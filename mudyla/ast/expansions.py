@@ -35,6 +35,21 @@ class Expansion(ABC):
         pass
 
 
+def to_bash_value(value: Any) -> str:
+    """Convert a value to a bash-compatible string.
+
+    - None -> ""
+    - True -> "1"
+    - False -> "0"
+    - Other -> str(value)
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)
+
+
 @dataclass(frozen=True)
 class SystemExpansion(Expansion):
     """System variable expansion: ${sys.variable-name}"""
@@ -56,14 +71,14 @@ class SystemExpansion(Expansion):
                 raise ValueError(
                     f"Axis '{axis_name}' not found in context for expansion '{self.original_text}'"
                 )
-            return str(axis_values[axis_name])
+            return to_bash_value(axis_values[axis_name])
 
         sys_vars = context.get("sys", {})
         if self.variable_name not in sys_vars:
             raise ValueError(
                 f"System variable '{self.variable_name}' not found in context"
             )
-        return str(sys_vars[self.variable_name])
+        return to_bash_value(sys_vars[self.variable_name])
 
 
 @dataclass(frozen=True)
@@ -89,7 +104,7 @@ class ActionExpansion(Expansion):
                 f"Variable '{self.variable_name}' not found in action '{self.action_name}' outputs"
             )
 
-        return str(action_outputs[self.variable_name])
+        return to_bash_value(action_outputs[self.variable_name])
 
     def get_dependency_action(self) -> str:
         """Get the action name this expansion depends on."""
@@ -129,12 +144,7 @@ class WeakActionExpansion(Expansion):
             return ""
 
         value = action_outputs[self.variable_name]
-
-        # Handle None values (return empty string)
-        if value is None:
-            return ""
-
-        return str(value)
+        return to_bash_value(value)
 
     def get_dependency_action(self) -> str:
         """Get the action name this expansion depends on."""
@@ -160,7 +170,7 @@ class EnvExpansion(Expansion):
             raise ValueError(
                 f"Environment variable '{self.variable_name}' not found in context"
             )
-        return str(env_vars[self.variable_name])
+        return to_bash_value(env_vars[self.variable_name])
 
 
 @dataclass(frozen=True)
@@ -176,7 +186,7 @@ class ArgsExpansion(Expansion):
         args = context.get("args", {})
         if self.argument_name not in args:
             raise ValueError(f"Argument '{self.argument_name}' not found in context")
-        return str(args[self.argument_name])
+        return to_bash_value(args[self.argument_name])
 
 
 @dataclass(frozen=True)
