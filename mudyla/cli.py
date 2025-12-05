@@ -461,7 +461,10 @@ class CLI:
         pattern = Path(defs_pattern)
         if not pattern.is_absolute():
             pattern = project_root / defs_pattern
-        matches = [Path(path) for path in glob(str(pattern), recursive=True)]
+        matches = [
+            Path(path) for path in glob(str(pattern), recursive=True)
+            if Path(path).is_file() and path.endswith('.md')
+        ]
         return matches
 
     def _apply_default_axis_values(

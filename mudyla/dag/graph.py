@@ -237,12 +237,14 @@ class ActionGraph:
         Raises:
             ValueError: If graph contains cycles
         """
-        # Kahn's algorithm - count all dependencies (strong and weak)
+        # Kahn's algorithm - count only dependencies that are in the graph
         in_degree = {key: 0 for key in self.nodes}
 
         for node in self.nodes.values():
-            # Count number of dependencies (all types)
-            in_degree[node.key] = len(node.dependencies)
+            # Count UNIQUE dependency actions that are in the graph
+            # (Multiple Dependency objects can point to the same target with different retainers)
+            unique_dep_actions = {dep.action for dep in node.dependencies if dep.action in self.nodes}
+            in_degree[node.key] = len(unique_dep_actions)
 
         queue = [key for key, degree in in_degree.items() if degree == 0]
         result: list[ActionKey] = []
@@ -255,24 +257,33 @@ class ActionGraph:
 
             node = self.nodes[action_key]
             for dependent in node.dependents:
-                in_degree[dependent.action] -= 1
-                if in_degree[dependent.action] == 0:
-                    queue.append(dependent.action)
+                # Only decrement if the dependent is in the graph
+                if dependent.action in in_degree:
+                    in_degree[dependent.action] -= 1
+                    if in_degree[dependent.action] == 0:
+                        queue.append(dependent.action)
 
         if len(result) != len(self.nodes):
-            # Graph has a cycle
-            remaining = set(self.nodes.keys()) - set(result)
-            remaining_names = sorted(str(k) for k in remaining)
-            raise ValueError(
-                f"Dependency graph contains cycles. Actions involved: {', '.join(remaining_names)}"
-            )
+            # Graph has a cycle - find and report the actual cycle path
+            cycle = self.find_cycle()
+            if cycle:
+                cycle_path = " -> ".join(str(k) for k in cycle)
+                raise ValueError(f"Dependency graph contains a cycle: {cycle_path}")
+            else:
+                # Fallback if we can't find the cycle (shouldn't happen)
+                remaining = set(self.nodes.keys()) - set(result)
+                remaining_names = sorted(str(k) for k in remaining)
+                raise ValueError(
+                    f"Dependency graph contains cycles. Actions involved: {', '.join(remaining_names)}"
+                )
 
         return result
 
     def find_cycle(self) -> Optional[list[ActionKey]]:
         """Find a cycle in the graph if one exists.
 
-        Checks for cycles considering both strong and weak dependencies.
+        Checks for cycles considering both strong and weak dependencies,
+        but only for dependencies pointing to nodes in the graph.
 
         Returns:
             List of action keys forming a cycle, or None if no cycle
@@ -288,6 +299,10 @@ class ActionGraph:
 
             node = self.nodes[key]
             for dep in node.dependencies:
+                # Skip dependencies to nodes not in the graph
+                if dep.action not in self.nodes:
+                    continue
+
                 if dep.action not in visited:
                     cycle = dfs(dep.action)
                     if cycle:
