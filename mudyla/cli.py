@@ -149,6 +149,9 @@ class CLI:
                 project_root=project_root,
                 environment_vars=document.environment_vars,
                 passthrough_env_vars=document.passthrough_env_vars,
+                args=custom_args,
+                flags=all_flags,
+                axis_values=axis_values,
                 without_nix=args.without_nix,
                 verbose=args.verbose,
             )

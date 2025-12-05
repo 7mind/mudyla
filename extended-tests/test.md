@@ -27,15 +27,21 @@
 - `flags.test-flag-global`: xxx
 - `flags.test-flag-local`: yyy
 
+# axis
+
+`test-axis`=`{value1*|value2}`
+
 # action: soft-provider
 
 An action that provides a value, used as a soft dependency target.
+This retainer verifies access to args, flags, and axis values.
 
 ```bash
 echo "Global flag: ${flags.test-flag-global}"
 echo "Local flag: ${flags.test-flag-local}"
 echo "Global arg: ${args.message-global}"
 echo "Local arg: ${args.message-local}"
+echo "Axis value: ${sys.axis.test-axis}"
 retain "action.test"
 ```
 

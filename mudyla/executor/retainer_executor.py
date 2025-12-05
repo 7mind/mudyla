@@ -52,6 +52,9 @@ class RetainerExecutor:
         project_root: Path,
         environment_vars: dict[str, str],
         passthrough_env_vars: list[str],
+        args: dict[str, Any],
+        flags: dict[str, bool],
+        axis_values: dict[str, str],
         without_nix: bool = False,
         verbose: bool = False,
     ):
@@ -63,6 +66,9 @@ class RetainerExecutor:
             project_root: Project root directory
             environment_vars: Environment variables for actions
             passthrough_env_vars: Env vars to pass through from parent
+            args: Command-line arguments
+            flags: Command-line flags
+            axis_values: Axis values for the current context
             without_nix: Whether to skip nix wrapping
             verbose: Whether to capture stdout/stderr for logging
         """
@@ -71,6 +77,9 @@ class RetainerExecutor:
         self.project_root = project_root
         self.environment_vars = environment_vars
         self.passthrough_env_vars = passthrough_env_vars
+        self.args = args
+        self.flags = flags
+        self.axis_values = axis_values
         self.without_nix = without_nix
         self.verbose = verbose
 
@@ -172,8 +181,8 @@ class RetainerExecutor:
             runtime = RuntimeRegistry.get(version.language)
             output_json_path = temp_path / "output.json"
 
-            # Build execution context (minimal - retainers have no dependencies)
-            context = self._build_retainer_context(retain_signal_file)
+            # Build execution context with context-specific args/flags/axis
+            context = self._build_retainer_context(retainer_key, retain_signal_file)
 
             # Prepare script
             rendered = runtime.prepare_script(
@@ -228,8 +237,14 @@ class RetainerExecutor:
             except Exception as e:
                 return RetainerExecutionResult(retained_actions=None, stdout="", stderr=str(e))
 
-    def _build_retainer_context(self, retain_signal_file: Path) -> ExecutionContext:
-        """Build minimal execution context for a retainer action."""
+    def _build_retainer_context(
+        self, retainer_key: ActionKey, retain_signal_file: Path
+    ) -> ExecutionContext:
+        """Build execution context for a retainer action.
+
+        Uses context-specific args/flags/axis_values from the retainer_key,
+        falling back to global values for anything not specified in the context.
+        """
         import os
 
         # Build environment variables
@@ -238,16 +253,32 @@ class RetainerExecutor:
             if var_name in os.environ:
                 env_vars[var_name] = os.environ[var_name]
 
+        # Extract context-specific values from retainer_key.context_id
+        context_id = retainer_key.context_id
+
+        # Start with global values, then override with context-specific ones
+        axis_values = dict(self.axis_values)
+        for name, value in context_id.axis_values:
+            axis_values[name] = value
+
+        args = dict(self.args)
+        for name, value in context_id.args:
+            args[name] = value
+
+        flags = dict(self.flags)
+        for name, value in context_id.flags:
+            flags[name] = value
+
         return ExecutionContext(
             system_vars={
                 "project-root": str(self.project_root),
                 "nix": not self.without_nix,
             },
-            axis_values={},
+            axis_values=axis_values,
             env_vars=env_vars,
             md_env_vars=self.environment_vars,
-            args={},
-            flags={},
+            args=args,
+            flags=flags,
             action_outputs={},  # Retainers have no dependencies
         )
 
