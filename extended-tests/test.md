@@ -36,14 +36,20 @@ fi
 An action that provides a value, used as a soft dependency target.
 
 ```bash
-echo "Soft provider running"
-ret value:string=soft-value
+retain
 ```
 
+# action: softdep
+
+```bash
+ret value:string="God is in his heaven"
+```
 
 # action: test
 
 ```bash
+soft action.softdep retain.action.soft-provider
+
 assert "USER is set" test -n "$USER"
 assert "XDG_PICTURES_DIR is not set" test -z "${XDG_PICTURES_DIR+x}"
 assert "LANG should be hard-set" test "$LANG" = "C.UTF-8"
@@ -52,7 +58,7 @@ assert "nixified" test "${sys.nix}" = "1"
 echo "global flag: ${flags.test-flag-global}"
 echo "local flag: ${flags.test-flag-local}"
 
-ret value:string="LANG is ${LANG}, USER is ${USER}, , all is alright in the world"
+ret value:string="LANG is ${LANG}, USER is ${USER}, , all is alright with the world"
 ```
 
 # action: all 
@@ -60,5 +66,5 @@ ret value:string="LANG is ${LANG}, USER is ${USER}, , all is alright in the worl
 ```bash
 dep action.test
 
-ret value:string=${action.test.value}
+ret "value:string=${action.test.value}"
 ```

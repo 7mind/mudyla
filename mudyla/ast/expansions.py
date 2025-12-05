@@ -42,6 +42,10 @@ def to_bash_value(value: Any) -> str:
     - True -> "1"
     - False -> "0"
     - Other -> str(value)
+
+    NOTE: Values are NOT shell-escaped. If a value may contain spaces or special
+    characters and is used in an unquoted context, the user must quote it in their
+    bash script. Example: ret "value:string=${action.foo.bar}"
     """
     if value is None:
         return ""

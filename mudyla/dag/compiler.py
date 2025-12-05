@@ -138,12 +138,87 @@ class DAGCompiler:
 
         return contextual_invocations
 
+    def _compute_transitive_requirements(
+        self, axis_values: Dict[str, str]
+    ) -> Dict[str, tuple[Set[str], Set[str], Set[str]]]:
+        """Compute transitive required axes, args, and flags for each action.
+
+        An action transitively requires any axes/args/flags that its dependencies require,
+        because its output is affected by those values through its dependencies.
+
+        Args:
+            axis_values: Current axis values for version selection
+
+        Returns:
+            Dict mapping action name to (required_axes, required_args, required_flags)
+        """
+        # First pass: collect direct requirements and dependencies for each action
+        direct_requirements: Dict[str, tuple[Set[str], Set[str], Set[str]]] = {}
+        action_deps: Dict[str, Set[str]] = {}
+
+        for action_name, action in self.document.actions.items():
+            direct_requirements[action_name] = (
+                action.get_required_axes(),
+                action.get_required_args(),
+                action.get_required_flags(),
+            )
+
+            # Get dependencies from selected version
+            deps: Set[str] = set()
+            try:
+                selected_version = action.get_version(axis_values, self.current_platform)
+                if selected_version:
+                    # Collect dependency names from expansions
+                    for expansion in selected_version.expansions:
+                        if isinstance(expansion, (ActionExpansion, WeakActionExpansion, RetainedExpansion)):
+                            deps.add(expansion.get_dependency_action())
+                    # Collect from explicit declarations
+                    for dep_decl in selected_version.dependency_declarations:
+                        deps.add(dep_decl.action_name)
+            except ValueError:
+                pass
+            action_deps[action_name] = deps
+
+        # Second pass: compute transitive closure with memoization
+        transitive_cache: Dict[str, tuple[Set[str], Set[str], Set[str]]] = {}
+
+        def compute_transitive(name: str, visited: Set[str]) -> tuple[Set[str], Set[str], Set[str]]:
+            if name in transitive_cache:
+                return transitive_cache[name]
+            if name in visited:
+                # Cycle detected, return direct requirements only
+                return direct_requirements.get(name, (set(), set(), set()))
+            if name not in direct_requirements:
+                return (set(), set(), set())
+
+            visited = visited | {name}
+            axes, args, flags = direct_requirements[name]
+            result_axes = set(axes)
+            result_args = set(args)
+            result_flags = set(flags)
+
+            for dep_name in action_deps.get(name, set()):
+                dep_axes, dep_args, dep_flags = compute_transitive(dep_name, visited)
+                result_axes.update(dep_axes)
+                result_args.update(dep_args)
+                result_flags.update(dep_flags)
+
+            transitive_cache[name] = (result_axes, result_args, result_flags)
+            return (result_axes, result_args, result_flags)
+
+        # Compute for all actions
+        for action_name in self.document.actions:
+            compute_transitive(action_name, set())
+
+        return transitive_cache
+
     def _build_graph_for_invocation(
         self, invocation: ContextualInvocation
     ) -> ActionGraph:
         """Build a dependency graph for a single action invocation.
 
-        Each action gets a reduced context based on the axes, args, and flags it cares about.
+        Each action gets a reduced context based on the axes, args, and flags it
+        transitively cares about (including through dependencies).
         This allows independent actions to be shared across contexts.
 
         Args:
@@ -163,15 +238,18 @@ class DAGCompiler:
         if goal_action_name not in self.document.actions:
             raise CompilationError(f"Action '{goal_action_name}' not found")
 
+        # Compute transitive requirements for all actions
+        transitive_requirements = self._compute_transitive_requirements(axis_values)
+
         # Build nodes for all actions with their reduced contexts
         nodes: Dict[ActionKey, ActionNode] = {}
 
         for action_name, action in self.document.actions.items():
-            # Compute reduced context based on what this action cares about
-            required_axes = action.get_required_axes()
-            required_args = action.get_required_args()
-            required_flags = action.get_required_flags()
-            
+            # Compute reduced context based on transitive requirements
+            required_axes, required_args, required_flags = transitive_requirements.get(
+                action_name, (set(), set(), set())
+            )
+
             reduced_context_id = full_context_id.reduce(required_axes, required_args, required_flags)
             action_key = ActionKey.from_name(action_name, reduced_context_id)
 
@@ -189,14 +267,10 @@ class DAGCompiler:
             if selected_version:
                 # Helper to calculate reduced context for a dependency
                 def get_dep_context_id(dep_name: str) -> ContextId:
-                    dep_action = self.document.actions.get(dep_name)
-                    if dep_action:
-                        return full_context_id.reduce(
-                            dep_action.get_required_axes(),
-                            dep_action.get_required_args(),
-                            dep_action.get_required_flags()
-                        )
-                    return reduced_context_id
+                    dep_axes, dep_args, dep_flags = transitive_requirements.get(
+                        dep_name, (set(), set(), set())
+                    )
+                    return full_context_id.reduce(dep_axes, dep_args, dep_flags)
 
                 # Implicit dependencies from expansions
                 for expansion in selected_version.expansions:
@@ -245,13 +319,11 @@ class DAGCompiler:
                         Dependency(action=action_key, weak=dep.weak)
                     )
 
-        # Goal uses the goal action's reduced context
-        goal_action = self.document.actions[goal_action_name]
-        goal_context_id = full_context_id.reduce(
-            goal_action.get_required_axes(),
-            goal_action.get_required_args(),
-            goal_action.get_required_flags()
+        # Goal uses the goal action's reduced context (with transitive requirements)
+        goal_axes, goal_args, goal_flags = transitive_requirements.get(
+            goal_action_name, (set(), set(), set())
         )
+        goal_context_id = full_context_id.reduce(goal_axes, goal_args, goal_flags)
         goal_key = ActionKey.from_name(goal_action_name, goal_context_id)
         goal_keys = {goal_key}
 
