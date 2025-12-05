@@ -76,6 +76,9 @@ class ArgumentDefinition:
 
     location: SourceLocation
 
+    alias: Optional[str] = None
+    """Optional short alias for the argument (e.g., 'ml' for 'message-local')"""
+
     @property
     def is_mandatory(self) -> bool:
         """Check if argument is mandatory (no default value)."""

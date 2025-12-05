@@ -133,10 +133,12 @@ class DAGValidator:
             raise ValidationError("\n".join(errors))
 
     def _validate_retainer_actions(self) -> None:
-        """Validate that retainer actions have no dependencies.
+        """Validate retainer action constraints.
 
         Retainer actions are used to decide whether soft dependencies should be
-        retained. They must be self-contained and not depend on other actions.
+        retained. They must:
+        1. Be self-contained (have no dependencies themselves)
+        2. Only be used as retainers (not as regular dependencies)
         """
         errors = []
 
@@ -159,6 +161,21 @@ class DAGValidator:
                     f"Retainer action '{retainer_key}' must have no dependencies, "
                     f"but depends on: {dep_names} (at {retainer_node.action.location})"
                 )
+
+        # Validate retainers are not used as regular dependencies
+        for node in self.graph.nodes.values():
+            for dep in node.dependencies:
+                # Skip soft dependencies - that's how retainers are supposed to be referenced
+                if dep.soft:
+                    continue
+                # Check if this regular dependency targets a retainer action
+                if dep.action in retainer_keys:
+                    errors.append(
+                        f"Action '{node.action.name}' has a {'weak' if dep.weak else 'strong'} "
+                        f"dependency on '{dep.action}', but '{dep.action.id.name}' is a retainer action. "
+                        f"Retainer actions can only be used as retainers in soft dependencies "
+                        f"(at {node.action.location})"
+                    )
 
         if errors:
             raise ValidationError("\n".join(errors))

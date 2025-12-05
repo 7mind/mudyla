@@ -21,6 +21,7 @@ from .executor.retainer_executor import RetainerExecutor, RetainerResult
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
     AXIS_OPTIONS,
+    ActionInvocation,
     CLIParseError,
     parse_custom_inputs,
     ParsedCLIInputs,
@@ -149,6 +150,7 @@ class CLI:
                 environment_vars=document.environment_vars,
                 passthrough_env_vars=document.passthrough_env_vars,
                 without_nix=args.without_nix,
+                verbose=args.verbose,
             )
             retained_soft_targets, retainer_results = retainer_executor.execute_retainers()
 
@@ -175,6 +177,14 @@ class CLI:
                         f"  {color.highlight(retainer_label)} {color.dim('ran in')} {time_str} "
                         f"{color.dim('→ retained nothing')}"
                     )
+                # Log stdout/stderr in verbose mode
+                if args.verbose and (result.stdout or result.stderr):
+                    if result.stdout:
+                        for line in result.stdout.rstrip().split("\n"):
+                            output.print(f"    {color.dim('stdout:')} {line}")
+                    if result.stderr:
+                        for line in result.stderr.rstrip().split("\n"):
+                            output.print(f"    {color.dim('stderr:')} {line}")
 
             pruned_graph = graph.prune_to_goals(retained_soft_targets)
 
@@ -415,6 +425,9 @@ class CLI:
         # Expand wildcards in axis specifications
         parsed_inputs = expand_all_wildcards(parsed_inputs, document)
 
+        # Resolve argument aliases (e.g., --ml -> --message-local)
+        parsed_inputs = self._resolve_argument_aliases(document, parsed_inputs)
+
         custom_args = dict(parsed_inputs.custom_args)
         axis_values = dict(parsed_inputs.axis_values)
         goals = list(parsed_inputs.goals)
@@ -464,6 +477,68 @@ class CLI:
                 separator = color.dim(":")
                 value_colored = color.colorize(default_value, Colors.YELLOW)
                 print(f"{color.dim('Using default axis value:')} {axis_colored}{separator}{value_colored}")
+
+    def _resolve_argument_aliases(
+        self,
+        document: ParsedDocument,
+        parsed_inputs: ParsedCLIInputs,
+    ) -> ParsedCLIInputs:
+        """Resolve argument aliases to their canonical names.
+
+        Args:
+            document: Parsed document with argument definitions
+            parsed_inputs: Parsed CLI inputs (immutable, returns new instance)
+
+        Returns:
+            New ParsedCLIInputs with aliases resolved in both global and per-action args
+        """
+        # Build alias -> canonical name mapping
+        alias_to_canonical: dict[str, str] = {}
+        for arg_name, arg_def in document.arguments.items():
+            if arg_def.alias:
+                if arg_def.alias in alias_to_canonical:
+                    raise ValueError(
+                        f"Duplicate alias '{arg_def.alias}': used by both "
+                        f"'args.{alias_to_canonical[arg_def.alias]}' and 'args.{arg_name}'"
+                    )
+                alias_to_canonical[arg_def.alias] = arg_name
+
+        if not alias_to_canonical:
+            return parsed_inputs
+
+        def resolve_args(args: dict[str, str], context: str) -> dict[str, str]:
+            """Resolve aliases in a dict of arguments."""
+            resolved = dict(args)
+            for alias, canonical_name in alias_to_canonical.items():
+                if alias in resolved:
+                    if canonical_name in resolved:
+                        raise ValueError(
+                            f"Argument 'args.{canonical_name}' specified twice in {context}: "
+                            f"both as --{canonical_name} and as --{alias}"
+                        )
+                    resolved[canonical_name] = resolved.pop(alias)
+            return resolved
+
+        # Resolve global args
+        resolved_global_args = resolve_args(parsed_inputs.global_args, "global scope")
+
+        # Resolve per-action args
+        resolved_invocations = []
+        for inv in parsed_inputs.action_invocations:
+            resolved_invocations.append(ActionInvocation(
+                action_name=inv.action_name,
+                args=resolve_args(inv.args, f"action '{inv.action_name}'"),
+                flags=inv.flags,
+                axes=inv.axes,
+            ))
+
+        return ParsedCLIInputs(
+            global_args=resolved_global_args,
+            global_flags=parsed_inputs.global_flags,
+            global_axes=parsed_inputs.global_axes,
+            action_invocations=resolved_invocations,
+            goal_warnings=parsed_inputs.goal_warnings,
+        )
 
     def _apply_default_argument_values(
         self,

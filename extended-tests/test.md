@@ -15,39 +15,34 @@
 
 - `args.message-global`: Message to use in tests
   - type: `string`
-  - default: `"BONK"`
+  - default: `"DEFAULT:BONK"`
 
 - `args.message-local`: Message to use in tests
   - type: `string`
-  - default: `"BAWW"`
+  - alias: `ml`
+  - default: `"DEFAULT:BAWW"`
 
 # flags
 
 - `flags.test-flag-global`: xxx
 - `flags.test-flag-local`: yyy
 
-# action: soft-retainer-conditional
-
-```bash
-if [ "${MDL_RETAIN_SOFT:-}" = "true" ]; then
-    echo "Retainer deciding: YES (based on env)"
-    retain
-else
-    echo "Retainer deciding: NO (based on env)"
-fi
-```
-
 # action: soft-provider
 
 An action that provides a value, used as a soft dependency target.
 
 ```bash
+echo "Global flag: ${flags.test-flag-global}"
+echo "Local flag: ${flags.test-flag-local}"
+echo "Global arg: ${args.message-global}"
+echo "Local arg: ${args.message-local}"
 retain "action.test"
 ```
 
 # action: softdep
 
 ```bash
+echo "Local flag: ${flags.test-flag-local}"
 ret value:string="God is in his heaven"
 ```
 
@@ -66,8 +61,6 @@ echo "local flag: ${flags.test-flag-local}"
 
 ret value:string="LANG is ${LANG}, USER is ${USER}, ${args.message-global}, all is alright with the world. ${args.message-local}"
 ```
-
-
 
 # action: all 
 

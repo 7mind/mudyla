@@ -118,6 +118,9 @@ class MarkdownParser:
     ARG_DEFAULT_PATTERN = re.compile(
         r"^\s*-\s*default:\s*`?(.+?)`?\s*$"
     )
+    ARG_ALIAS_PATTERN = re.compile(
+        r"^\s*-\s*alias:\s*`?([a-zA-Z][a-zA-Z0-9_-]*)`?\s*$"
+    )
 
     # Pattern for flag definition: `flags.name`: description
     FLAG_PATTERN = re.compile(
@@ -390,6 +393,10 @@ class MarkdownParser:
             if isinstance(default_value, str):
                 default_value = self._normalize_default_value(default_value)
 
+            alias = current_block.get("alias")
+            if isinstance(alias, str):
+                alias = alias.strip()
+
             arguments[name] = ArgumentDefinition(
                 name=name,
                 arg_type=arg_type,
@@ -400,6 +407,7 @@ class MarkdownParser:
                     line_number=int(current_block["line_number"]),
                     section_name=section.title,
                 ),
+                alias=alias,
             )
             current_block = None
 
@@ -417,12 +425,14 @@ class MarkdownParser:
                     "type": None,
                     "type_line": None,
                     "default": None,
+                    "alias": None,
                     "line_number": offset,
                 }
                 continue
 
             type_match = self.ARG_TYPE_PATTERN.match(stripped)
             default_match = self.ARG_DEFAULT_PATTERN.match(stripped)
+            alias_match = self.ARG_ALIAS_PATTERN.match(stripped)
 
             if type_match:
                 if current_block is None:
@@ -447,6 +457,18 @@ class MarkdownParser:
                         f"{file_path}:{offset}: Duplicate default for argument 'args.{current_block['name']}'"
                     )
                 current_block["default"] = default_match.group(1)
+                continue
+
+            if alias_match:
+                if current_block is None:
+                    raise ValueError(
+                        f"{file_path}:{offset}: Alias declaration must follow an argument header"
+                    )
+                if current_block.get("alias") is not None:
+                    raise ValueError(
+                        f"{file_path}:{offset}: Duplicate alias for argument 'args.{current_block['name']}'"
+                    )
+                current_block["alias"] = alias_match.group(1)
                 continue
 
             if stripped.startswith("-"):
