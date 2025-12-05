@@ -473,9 +473,12 @@ class MarkdownParser:
     ) -> dict[str, FlagDefinition]:
         """Parse flags section using parser combinators."""
         flags = {}
-        for line in section.content.split("\n"):
+        for line_num, line in enumerate(section.content.split("\n")):
+            stripped = line.strip()
+            if not stripped:
+                continue
             # Add leading "- " since markdown parser extracts list items without it
-            if line.strip() and not line.strip().startswith("-"):
+            if not stripped.startswith("-"):
                 line = "- " + line
             parsed = parse_flag_definition(line)
             if parsed:
@@ -484,11 +487,17 @@ class MarkdownParser:
                     description=parsed["description"],
                     location=SourceLocation(
                         file_path=str(file_path),
-                        line_number=section.line_number,
+                        line_number=section.line_number + line_num,
                         section_name=section.title,
                     ),
                 )
                 flags[parsed["name"]] = flag_def
+            else:
+                # Fail fast: if line looks like a flag but doesn't parse, raise error
+                raise ValueError(
+                    f"Invalid flag definition '{stripped}' at {file_path}:{section.line_number + line_num}. "
+                    f"Expected format: `flags.name`: description"
+                )
 
         return flags
 

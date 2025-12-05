@@ -87,5 +87,15 @@ mudyla_write_outputs() {
 # Initialize output tracking
 MDL_OUTPUT_LINES=()
 
+# assert pseudo-command (fails with message if command returns non-zero)
+assert() {
+    local msg="$1"
+    shift
+    if ! "$@"; then
+        printf 'assert failed: %s\n' "$msg" >&2
+        exit 1
+    fi
+}
+
 # Fail on errors
 set -euo pipefail

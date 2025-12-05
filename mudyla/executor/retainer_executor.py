@@ -164,9 +164,13 @@ class RetainerExecutor:
                 env_vars[var_name] = os.environ[var_name]
 
         return ExecutionContext(
-            system_vars={"project-root": str(self.project_root)},
+            system_vars={
+                "project-root": str(self.project_root),
+                "nix": not self.without_nix,
+            },
             axis_values={},
             env_vars=env_vars,
+            md_env_vars=self.environment_vars,
             args={},
             flags={},
             action_outputs={},  # Retainers have no dependencies

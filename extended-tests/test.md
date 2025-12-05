@@ -1,0 +1,64 @@
+# Manual tests
+
+# environment
+
+- `LANG=C.UTF-8`
+
+## passthrough
+
+- `HOME`
+- `USER`
+
+# arguments
+
+- `args.message`: Message to use in tests
+  - type: `string`
+  - default: `""`
+
+# flags
+
+- `flags.test-flag-global`: xxx
+- `flags.test-flag-local`: yyy
+
+# action: soft-retainer-conditional
+
+```bash
+if [ "${MDL_RETAIN_SOFT:-}" = "true" ]; then
+    echo "Retainer deciding: YES (based on env)"
+    retain
+else
+    echo "Retainer deciding: NO (based on env)"
+fi
+```
+
+# action: soft-provider
+
+An action that provides a value, used as a soft dependency target.
+
+```bash
+echo "Soft provider running"
+ret value:string=soft-value
+```
+
+
+# action: test
+
+```bash
+assert "USER is set" test -n "$USER"
+assert "XDG_PICTURES_DIR is not set" test -z "${XDG_PICTURES_DIR+x}"
+assert "LANG should be hard-set" test "$LANG" = "C.UTF-8"
+assert "nixified" test "${sys.nix}" = "1"
+
+echo "global flag: ${flags.test-flag-global}"
+echo "local flag: ${flags.test-flag-local}"
+
+ret value:string="LANG is ${LANG}, USER is ${USER}, , all is alright in the world"
+```
+
+# action: all 
+
+```bash
+dep action.test
+
+ret value:string=${action.test.value}
+```

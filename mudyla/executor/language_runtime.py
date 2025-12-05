@@ -12,9 +12,10 @@ from mudyla.ast.models import ActionVersion
 class ExecutionContext:
     """Context available to actions during execution."""
 
-    system_vars: dict[str, str]  # sys.* variables (e.g., project-root)
+    system_vars: dict[str, str | bool]  # sys.* variables (e.g., project-root, nix)
     axis_values: dict[str, str]  # Axis values for the current context
-    env_vars: dict[str, str]  # Environment variables
+    env_vars: dict[str, str]  # Environment variables (merged: os.environ | md_defined)
+    md_env_vars: dict[str, str]  # Environment variables explicitly defined in MD files
     args: dict[str, Any]  # Command-line arguments
     flags: dict[str, bool]  # Command-line flags
     action_outputs: dict[str, dict[str, Any]]  # Outputs from previous actions

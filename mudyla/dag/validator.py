@@ -398,7 +398,7 @@ class DAGValidator:
         pruned_graph = self._required_graph
 
         # Known system variables that don't require validation
-        KNOWN_SYS_VARS = {"project-root", "run-dir", "action-dir"}
+        KNOWN_SYS_VARS = {"project-root", "run-dir", "action-dir", "nix"}
 
         for node in pruned_graph.nodes.values():
             if not node.selected_version:

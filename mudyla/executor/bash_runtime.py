@@ -64,15 +64,13 @@ source "{runtime_path}"
 
 """
 
-        # Add environment variable exports
+        # Add environment variable exports for MD-defined variables
         env_exports = ""
-        if context.env_vars:
+        if context.md_env_vars:
             env_exports = "# Environment variables\n"
-            for var_name, var_value in sorted(context.env_vars.items()):
-                # Skip system environment variables, only export custom ones
-                if var_name not in os.environ:
-                    escaped_value = var_value.replace("\\", "\\\\").replace('"', '\\"')
-                    env_exports += f'export {var_name}="{escaped_value}"\n'
+            for var_name, var_value in sorted(context.md_env_vars.items()):
+                escaped_value = var_value.replace("\\", "\\\\").replace('"', '\\"')
+                env_exports += f'export {var_name}="{escaped_value}"\n'
             env_exports += "\n"
 
         full_script = header + env_exports + rendered
