@@ -159,9 +159,11 @@ class CLI:
                 retainer_label = format_action_label(result.retainer_key, use_short_ids=use_short_ids)
                 time_str = f"{result.execution_time_ms:.0f}ms"
                 if result.retained:
+                    # Deduplicate targets (multiple soft deps may point to the same target)
+                    unique_targets = list(dict.fromkeys(result.soft_dep_targets))
                     targets = [
                         format_action_label(t, use_short_ids=use_short_ids)
-                        for t in result.soft_dep_targets
+                        for t in unique_targets
                     ]
                     targets_str = ", ".join(color.highlight(t) for t in targets)
                     output.print(

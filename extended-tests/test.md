@@ -21,7 +21,6 @@
   - type: `string`
   - default: `"BAWW"`
 
-
 # flags
 
 - `flags.test-flag-global`: xxx
@@ -43,7 +42,7 @@ fi
 An action that provides a value, used as a soft dependency target.
 
 ```bash
-retain
+retain "action.test"
 ```
 
 # action: softdep
@@ -67,6 +66,8 @@ echo "local flag: ${flags.test-flag-local}"
 
 ret value:string="LANG is ${LANG}, USER is ${USER}, ${args.message-global}, all is alright with the world. ${args.message-local}"
 ```
+
+
 
 # action: all 
 

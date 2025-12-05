@@ -91,43 +91,61 @@ class RetainerExecutor:
         # Execute each unique retainer
         for retainer_key, soft_deps in retainers_to_run.items():
             start_time = time.perf_counter()
-            should_retain = self._execute_retainer(retainer_key)
+            retain_result = self._execute_retainer(retainer_key)
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-            soft_dep_targets = [dep.action for dep in soft_deps]
+            # Determine which targets to actually retain
+            actually_retained: list[ActionKey] = []
+            if retain_result is not None:
+                if len(retain_result) == 0:
+                    # Empty set = retain all
+                    for dep in soft_deps:
+                        retained_targets.add(dep.action)
+                        actually_retained.append(dep.action)
+                else:
+                    # Selective retention: only retain deps where the dependent action is in the set
+                    for dep in soft_deps:
+                        # dep is a soft dependency FROM some action TO dep.action
+                        # We need to find who depends on dep.action using this retainer
+                        # The dependent action's name should match one in retain_result
+                        for node_key, node in self.graph.nodes.items():
+                            for node_dep in node.dependencies:
+                                if (node_dep.soft and
+                                    node_dep.action == dep.action and
+                                    node_dep.retainer_action == retainer_key and
+                                    node_key.id.name in retain_result):
+                                    retained_targets.add(dep.action)
+                                    actually_retained.append(dep.action)
 
             retainer_results.append(RetainerResult(
                 retainer_key=retainer_key,
-                soft_dep_targets=soft_dep_targets,
-                retained=should_retain,
+                soft_dep_targets=actually_retained if retain_result is not None else [],
+                retained=retain_result is not None,
                 execution_time_ms=elapsed_ms,
             ))
 
-            if should_retain:
-                # Add all targets that this retainer is responsible for
-                for dep in soft_deps:
-                    retained_targets.add(dep.action)
-
         return retained_targets, retainer_results
 
-    def _execute_retainer(self, retainer_key: ActionKey) -> bool:
+    def _execute_retainer(self, retainer_key: ActionKey) -> set[str] | None:
         """Execute a single retainer action.
 
         Args:
             retainer_key: Key of the retainer action to execute
 
         Returns:
-            True if the retainer signaled to retain, False otherwise
+            None if retainer didn't signal to retain anything,
+            empty set if retainer signals to retain all soft deps,
+            non-empty set of action names if retainer signals selective retention.
         """
         if retainer_key not in self.graph.nodes:
-            return False
+            return None
 
         retainer_node = self.graph.nodes[retainer_key]
         action = retainer_node.action
         version = retainer_node.selected_version
 
         if not version:
-            return False
+            return None
 
         # Create temporary directory for retainer execution
         with tempfile.TemporaryDirectory(prefix="mdl_retainer_") as temp_dir:
@@ -169,15 +187,25 @@ class RetainerExecutor:
 
                 # Check if retainer succeeded
                 if result.returncode != 0:
-                    return False
+                    return None
 
                 # Check for retain signal
-                return retain_signal_file.exists()
+                if not retain_signal_file.exists():
+                    return None
+
+                # Read signal file to determine what to retain
+                content = retain_signal_file.read_text().strip()
+                if not content:
+                    # Empty file = retain all
+                    return set()
+                else:
+                    # File contains specific action names (one per line)
+                    return set(line.strip() for line in content.split("\n") if line.strip())
 
             except subprocess.TimeoutExpired:
-                return False
+                return None
             except Exception:
-                return False
+                return None
 
     def _build_retainer_context(self, retain_signal_file: Path) -> ExecutionContext:
         """Build minimal execution context for a retainer action."""

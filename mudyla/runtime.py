@@ -116,20 +116,36 @@ class MudilaContext:
         # Soft dependencies are extracted at parse time, this is a no-op at runtime
         pass
 
-    def retain(self) -> None:
+    def retain(self, *actions: str) -> None:
         """
         Signal that a soft dependency should be retained.
 
-        Call this in a retainer action to indicate the soft dependency target
+        Call this in a retainer action to indicate which soft dependencies
         should be included in the execution graph.
 
-        Example:
-            if some_condition:
-                mdl.retain()
+        Args:
+            *actions: Optional action names to retain. If not provided, retains all
+                     soft dependencies using this retainer. Action names can be
+                     specified with or without the "action." prefix.
+
+        Examples:
+            mdl.retain()                    # Retain all soft deps using this retainer
+            mdl.retain("action.foo")        # Retain only where foo depends on target
+            mdl.retain("foo", "bar")        # Retain multiple specific soft deps
         """
         retain_signal_file = os.environ.get("MDL_RETAIN_SIGNAL_FILE")
         if retain_signal_file:
-            Path(retain_signal_file).touch()
+            path = Path(retain_signal_file)
+            if not actions:
+                # No arguments: retain all (create empty file)
+                path.touch()
+            else:
+                # Specific actions: write each to the file
+                with open(path, "a") as f:
+                    for action in actions:
+                        # Strip "action." prefix if present
+                        name = action[7:] if action.startswith("action.") else action
+                        f.write(f"{name}\n")
 
     def ret(self, name: str, value: Any, type_str: str) -> None:
         """

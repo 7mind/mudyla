@@ -21,10 +21,23 @@ soft() {
 }
 
 # retain pseudo-command (signals that a soft dependency should be retained)
+# Usage:
+#   retain                    - retain all soft dependencies using this retainer
+#   retain action.foo         - retain only the soft dependency where foo depends on the target
+#   retain action.foo action.bar - retain multiple specific soft dependencies
 retain() {
-    # Creates a signal file to indicate the soft dependency should be retained
     if [ -n "${MDL_RETAIN_SIGNAL_FILE:-}" ]; then
-        touch "$MDL_RETAIN_SIGNAL_FILE"
+        if [ $# -eq 0 ]; then
+            # No arguments: retain all (create empty file)
+            touch "$MDL_RETAIN_SIGNAL_FILE"
+        else
+            # Specific actions: append each to the file
+            for action in "$@"; do
+                # Strip "action." prefix if present
+                local name="${action#action.}"
+                echo "$name" >> "$MDL_RETAIN_SIGNAL_FILE"
+            done
+        fi
     fi
 }
 
