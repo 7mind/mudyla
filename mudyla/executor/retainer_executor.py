@@ -126,19 +126,13 @@ class RetainerExecutor:
                         retained_targets.add(dep.action)
                         actually_retained.append(dep.action)
                 else:
-                    # Selective retention: only retain deps where the dependent action is in the set
+                    # Selective retention: only retain deps where the target action is in the set
                     for dep in soft_deps:
-                        # dep is a soft dependency FROM some action TO dep.action
-                        # We need to find who depends on dep.action using this retainer
-                        # The dependent action's name should match one in retain_result
-                        for node_key, node in self.graph.nodes.items():
-                            for node_dep in node.dependencies:
-                                if (node_dep.soft and
-                                    node_dep.action == dep.action and
-                                    node_dep.retainer_action == retainer_key and
-                                    node_key.id.name in exec_result.retained_actions):
-                                    retained_targets.add(dep.action)
-                                    actually_retained.append(dep.action)
+                        # dep.action is the TARGET of the soft dependency
+                        # Check if the target's name is in the retained set
+                        if dep.action.id.name in exec_result.retained_actions:
+                            retained_targets.add(dep.action)
+                            actually_retained.append(dep.action)
 
             retainer_results.append(RetainerResult(
                 retainer_key=retainer_key,
