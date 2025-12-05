@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .expansions import Expansion, SystemExpansion
-from .types import ReturnType
+from .types import ArgumentType, ReturnType
 
 
 @dataclass(frozen=True)
@@ -65,11 +65,11 @@ class ArgumentDefinition:
     name: str
     """Argument name (without 'args.' prefix)"""
 
-    arg_type: ReturnType
-    """Argument type"""
+    arg_type: ArgumentType
+    """Argument type (scalar or array)"""
 
-    default_value: Optional[str]
-    """Default value, None if mandatory"""
+    default_value: Optional[str | list[str]]
+    """Default value, None if mandatory. For arrays, can be a list."""
 
     description: str
     """Argument description"""
@@ -83,6 +83,11 @@ class ArgumentDefinition:
     def is_mandatory(self) -> bool:
         """Check if argument is mandatory (no default value)."""
         return self.default_value is None
+
+    @property
+    def is_array(self) -> bool:
+        """Check if this is an array argument."""
+        return self.arg_type.is_array
 
     @property
     def full_name(self) -> str:
@@ -234,6 +239,9 @@ class ActionVersion:
     env_dependencies: list[str]
     """Explicit environment variable dependencies (dep env.*)"""
 
+    args_dependencies: list[str]
+    """Explicit argument dependencies (use args.*)"""
+
     conditions: list[Condition]
     """Conditions that must be met for this version (axis and/or platform)"""
 
@@ -373,11 +381,15 @@ class ActionDefinition:
     def get_required_args(self) -> set[str]:
         """Get the set of argument names required by this action."""
         from .expansions import ArgsExpansion
-        
+
         arg_names: set[str] = set()
+        # From expansions like ${args.name}
         for expansion in self.get_all_expansions():
             if isinstance(expansion, ArgsExpansion):
                 arg_names.add(expansion.argument_name)
+        # From explicit declarations like: use args.name
+        for version in self.versions:
+            arg_names.update(version.args_dependencies)
         return arg_names
 
     def get_required_flags(self) -> set[str]:

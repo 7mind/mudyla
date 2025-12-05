@@ -116,6 +116,24 @@ class MudilaContext:
         # Soft dependencies are extracted at parse time, this is a no-op at runtime
         pass
 
+    def use(self, resource: str) -> None:
+        """
+        Declare usage of an argument (no-op at runtime, used for parsing).
+
+        This is used to bind the action to a context that includes the specified
+        argument. Without this declaration, Python actions don't get context-bound
+        to args since they don't use ${args.X} expansions like bash scripts.
+
+        Args:
+            resource: Resource string (e.g., "args.name")
+
+        Example:
+            mdl.use("args.items")
+            mdl.use("args.count")
+        """
+        # Use declarations are extracted at parse time, this is a no-op at runtime
+        pass
+
     def retain(self, *actions: str) -> None:
         """
         Signal that a soft dependency should be retained.

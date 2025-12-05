@@ -22,6 +22,9 @@ class DependencyParser:
     # Pattern to match bash: dep env.VARIABLE_NAME
     ENV_DEP_PATTERN = re.compile(r"^\s*dep\s+env\.([A-Z_][A-Z0-9_]*)\s*$")
 
+    # Pattern to match bash: use args.argument-name
+    ARGS_USE_PATTERN = re.compile(r"^\s*use\s+args\.([a-zA-Z][a-zA-Z0-9_-]*)\s*$")
+
     # Pattern to match python: mdl.dep("action.action-name")
     ACTION_DEP_PYTHON_PATTERN = re.compile(r'^\s*mdl\.dep\s*\(\s*["\']action\.([a-zA-Z][a-zA-Z0-9_-]*)["\']')
 
@@ -36,10 +39,13 @@ class DependencyParser:
     # Pattern to match python: mdl.dep("env.VARIABLE_NAME")
     ENV_DEP_PYTHON_PATTERN = re.compile(r'^\s*mdl\.dep\s*\(\s*["\']env\.([A-Z_][A-Z0-9_]*)["\']')
 
+    # Pattern to match python: mdl.use("args.argument-name")
+    ARGS_USE_PYTHON_PATTERN = re.compile(r'^\s*mdl\.use\s*\(\s*["\']args\.([a-zA-Z][a-zA-Z0-9_-]*)["\']')
+
     @classmethod
     def find_all_dependencies(
         cls, script: str, base_location: SourceLocation
-    ) -> tuple[list[DependencyDeclaration], list[str]]:
+    ) -> tuple[list[DependencyDeclaration], list[str], list[str]]:
         """Find all dependency declarations in a bash script.
 
         Args:
@@ -47,13 +53,14 @@ class DependencyParser:
             base_location: Base source location for the script
 
         Returns:
-            Tuple of (action_dependencies, env_var_dependencies)
+            Tuple of (action_dependencies, env_var_dependencies, args_dependencies)
 
         Raises:
             ValueError: If dependency format is invalid
         """
         action_dependencies = []
         env_dependencies = []
+        args_dependencies = []
         lines = script.split("\n")
 
         for i, line in enumerate(lines):
@@ -170,5 +177,19 @@ class DependencyParser:
             if env_python_match:
                 env_var = env_python_match.group(1)
                 env_dependencies.append(env_var)
+                continue
 
-        return action_dependencies, env_dependencies
+            # Try bash args declaration: use args.name
+            args_match = cls.ARGS_USE_PATTERN.match(line)
+            if args_match:
+                arg_name = args_match.group(1)
+                args_dependencies.append(arg_name)
+                continue
+
+            # Try python args declaration: mdl.use("args.name")
+            args_python_match = cls.ARGS_USE_PYTHON_PATTERN.match(line)
+            if args_python_match:
+                arg_name = args_python_match.group(1)
+                args_dependencies.append(arg_name)
+
+        return action_dependencies, env_dependencies, args_dependencies

@@ -1,7 +1,10 @@
 """Structured parsing helpers for CLI inputs."""
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Union
+
+# Type alias for argument values: scalar string or list of strings (for array args)
+ArgValue = Union[str, List[str]]
 
 
 class CLIParseError(Exception):
@@ -13,7 +16,7 @@ class ActionInvocation:
     """Represents a single action invocation with its specific configuration."""
 
     action_name: str
-    args: Dict[str, str]
+    args: Dict[str, ArgValue]
     flags: Dict[str, bool]
     axes: Dict[str, str]
 
@@ -22,7 +25,7 @@ class ActionInvocation:
 class ParsedCLIInputs:
     """Structured result for custom CLI inputs with per-action configurations."""
 
-    global_args: Dict[str, str]
+    global_args: Dict[str, ArgValue]
     global_flags: Dict[str, bool]
     global_axes: Dict[str, str]
     action_invocations: List[ActionInvocation]
@@ -34,7 +37,7 @@ class ParsedCLIInputs:
         return [inv.action_name for inv in self.action_invocations]
 
     @property
-    def custom_args(self) -> Dict[str, str]:
+    def custom_args(self) -> Dict[str, ArgValue]:
         """Legacy property - returns global args."""
         return self.global_args
 
@@ -47,6 +50,23 @@ class ParsedCLIInputs:
     def axis_values(self) -> Dict[str, str]:
         """Legacy property - returns global axes."""
         return self.global_axes
+
+
+def _add_arg_value(args: Dict[str, ArgValue], name: str, value: str) -> None:
+    """Add an argument value, collecting multiple values into a list.
+
+    If the argument already exists:
+    - If it's a string, convert to list with both values
+    - If it's already a list, append the new value
+    """
+    if name not in args:
+        args[name] = value
+    else:
+        existing = args[name]
+        if isinstance(existing, list):
+            existing.append(value)
+        else:
+            args[name] = [existing, value]
 
 
 AXIS_OPTIONS = ["--axis", "--use", "-u", "-a"]
@@ -175,11 +195,11 @@ def parse_custom_inputs(
                 if name.strip() == "":
                     raise CLIParseError(f"Malformed argument '{token}'")
 
-                # Add to current context
+                # Add to current context (supports multiple values for array args)
                 if current_action_name is None:
-                    global_args[name] = value
+                    _add_arg_value(global_args, name, value)
                 else:
-                    current_args[name] = value
+                    _add_arg_value(current_args, name, value)
             else:
                 if stripped.strip() == "":
                     raise CLIParseError(f"Malformed flag '{token}'")

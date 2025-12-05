@@ -26,13 +26,15 @@ ret ok:string=ok
     document = MarkdownParser().parse_files([file_path])
 
     output_dir = document.get_argument("output-dir")
-    assert output_dir.arg_type == ReturnType.DIRECTORY
+    assert output_dir.arg_type.element_type == ReturnType.DIRECTORY
+    assert not output_dir.arg_type.is_array
     assert output_dir.default_value == "test-output"
     assert output_dir.description == "Output directory for test results"
     assert output_dir.location.line_number == 2
 
     required = document.get_argument("required-path")
-    assert required.arg_type == ReturnType.FILE
+    assert required.arg_type.element_type == ReturnType.FILE
+    assert not required.arg_type.is_array
     assert required.default_value is None
     assert required.is_mandatory
 

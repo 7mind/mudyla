@@ -107,9 +107,14 @@ class ExecutionResult:
                 for name, value in context_id.axis_values:
                     path_components.append((name, value))
                 
-                # Arguments are tuples of (name, value)
+                # Arguments are tuples of (name, value). Value can be tuple for arrays.
                 for name, value in context_id.args:
-                    path_components.append((f"args.{name}", value))
+                    # Convert tuple values to comma-separated string for JSON compatibility
+                    if isinstance(value, tuple):
+                        str_value = ",".join(value)
+                    else:
+                        str_value = value
+                    path_components.append((f"args.{name}", str_value))
                     
                 # Flags are tuples of (name, bool)
                 for name, value in context_id.flags:

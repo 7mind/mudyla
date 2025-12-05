@@ -18,7 +18,7 @@ def test_parse_weak_dependency_bash():
     weak action.weak-dep
     """
     location = SourceLocation("test.md", 1, "test-action")
-    deps, _ = DependencyParser.find_all_dependencies(script, location)
+    deps, _, _ = DependencyParser.find_all_dependencies(script, location)
 
     assert len(deps) == 2
 
@@ -38,7 +38,7 @@ def test_parse_weak_dependency_python():
     mdl.weak("action.weak-dep")
     """
     location = SourceLocation("test.md", 1, "test-action")
-    deps, _ = DependencyParser.find_all_dependencies(script, location)
+    deps, _, _ = DependencyParser.find_all_dependencies(script, location)
 
     assert len(deps) == 2
 

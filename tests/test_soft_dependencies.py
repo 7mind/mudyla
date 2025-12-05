@@ -17,7 +17,7 @@ def test_parse_soft_dependency_bash():
     soft action.soft-target retain.action.my-retainer
     """
     location = SourceLocation("test.md", 1, "test-action")
-    deps, _ = DependencyParser.find_all_dependencies(script, location)
+    deps, _, _ = DependencyParser.find_all_dependencies(script, location)
 
     assert len(deps) == 2
 
@@ -41,7 +41,7 @@ def test_parse_soft_dependency_python():
     mdl.soft("action.soft-target", "action.my-retainer")
     """
     location = SourceLocation("test.md", 1, "test-action")
-    deps, _ = DependencyParser.find_all_dependencies(script, location)
+    deps, _, _ = DependencyParser.find_all_dependencies(script, location)
 
     assert len(deps) == 2
 

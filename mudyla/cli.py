@@ -22,6 +22,7 @@ from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
     AXIS_OPTIONS,
     ActionInvocation,
+    ArgValue,
     CLIParseError,
     parse_custom_inputs,
     ParsedCLIInputs,
@@ -437,6 +438,7 @@ class CLI:
 
         self._apply_default_axis_values(document, axis_values, color)
         self._apply_default_argument_values(document, custom_args)
+        self._normalize_array_arguments(document, custom_args)
 
         all_flags = {name: False for name in document.flags}
         all_flags.update(parsed_inputs.custom_flags)
@@ -509,17 +511,27 @@ class CLI:
         if not alias_to_canonical:
             return parsed_inputs
 
-        def resolve_args(args: dict[str, str], context: str) -> dict[str, str]:
+        def resolve_args(args: dict[str, ArgValue], context: str) -> dict[str, ArgValue]:
             """Resolve aliases in a dict of arguments."""
             resolved = dict(args)
             for alias, canonical_name in alias_to_canonical.items():
                 if alias in resolved:
+                    alias_value = resolved.pop(alias)
                     if canonical_name in resolved:
-                        raise ValueError(
-                            f"Argument 'args.{canonical_name}' specified twice in {context}: "
-                            f"both as --{canonical_name} and as --{alias}"
-                        )
-                    resolved[canonical_name] = resolved.pop(alias)
+                        # Merge values (both alias and canonical were used)
+                        existing = resolved[canonical_name]
+                        if isinstance(existing, list):
+                            if isinstance(alias_value, list):
+                                existing.extend(alias_value)
+                            else:
+                                existing.append(alias_value)
+                        else:
+                            if isinstance(alias_value, list):
+                                resolved[canonical_name] = [existing] + alias_value
+                            else:
+                                resolved[canonical_name] = [existing, alias_value]
+                    else:
+                        resolved[canonical_name] = alias_value
             return resolved
 
         # Resolve global args
@@ -546,13 +558,44 @@ class CLI:
     def _apply_default_argument_values(
         self,
         document: ParsedDocument,
-        custom_args: dict[str, str],
+        custom_args: dict[str, ArgValue],
     ) -> None:
+        """Apply default values for missing arguments."""
         for arg_name, arg_def in document.arguments.items():
             if arg_name in custom_args:
                 continue
             if arg_def.default_value is not None:
                 custom_args[arg_name] = arg_def.default_value
+
+    def _normalize_array_arguments(
+        self,
+        document: ParsedDocument,
+        custom_args: dict[str, ArgValue],
+    ) -> None:
+        """Ensure array arguments are always lists, scalar args are always strings.
+
+        - For array arguments: convert single string to list[str]
+        - For scalar arguments: fail if multiple values were provided
+        """
+        for arg_name, arg_def in document.arguments.items():
+            if arg_name not in custom_args:
+                continue
+
+            value = custom_args[arg_name]
+
+            if arg_def.is_array:
+                # Array argument: ensure it's a list
+                if isinstance(value, str):
+                    custom_args[arg_name] = [value]
+                # Already a list, nothing to do
+            else:
+                # Scalar argument: must be a single string
+                if isinstance(value, list):
+                    raise ValueError(
+                        f"Argument 'args.{arg_name}' is not an array type but was "
+                        f"specified multiple times. Use type 'array[{arg_def.arg_type.element_type.value}]' "
+                        f"if you want to specify multiple values."
+                    )
 
     def _compute_sharing_counts(
         self,

@@ -6,7 +6,11 @@ context-based dependency injection.
 """
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Any, Dict, Union
+
+# Type for argument values: scalar string or tuple of strings (for array args)
+# We use tuple instead of list because tuples are hashable
+ArgValueHashable = Union[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -26,8 +30,8 @@ class ContextId:
     axis_values: tuple[tuple[str, str], ...]
     """Sorted tuple of (axis_name, axis_value) pairs"""
 
-    args: tuple[tuple[str, str], ...] = ()
-    """Sorted tuple of (arg_name, arg_value) pairs"""
+    args: tuple[tuple[str, ArgValueHashable], ...] = ()
+    """Sorted tuple of (arg_name, arg_value) pairs. Values can be strings or tuples for arrays."""
 
     flags: tuple[tuple[str, bool], ...] = ()
     """Sorted tuple of (flag_name, flag_value) pairs"""
@@ -35,45 +39,62 @@ class ContextId:
     def __str__(self) -> str:
         """Format as axis:val+arg:val+flag:val."""
         parts = []
-        
+
         for name, value in self.axis_values:
             parts.append(f"{name}:{value}")
-            
+
         for name, value in self.args:
-            parts.append(f"args.{name}:{value}")
-            
+            # For array args, format as comma-separated values
+            if isinstance(value, tuple):
+                formatted_value = ",".join(value)
+            else:
+                formatted_value = value
+            parts.append(f"args.{name}:{formatted_value}")
+
         for name, value in self.flags:
-            # Only include true flags to keep IDs shorter? 
+            # Only include true flags to keep IDs shorter?
             # Or explicit false too? Let's include all for uniqueness correctness.
             # Actually, flags are booleans.
             parts.append(f"flags.{name}:{str(value).lower()}")
-            
+
         if not parts:
             return "default"
-            
+
         return "+".join(parts)
 
     @classmethod
     def from_dict(
-        cls, 
-        axis_dict: Dict[str, str], 
-        args: Dict[str, str] | None = None,
+        cls,
+        axis_dict: Dict[str, str],
+        args: Dict[str, Any] | None = None,
         flags: Dict[str, bool] | None = None
     ) -> "ContextId":
         """Create a ContextId from dictionaries of values.
 
         Args:
             axis_dict: Dictionary mapping axis names to values
-            args: Dictionary mapping argument names to values
+            args: Dictionary mapping argument names to values (can be strings or lists)
             flags: Dictionary mapping flag names to values
 
         Returns:
             ContextId with sorted values
         """
         sorted_axes = tuple(sorted(axis_dict.items()))
-        sorted_args = tuple(sorted(args.items())) if args else ()
+
+        # Convert list values to tuples for hashability
+        if args:
+            hashable_args = []
+            for name, value in sorted(args.items()):
+                if isinstance(value, list):
+                    hashable_args.append((name, tuple(value)))
+                else:
+                    hashable_args.append((name, value))
+            sorted_args = tuple(hashable_args)
+        else:
+            sorted_args = ()
+
         sorted_flags = tuple(sorted(flags.items())) if flags else ()
-        
+
         return cls(
             axis_values=sorted_axes,
             args=sorted_args,

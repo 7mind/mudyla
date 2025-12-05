@@ -115,6 +115,9 @@ class DAGCompiler:
                 if arg_name not in merged_args and arg_def.default_value is not None:
                     merged_args[arg_name] = arg_def.default_value
 
+            # Normalize array arguments: ensure single values become lists
+            self._normalize_array_arguments(merged_args)
+
             # Merge flags: global + per-action
             merged_flags = dict(self.cli_inputs.global_flags)
             merged_flags.update(invocation.flags)
@@ -410,6 +413,37 @@ class DAGCompiler:
         return (
             node1.selected_version.conditions == node2.selected_version.conditions
         )
+
+    def _normalize_array_arguments(self, args: Dict[str, any]) -> None:
+        """Ensure array arguments are always lists, validate scalar args.
+
+        Modifies the args dict in place.
+
+        Args:
+            args: Merged arguments dict to normalize
+
+        Raises:
+            CompilationError: If a scalar arg has multiple values
+        """
+        for arg_name, arg_def in self.document.arguments.items():
+            if arg_name not in args:
+                continue
+
+            value = args[arg_name]
+
+            if arg_def.is_array:
+                # Array argument: ensure it's a list
+                if isinstance(value, str):
+                    args[arg_name] = [value]
+                # Already a list, nothing to do
+            else:
+                # Scalar argument: must be a single string
+                if isinstance(value, list):
+                    raise CompilationError(
+                        f"Argument 'args.{arg_name}' is not an array type but was "
+                        f"specified multiple times. Use type 'array[{arg_def.arg_type.element_type.value}]' "
+                        f"if you want to specify multiple values."
+                    )
 
     def validate_action_invocations(self) -> None:
         """Validate that all action invocations reference existing actions.

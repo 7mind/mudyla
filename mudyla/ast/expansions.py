@@ -35,22 +35,39 @@ class Expansion(ABC):
         pass
 
 
+def _escape_bash_string(s: str) -> str:
+    """Escape a string for use in bash double quotes."""
+    # Escape backslashes first, then double quotes, then dollar signs, then backticks
+    s = s.replace("\\", "\\\\")
+    s = s.replace('"', '\\"')
+    s = s.replace("$", "\\$")
+    s = s.replace("`", "\\`")
+    return s
+
+
 def to_bash_value(value: Any) -> str:
     """Convert a value to a bash-compatible string.
 
     - None -> ""
     - True -> "1"
     - False -> "0"
+    - list/tuple -> bash array syntax: ("value1" "value2" "value3")
     - Other -> str(value)
 
-    NOTE: Values are NOT shell-escaped. If a value may contain spaces or special
-    characters and is used in an unquoted context, the user must quote it in their
-    bash script. Example: ret "value:string=${action.foo.bar}"
+    NOTE: For scalar values, they are NOT shell-escaped. If a value may contain
+    spaces or special characters and is used in an unquoted context, the user
+    must quote it in their bash script. Example: ret "value:string=${action.foo.bar}"
+
+    For arrays, values ARE escaped and quoted to ensure proper handling.
     """
     if value is None:
         return ""
     if isinstance(value, bool):
         return "1" if value else "0"
+    if isinstance(value, (list, tuple)):
+        # Format as bash array: ("value1" "value2" "value3")
+        escaped_values = [f'"{_escape_bash_string(str(v))}"' for v in value]
+        return "(" + " ".join(escaped_values) + ")"
     return str(value)
 
 

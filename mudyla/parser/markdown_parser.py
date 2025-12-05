@@ -23,7 +23,7 @@ from ..ast.models import (
     PlatformCondition,
     SourceLocation,
 )
-from ..ast.types import ReturnType
+from ..ast.types import ArgumentType, ReturnType
 from .dependency_parser import DependencyParser
 from .expansion_parser import ExpansionParser
 from .return_parser import ReturnParser
@@ -113,7 +113,7 @@ class MarkdownParser:
         r"^\s*-\s*`args\.([a-zA-Z][a-zA-Z0-9_-]*)`\s*:\s*(.+)$"
     )
     ARG_TYPE_PATTERN = re.compile(
-        r"^\s*-\s*type:\s*`?([a-zA-Z]+)`?\s*$"
+        r"^\s*-\s*type:\s*`?([a-zA-Z]+(?:\[[a-zA-Z]+\])?)`?\s*$"
     )
     ARG_DEFAULT_PATTERN = re.compile(
         r"^\s*-\s*default:\s*`?(.+?)`?\s*$"
@@ -375,7 +375,7 @@ class MarkdownParser:
                 )
 
             try:
-                arg_type = ReturnType.from_string(str(current_block["type"]))
+                arg_type = ArgumentType.from_string(str(current_block["type"]))
             except ValueError as exc:
                 type_line = current_block.get("type_line") or current_block["line_number"]
                 raise ValueError(f"{file_path}:{type_line}: {exc}")
@@ -900,7 +900,7 @@ class MarkdownParser:
         return_declarations = ReturnParser.find_all_returns(bash_script, location)
 
         # Parse dependency declarations
-        dependency_declarations, env_dependencies = DependencyParser.find_all_dependencies(
+        dependency_declarations, env_dependencies, args_dependencies = DependencyParser.find_all_dependencies(
             bash_script, location
         )
 
@@ -910,6 +910,7 @@ class MarkdownParser:
             return_declarations=return_declarations,
             dependency_declarations=dependency_declarations,
             env_dependencies=env_dependencies,
+            args_dependencies=args_dependencies,
             conditions=conditions,
             location=location,
             language=language,
