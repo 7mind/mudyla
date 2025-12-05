@@ -6,14 +6,21 @@
 
 ## passthrough
 
+### Genric stuff
+
 - `HOME`
 - `USER`
 
 # arguments
 
-- `args.message`: Message to use in tests
+- `args.message-global`: Message to use in tests
   - type: `string`
-  - default: `""`
+  - default: `"BONK"`
+
+- `args.message-local`: Message to use in tests
+  - type: `string`
+  - default: `"BAWW"`
+
 
 # flags
 
@@ -58,7 +65,7 @@ assert "nixified" test "${sys.nix}" = "1"
 echo "global flag: ${flags.test-flag-global}"
 echo "local flag: ${flags.test-flag-local}"
 
-ret value:string="LANG is ${LANG}, USER is ${USER}, , all is alright with the world"
+ret value:string="LANG is ${LANG}, USER is ${USER}, ${args.message-global}, all is alright with the world. ${args.message-local}"
 ```
 
 # action: all 

@@ -3,6 +3,7 @@
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,16 @@ from .runtime_registry import RuntimeRegistry
 from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
 from .language_runtime import ExecutionContext
+
+
+@dataclass
+class RetainerResult:
+    """Result of executing a single retainer action."""
+
+    retainer_key: ActionKey
+    soft_dep_targets: list[ActionKey]
+    retained: bool
+    execution_time_ms: float
 
 
 class RetainerExecutor:
@@ -53,18 +64,21 @@ class RetainerExecutor:
         for runtime_cls in (BashRuntime, PythonRuntime):
             RuntimeRegistry.ensure_registered(runtime_cls)
 
-    def execute_retainers(self) -> set[ActionKey]:
+    def execute_retainers(self) -> tuple[set[ActionKey], list[RetainerResult]]:
         """Execute retainer actions and return soft dependency targets to retain.
 
         Returns:
-            Set of ActionKeys for soft dependency targets that should be retained.
+            Tuple of (retained_targets, retainer_results) where:
+            - retained_targets: Set of ActionKeys for soft dependency targets to retain
+            - retainer_results: List of RetainerResult with execution details
         """
         pending_soft_deps = self.graph.get_pending_soft_dependencies()
 
         if not pending_soft_deps:
-            return set()
+            return set(), []
 
         retained_targets: set[ActionKey] = set()
+        retainer_results: list[RetainerResult] = []
 
         # Group by retainer to avoid running the same retainer multiple times
         retainers_to_run: dict[ActionKey, list[Dependency]] = {}
@@ -76,13 +90,25 @@ class RetainerExecutor:
 
         # Execute each unique retainer
         for retainer_key, soft_deps in retainers_to_run.items():
+            start_time = time.perf_counter()
             should_retain = self._execute_retainer(retainer_key)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            soft_dep_targets = [dep.action for dep in soft_deps]
+
+            retainer_results.append(RetainerResult(
+                retainer_key=retainer_key,
+                soft_dep_targets=soft_dep_targets,
+                retained=should_retain,
+                execution_time_ms=elapsed_ms,
+            ))
+
             if should_retain:
                 # Add all targets that this retainer is responsible for
                 for dep in soft_deps:
                     retained_targets.add(dep.action)
 
-        return retained_targets
+        return retained_targets, retainer_results
 
     def _execute_retainer(self, retainer_key: ActionKey) -> bool:
         """Execute a single retainer action.

@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import sys
+import time
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
@@ -16,7 +17,7 @@ from .dag.compiler import DAGCompiler, CompilationError
 from .dag.graph import ActionKey, Dependency
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
-from .executor.retainer_executor import RetainerExecutor
+from .executor.retainer_executor import RetainerExecutor, RetainerResult
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
     AXIS_OPTIONS,
@@ -107,39 +108,19 @@ class CLI:
                 output.print(f"{output.emoji('⚠️', '!')} {color.warning('Warning:')} {warning}")
 
             # Use the new compiler for multi-context support
+            planning_start = time.perf_counter()
             compiler = DAGCompiler(document, setup.parsed_inputs)
             compiler.validate_action_invocations()
             graph = compiler.compile()
+            planning_elapsed_ms = (time.perf_counter() - planning_start) * 1000
 
-            # Execute retainers for soft dependencies to determine which to retain
-            retainer_executor = RetainerExecutor(
-                graph=graph,
-                document=document,
-                project_root=project_root,
-                environment_vars=document.environment_vars,
-                passthrough_env_vars=document.passthrough_env_vars,
-                without_nix=args.without_nix,
-            )
-            retained_soft_targets = retainer_executor.execute_retainers()
-            pruned_graph = graph.prune_to_goals(retained_soft_targets)
-
-            # Build context mapping for short IDs (unless full representations requested)
+            # Build context mapping early (from full graph) for logging
             use_short_ids = not args.full_ctx_reprs
             context_mapping: dict[str, str] = {}
             if use_short_ids:
-                context_mapping = build_context_mapping(pruned_graph.nodes.keys())
+                context_mapping = build_context_mapping(graph.nodes.keys())
 
-            # Show execution mode
-            if not quiet_mode:
-                mode_label = "dry-run" if args.dry_run else ("parallel" if parallel_execution else "sequential")
-                output.print(f"{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
-
-            validator = DAGValidator(document, pruned_graph)
-            validator.validate_all(custom_args, all_flags, axis_values)
-            if not quiet_mode:
-                output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')}")
-
-            # Show fully-qualified goals with contexts
+            # Show contexts and goals BEFORE retainer execution
             goal_keys = sorted(graph.goals, key=str)
             if use_short_ids and context_mapping:
                 goal_strs = [
@@ -150,17 +131,60 @@ class CLI:
                 goal_strs = [color.format_action_key(str(goal)) for goal in goal_keys]
             goal_keys_str = ", ".join(goal_strs)
 
-            # Display context mapping if using short IDs
             if use_short_ids and context_mapping:
                 output.print(f"\n{output.emoji('🔗', '▸')} {color.bold('Contexts:')}")
                 for short_id in sorted(context_mapping.keys()):
                     full_ctx = context_mapping[short_id]
-                    # Apply consistent coloring to context ID and full context
                     short_id_colored = color.format_short_context_id(short_id)
                     full_ctx_colored = color.format_context_string(full_ctx)
                     output.print(f"  {short_id_colored}: {full_ctx_colored}")
 
             output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {goal_keys_str}")
+
+            # Execute retainers for soft dependencies to determine which to retain
+            retainer_executor = RetainerExecutor(
+                graph=graph,
+                document=document,
+                project_root=project_root,
+                environment_vars=document.environment_vars,
+                passthrough_env_vars=document.passthrough_env_vars,
+                without_nix=args.without_nix,
+            )
+            retained_soft_targets, retainer_results = retainer_executor.execute_retainers()
+
+            # Log retainer results with context info
+            if retainer_results:
+                output.print(f"\n{output.emoji('🔄', '▸')} {color.bold('Retainers:')}")
+            for result in retainer_results:
+                retainer_label = format_action_label(result.retainer_key, use_short_ids=use_short_ids)
+                time_str = f"{result.execution_time_ms:.0f}ms"
+                if result.retained:
+                    targets = [
+                        format_action_label(t, use_short_ids=use_short_ids)
+                        for t in result.soft_dep_targets
+                    ]
+                    targets_str = ", ".join(color.highlight(t) for t in targets)
+                    output.print(
+                        f"  {color.highlight(retainer_label)} {color.dim('ran in')} {time_str} "
+                        f"{color.dim('→ retained')} {targets_str}"
+                    )
+                else:
+                    output.print(
+                        f"  {color.highlight(retainer_label)} {color.dim('ran in')} {time_str} "
+                        f"{color.dim('→ retained nothing')}"
+                    )
+
+            pruned_graph = graph.prune_to_goals(retained_soft_targets)
+
+            # Show execution mode
+            if not quiet_mode:
+                mode_label = "dry-run" if args.dry_run else ("parallel" if parallel_execution else "sequential")
+                output.print(f"\n{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
+
+            validator = DAGValidator(document, pruned_graph)
+            validator.validate_all(custom_args, all_flags, axis_values)
+            if not quiet_mode:
+                output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')} {color.dim(f'(planning took {planning_elapsed_ms:.0f}ms)')}")
 
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
