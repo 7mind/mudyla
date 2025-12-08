@@ -226,41 +226,50 @@ class DAGValidator:
             unique_vars = list(set(missing_vars))
             raise ValidationError("\n".join(unique_vars))
 
-    def _validate_arguments(self, args: dict[str, str]) -> None:
-        """Validate that all required arguments are provided."""
+    def _validate_arguments(self, global_args: dict[str, str]) -> None:
+        """Validate that all required arguments are provided.
+
+        Checks each node for the arguments it uses and verifies they are provided
+        either in global args or the node's context args.
+        """
         errors = []
 
         pruned_graph = self._required_graph
 
-        # Collect all used arguments
-        used_args = set()
         for node in pruned_graph.nodes.values():
             if not node.selected_version:
                 continue
 
+            # Collect args used by this node
+            node_used_args = set()
             for expansion in node.selected_version.expansions:
                 if isinstance(expansion, ArgsExpansion):
-                    used_args.add(expansion.argument_name)
+                    node_used_args.add(expansion.argument_name)
 
-        # Check each used argument
-        for arg_name in used_args:
-            if arg_name not in self.document.arguments:
-                errors.append(
-                    f"Argument 'args.{arg_name}' is used but not defined in arguments section"
-                )
-                continue
+            # Get combined args for this node: global + node context
+            combined_args = dict(global_args)
+            combined_args.update(node.args)
 
-            arg_def = self.document.arguments[arg_name]
+            # Check each used argument
+            for arg_name in node_used_args:
+                if arg_name not in self.document.arguments:
+                    errors.append(
+                        f"Argument 'args.{arg_name}' is used but not defined in arguments section"
+                    )
+                    continue
 
-            # Check if mandatory argument is provided
-            if arg_def.is_mandatory and arg_name not in args:
-                errors.append(
-                    f"Mandatory argument 'args.{arg_name}' is not provided "
-                    f"(defined at {arg_def.location})"
-                )
+                arg_def = self.document.arguments[arg_name]
+
+                # Check if mandatory argument is provided
+                if arg_def.is_mandatory and arg_name not in combined_args:
+                    errors.append(
+                        f"Mandatory argument 'args.{arg_name}' is not provided for action '{node.action.name}' "
+                        f"(defined at {arg_def.location})"
+                    )
 
         if errors:
-            raise ValidationError("\n".join(errors))
+            unique_errors = list(dict.fromkeys(errors))
+            raise ValidationError("\n".join(unique_errors))
 
     def _validate_flags(self, flags: dict[str, bool]) -> None:
         """Validate that all used flags are defined."""

@@ -6,10 +6,22 @@ Supports:
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Union
 
 from .ast.models import ParsedDocument, AxisDefinition
-from .cli_args import ActionInvocation
+from .cli_args import ActionInvocation, ArgValue
+
+
+def _make_hashable(value: ArgValue) -> Union[str, tuple]:
+    """Convert an ArgValue to a hashable type (lists become tuples)."""
+    if isinstance(value, list):
+        return tuple(value)
+    return value
+
+
+def _make_args_hashable(args: Dict[str, ArgValue]) -> tuple:
+    """Convert args dict to a hashable tuple, handling list values."""
+    return tuple(sorted((k, _make_hashable(v)) for k, v in args.items()))
 
 
 def matches_pattern(value: str, pattern: str) -> bool:
@@ -226,7 +238,7 @@ def expand_all_wildcards(
                 combo_key = (
                     invocation.action_name,
                     tuple(sorted(merged_axes.items())),
-                    tuple(sorted(per_action_inv.args.items())),
+                    _make_args_hashable(per_action_inv.args),
                     tuple(sorted(per_action_inv.flags.items())),
                 )
 
