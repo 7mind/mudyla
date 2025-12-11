@@ -11,7 +11,7 @@ A script orchestrator: define graphs of Python/Bash/etc actions in Markdown file
 
 Totally Claude'd.
 
-Based on some ideas from [DIStage Dependency Injection](https://github.com/7mind/izumi), Grandmaster (our build tool which is currently under development) and [ix package manager](https://stal-ix.github.io/IX.html).
+Based on some ideas from [DIStage Dependency Injection](https://github.com/7mind/izumi), [Grandmaster Meta Build System](https://github.com/7mind/grandmaster) and [ix package manager](https://stal-ix.github.io/IX.html).
 
 Successor of [mobala](https://github.com/7mind/mobala)
 
