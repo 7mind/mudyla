@@ -42,6 +42,38 @@ def generate_short_context_id(context_str: str) -> str:
     return digest[:6]
 
 
+# Length of truncated hash suffix (similar to git's abbreviated commits)
+TRUNCATED_HASH_LENGTH = 7
+# Maximum length for directory names to avoid filesystem limits
+MAX_DIRNAME_LENGTH = 64
+
+
+def truncate_dirname(name: str, max_length: int = MAX_DIRNAME_LENGTH) -> str:
+    """Truncate a directory name to max_length, adding a hash suffix if needed.
+
+    If the name exceeds max_length, it is truncated and a short hash of the
+    original name is appended, similar to git's abbreviated commit hashes.
+
+    Args:
+        name: The original directory name
+        max_length: Maximum allowed length (default 64)
+
+    Returns:
+        The original name if within limit, otherwise truncated with hash suffix
+    """
+    if len(name) <= max_length:
+        return name
+
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    short_hash = digest[:TRUNCATED_HASH_LENGTH]
+
+    # Leave room for separator and hash: name...<hash>
+    truncated_length = max_length - TRUNCATED_HASH_LENGTH - 3  # 3 for "..."
+    truncated_name = name[:truncated_length]
+
+    return f"{truncated_name}...{short_hash}"
+
+
 def _symbol_for_short_id(short_id: str) -> str:
     """Pick a stable emoji/ASCII symbol for the provided short ID."""
     symbols = _context_symbols()

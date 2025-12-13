@@ -18,7 +18,7 @@ from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph, ActionKey
 from ..utils.colors import ColorFormatter
 from ..utils.output import OutputFormatter
-from ..utils.context_ids import format_action_label
+from ..utils.context_ids import format_action_label, truncate_dirname
 from .runtime_registry import RuntimeRegistry
 from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
@@ -589,7 +589,7 @@ class ExecutionEngine:
         contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
         use_context_in_dirname = len(contexts_in_graph) > 1
         if use_context_in_dirname:
-            action_dirname = action_key_str.replace(":", "_")
+            action_dirname = truncate_dirname(action_key_str.replace(":", "_"))
         else:
             action_dirname = action_key.id.name
 
@@ -643,8 +643,9 @@ class ExecutionEngine:
         if use_context_in_dirname:
             # Include context in directory name for multi-context executions
             # E.g., "platform:jvm+scala:2.12#build" becomes "platform_jvm+scala_2.12#build"
+            # Truncate long names to avoid filesystem limits
             action_key_str = str(action_key)
-            safe_dir_name = action_key_str.replace(":", "_")
+            safe_dir_name = truncate_dirname(action_key_str.replace(":", "_"))
         else:
             # Single context - use simple action name for backward compatibility
             safe_dir_name = action_key.id.name
