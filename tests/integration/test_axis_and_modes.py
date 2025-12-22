@@ -168,7 +168,7 @@ class TestExecutionModes:
 
     def test_verbose_mode_shows_commands(self, mdl: MudylaRunner, clean_test_output):
         """Test that verbose mode shows actual commands being run."""
-        result = mdl.run_success(["--verbose", ":create-directory"])
+        result = mdl.run_success(["--verbose", "--force-nix", ":create-directory"])
 
         # Verify command details are shown
         mdl.assert_in_output(result, "Command:")
