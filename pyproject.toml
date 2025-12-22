@@ -40,11 +40,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = [
-    "mudyla/*.sh",
-    "mudyla/executor/runtime_registry.py",
-    "mudyla/cli_args.py",
-    "mudyla/cli_builder.py",
-    "mudyla/axis_wildcards.py",
+    "mudyla/**/*.py",
+    "mudyla/**/*.sh",
 ]
 
 [tool.hatch.build.targets.wheel]
