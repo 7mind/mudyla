@@ -33,11 +33,11 @@ class TestTruncateDirname:
         assert "..." in result
 
     def test_truncated_name_format(self) -> None:
-        """Verify the format of truncated names: prefix...hash."""
+        """Verify the format of truncated names without action suffix: prefix...hash."""
         long_name = "args.docker-image-name_tg-unified-launcher+args.docker-image-platform_auto+args.docker-image-tag_auto"
         result = truncate_dirname(long_name)
 
-        # Should have format: truncated_prefix...hash
+        # Should have format: truncated_prefix...hash (no # in name)
         assert "..." in result
         parts = result.split("...")
         assert len(parts) == 2
@@ -95,6 +95,8 @@ class TestTruncateDirname:
         assert len(result) <= MAX_DIRNAME_LENGTH
         assert len(result) == MAX_DIRNAME_LENGTH  # Should use full allowed length
         assert "..." in result
+        # Action suffix should be preserved
+        assert result.endswith("#docker-nix")
 
     def test_empty_string(self) -> None:
         """Empty string should be returned as-is."""
@@ -106,3 +108,40 @@ class TestTruncateDirname:
             name = "x" * length
             result = truncate_dirname(name)
             assert len(result) <= MAX_DIRNAME_LENGTH
+
+    def test_action_suffix_preserved(self) -> None:
+        """Action suffix after # should be preserved when truncating."""
+        long_name = "args.message_Hello+args.output-dir_test-output#write-message"
+        result = truncate_dirname(long_name, max_length=50)
+
+        assert result.endswith("#write-message")
+        assert "..." in result
+        assert len(result) == 50
+
+    def test_action_suffix_preserved_with_hash(self) -> None:
+        """Action suffix preservation should still include hash for uniqueness."""
+        long_name = "a" * 80 + "#my-action"
+        result = truncate_dirname(long_name)
+
+        assert result.endswith("#my-action")
+        assert "..." in result
+        # Hash should be present between ... and #
+        parts = result.split("...")
+        assert len(parts) == 2
+        middle_and_suffix = parts[1]
+        assert "#my-action" in middle_and_suffix
+        hash_part = middle_and_suffix.replace("#my-action", "")
+        assert len(hash_part) == TRUNCATED_HASH_LENGTH
+
+    def test_action_suffix_deterministic(self) -> None:
+        """Truncation with action suffix should be deterministic."""
+        long_name = "x" * 70 + "#build-action"
+        result1 = truncate_dirname(long_name)
+        result2 = truncate_dirname(long_name)
+        assert result1 == result2
+        assert result1.endswith("#build-action")
+
+    def test_short_name_with_hash_unchanged(self) -> None:
+        """Short names with # should not be modified."""
+        short_name = "context#action"
+        assert truncate_dirname(short_name) == short_name
