@@ -24,6 +24,7 @@ class TestRetainerContext:
         result = mdl.run_success([
             "--defs", "./extended-tests/*",
             "--verbose",
+            "--force-nix",
             "--test-flag-global",
             "--message-global=God is in his heaven",
             ":all",
@@ -75,6 +76,7 @@ class TestRetainerContext:
         result = mdl.run_success([
             "--defs", "./extended-tests/*",
             "--verbose",
+            "--force-nix",
             "--test-flag-global",
             "--ml=alias-test-value",
             ":all",
@@ -95,6 +97,7 @@ class TestRetainerContext:
         result = mdl.run_success([
             "--defs", "./extended-tests/*",
             "--verbose",
+            "--force-nix",
             "--test-flag-global",
             ":all",
             "--test-flag-local",
