@@ -58,6 +58,15 @@ jobs:
     - name: Test GitHub Actions integration
       run: nix run . -- --github-actions :create-directory :write-message
 
+    - name: Build and test wheel
+      run: |
+        pip install build
+        python -m build --wheel
+        python -m venv /tmp/test-venv
+        /tmp/test-venv/bin/pip install dist/mudyla-*.whl
+        /tmp/test-venv/bin/mdl --help
+        /tmp/test-venv/bin/python -c "from mudyla.cli import main; print('OK')"
+
     - name: Archive run directories
       if: failure()
       uses: actions/upload-artifact@v4
@@ -108,25 +117,6 @@ jobs:
     - name: Run test suite
       run: bash run-tests.sh
 
-    - name: Publish test results
-      uses: EnricoMi/publish-unit-test-result-action@v2
-      if: always()
-      with:
-        files: test-reports/junit.xml
-        check_name: Test Results (macOS)
-        comment_mode: off
-
-    - name: Upload test reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results-macos
-        path: test-reports/
-        retention-days: 7
-
-    - name: Test GitHub Actions integration
-      run: nix run . -- --github-actions :create-directory :write-message
-
     - name: Archive run directories
       if: failure()
       uses: actions/upload-artifact@v4
@@ -145,7 +135,7 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        python-version: "3.12"
 
     - name: Install UV
       run: pip install uv
@@ -194,7 +184,7 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        python-version: "3.12"
 
     - name: Install build dependencies
       run: |
