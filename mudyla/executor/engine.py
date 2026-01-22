@@ -195,6 +195,7 @@ class ExecutionEngine:
         parallel_execution: bool = True,
         use_short_context_ids: bool = False,
         context_id_mapping: Optional[dict[str, str]] = None,
+        keep_running: bool = False,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -216,6 +217,7 @@ class ExecutionEngine:
         self.parallel_execution = parallel_execution
         self.use_short_context_ids = use_short_context_ids
         self.context_id_mapping = context_id_mapping or {}
+        self.keep_running = keep_running
 
         # Determine if we should use rich table
         # Use simple log if: --simple-log, --no-color, --github-actions, --verbose, or not a TTY
@@ -242,6 +244,24 @@ class ExecutionEngine:
 
         self.run_directory.mkdir(parents=True, exist_ok=True)
 
+        # Kill signal for graceful termination from interactive table
+        self._kill_event = threading.Event()
+        self._current_table_manager: Any = None
+        self._current_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+    def _request_kill(self) -> None:
+        """Request graceful termination of all running processes.
+
+        Called by table_manager when user presses 'q' in main view.
+        """
+        self._kill_event.set()
+        # If we have an executor, try to shutdown
+        if self._current_executor:
+            try:
+                self._current_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
     def _format_action_key(self, action_key: ActionKey) -> str:
         """Format an action key for display.
 
@@ -253,6 +273,37 @@ class ExecutionEngine:
         """
         return format_action_label(action_key, use_short_ids=self.use_short_context_ids)
 
+    def _get_action_dirname(self, action_key: ActionKey) -> str:
+        """Get the directory name for an action.
+
+        Uses context in dirname only when multiple contexts exist in the graph.
+
+        Args:
+            action_key: Action key to get dirname for
+
+        Returns:
+            Directory name (with or without context prefix)
+        """
+        contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
+        use_context_in_dirname = len(contexts_in_graph) > 1
+
+        if use_context_in_dirname:
+            action_key_str = str(action_key)
+            return truncate_dirname(action_key_str.replace(":", "_"))
+        else:
+            return action_key.id.name
+
+    def _get_action_dir(self, action_key: ActionKey) -> Path:
+        """Get the full directory path for an action.
+
+        Args:
+            action_key: Action key to get directory for
+
+        Returns:
+            Full path to action directory under run_directory
+        """
+        return self.run_directory / self._get_action_dirname(action_key)
+
     def _build_action_dir_mapping(self, action_keys: list[ActionKey]) -> dict[str, str]:
         """Build mapping of display names to relative action directory paths.
 
@@ -262,22 +313,11 @@ class ExecutionEngine:
         Returns:
             Dictionary mapping display names to relative directory paths
         """
-        contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
-        use_context_in_dirname = len(contexts_in_graph) > 1
-
         result = {}
         for action_key in action_keys:
             display_name = self._format_action_key(action_key)
-
-            # Determine directory name using same logic as _prepare_action_execution
-            if use_context_in_dirname:
-                action_key_str = str(action_key)
-                safe_dir_name = action_key_str.replace(":", "_")
-            else:
-                safe_dir_name = action_key.id.name
-
-            # Make it relative to run directory
-            relative_path = f".mdl/runs/{self.run_directory.name}/{safe_dir_name}"
+            action_dirname = self._get_action_dirname(action_key)
+            relative_path = f".mdl/runs/{self.run_directory.name}/{action_dirname}"
             result[display_name] = relative_path
 
         return result
@@ -360,9 +400,16 @@ class ExecutionEngine:
             # Build action directory mapping
             action_dirs = self._build_action_dir_mapping(execution_order)
             table_manager = TaskTableManager(
-                action_names, no_color=self.no_color, action_dirs=action_dirs, show_dirs=self.show_dirs
+                action_names,
+                no_color=self.no_color,
+                action_dirs=action_dirs,
+                show_dirs=self.show_dirs,
+                run_directory=self.run_directory,
+                keep_running=self.keep_running,
             )
             table_manager.start()
+            # Register kill callback for graceful termination
+            table_manager.set_kill_callback(self._request_kill)
 
         # Store table manager for access by _execute_action
         self._current_table_manager = table_manager
@@ -374,13 +421,22 @@ class ExecutionEngine:
             restored_actions: list[str] = []
 
             for action_key in execution_order:
+                # Check for kill signal before starting each action
+                if self._kill_event.is_set():
+                    if table_manager:
+                        table_manager.stop()
+                    return ExecutionResult(
+                        success=False,
+                        action_results=action_results,
+                        run_directory=self.run_directory,
+                    )
                 action_key_str = str(action_key)  # Internal key (full context)
                 display_name = self._format_action_key(action_key)  # Display name (short ID)
-                node = self.graph.get_node(action_key)
+                action_dir = self._get_action_dir(action_key)
 
                 # Update table or print start message
                 if table_manager:
-                    table_manager.mark_running(display_name)
+                    table_manager.mark_running(display_name, action_dir)
                 else:
                     self._print_action_start(action_key_str)
 
@@ -398,7 +454,7 @@ class ExecutionEngine:
                     table_manager.update_output_sizes(display_name, result.stdout_size, result.stderr_size)
                     # Then update status
                     if result.restored:
-                        table_manager.mark_restored(display_name, result.duration_seconds)
+                        table_manager.mark_restored(display_name, result.duration_seconds, action_dir)
                     elif result.success:
                         table_manager.mark_done(display_name, result.duration_seconds)
                     else:
@@ -422,10 +478,17 @@ class ExecutionEngine:
                 action_outputs[action_key_str] = result.outputs
 
         finally:
-            if table_manager:
+            # Don't stop table manager here if keep_running - wait_for_quit will handle it
+            if table_manager and not self.keep_running:
                 table_manager.stop()
 
-        return self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
+        result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
+
+        # If --it flag, wait for user to quit after reviewing
+        if table_manager and self.keep_running:
+            table_manager.wait_for_quit()
+
+        return result
 
     def _execute_in_parallel(self) -> ExecutionResult:
         """Execute actions using a dependency-aware thread pool."""
@@ -460,9 +523,16 @@ class ExecutionEngine:
                 # Build action directory mapping
                 action_dirs = self._build_action_dir_mapping(execution_order)
                 table_manager = TaskTableManager(
-                    action_names, no_color=self.no_color, action_dirs=action_dirs, show_dirs=self.show_dirs
+                    action_names,
+                    no_color=self.no_color,
+                    action_dirs=action_dirs,
+                    show_dirs=self.show_dirs,
+                    run_directory=self.run_directory,
+                    keep_running=self.keep_running,
                 )
                 table_manager.start()
+                # Register kill callback for graceful termination
+                table_manager.set_kill_callback(self._request_kill)
             except ValueError:
                 # If we can't get execution order, skip table
                 pass
@@ -473,14 +543,18 @@ class ExecutionEngine:
         # Track restored actions
         restored_actions: list[str] = []
 
-        def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_key: ActionKey):
+        def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_key: ActionKey) -> None:
+            action_key_str = str(action_key)
             display_name = self._format_action_key(action_key)
             scheduled.add(action_key)
+            action_dir = self._get_action_dir(action_key)
+
             # Update table or print start message
             if table_manager:
-                table_manager.mark_running(display_name)
+                table_manager.mark_running(display_name, action_dir)
             else:
-                self._print_action_start(str(action_key))
+                self._print_action_start(action_key_str)
+
             snapshot_outputs = dict(action_outputs)
             # Pass ActionKey directly to _execute_action
             future = executor.submit(self._execute_action, action_key, snapshot_outputs)
@@ -488,14 +562,31 @@ class ExecutionEngine:
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                self._current_executor = executor
                 for key in ready:
                     submit_action(executor, key)
 
                 while running:
+                    # Check for kill signal
+                    if self._kill_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        if table_manager:
+                            table_manager.stop()
+                        return ExecutionResult(
+                            success=False,
+                            action_results=action_results,
+                            run_directory=self.run_directory,
+                        )
+
                     done, _ = concurrent.futures.wait(
                         running.keys(),
+                        timeout=0.1,  # Short timeout to check kill signal
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
+
+                    # If no tasks completed, continue loop to check kill signal
+                    if not done:
+                        continue
                     for future in done:
                         action_key = running.pop(future)
                         action_key_str = str(action_key)  # Internal key (full context)
@@ -524,13 +615,15 @@ class ExecutionEngine:
                             with lock:
                                 restored_actions.append(action_key_str)
 
+                        action_dir = self._get_action_dir(action_key)
+
                         # Update table or print completion message
                         if table_manager:
                             # Update sizes first
                             table_manager.update_output_sizes(display_name, result.stdout_size, result.stderr_size)
                             # Then update status
                             if result.restored:
-                                table_manager.mark_restored(display_name, result.duration_seconds)
+                                table_manager.mark_restored(display_name, result.duration_seconds, action_dir)
                             elif result.success:
                                 table_manager.mark_done(display_name, result.duration_seconds)
                             else:
@@ -543,6 +636,7 @@ class ExecutionEngine:
                             if table_manager:
                                 table_manager.stop()
                             self._print_action_failure(result)
+
                             executor.shutdown(cancel_futures=True)
                             return ExecutionResult(
                                 success=False,
@@ -568,16 +662,25 @@ class ExecutionEngine:
                 future.cancel()
             if table_manager:
                 table_manager.stop()
+
             return ExecutionResult(
                 success=False,
                 action_results=action_results,
                 run_directory=self.run_directory,
             )
         finally:
-            if table_manager:
+            self._current_executor = None
+            # Don't stop table manager here if keep_running - wait_for_quit will handle it
+            if table_manager and not self.keep_running:
                 table_manager.stop()
 
-        return self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
+        result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
+
+        # If --it flag, wait for user to quit after reviewing
+        if table_manager and self.keep_running:
+            table_manager.wait_for_quit()
+
+        return result
 
     def _execute_action(
         self, action_key: ActionKey, action_outputs: dict[str, dict[str, Any]]

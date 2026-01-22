@@ -119,6 +119,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Show action directories in the rich table (off by default)",
     )
 
+    parser.add_argument(
+        "--it",
+        dest="interactive",
+        action="store_true",
+        help="Enable interactive mode with live log viewer during execution",
+    )
+
     execution_mode_group = parser.add_mutually_exclusive_group()
     execution_mode_group.add_argument(
         "--seq",
