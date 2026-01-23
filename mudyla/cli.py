@@ -224,6 +224,14 @@ class CLI:
                 else:
                     output.print(f"\n{output.emoji('⚠️', '!')} {color.warning('Warning:')} No runs directory found, starting fresh")
 
+            # --it flag keeps process running after completion for reviewing
+            keep_running = (
+                args.interactive
+                and not args.verbose
+                and not args.github_actions
+                and sys.stdout.isatty()
+            )
+
             engine = ExecutionEngine(
                 graph=pruned_graph,
                 project_root=project_root,
@@ -237,21 +245,22 @@ class CLI:
                 without_nix=args.without_nix,
                 verbose=args.verbose,
                 no_output_on_fail=args.no_out_on_fail,
-                keep_run_dir=args.keep_run_dir,
+                keep_run_dir=args.keep_run_dir or keep_running,
                 no_color=args.no_color,
                 simple_log=args.simple_log,
                 show_dirs=args.show_dirs,
                 parallel_execution=parallel_execution,
                 use_short_context_ids=use_short_ids,
                 context_id_mapping=context_mapping,
+                keep_running=keep_running,
             )
 
             # Print run ID
             run_id = engine.run_directory.name
             output.print(f"\n{output.emoji('🆔', '▸')} {color.dim('Run ID:')} {color.highlight(run_id)}")
-            output.print(f"{output.emoji('🚀', '→')} {color.bold('Executing actions...')}")
 
             result = engine.execute_all()
+
             if not result.success:
                 output.print(f"\n{output.emoji('❌', '✗')} {color.error('Execution failed!')}")
                 return 1
@@ -281,6 +290,14 @@ class CLI:
 
             if args.keep_run_dir:
                 output.print(f"\n{output.emoji('📂', '▸')} {color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
+
+            # Clean up run directory after --it mode (unless --keep-run-dir)
+            if keep_running and not args.keep_run_dir and result.run_directory.exists():
+                import shutil
+                try:
+                    shutil.rmtree(result.run_directory)
+                except Exception:
+                    pass
 
             return 0
 
