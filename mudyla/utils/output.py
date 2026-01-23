@@ -1,66 +1,59 @@
-"""Output utilities for terminal display with emoji support detection."""
+"""Output utilities for terminal display with Rich console and emoji support."""
 
-import sys
-from typing import Optional
+from typing import Union
 
-from .colors import ColorFormatter
+from rich.console import Console
+from rich.text import Text
+
+from .symbols import SymbolsFormatter
 
 
 class OutputFormatter:
-    """Handles formatted output with emoji support detection."""
+    """Handles formatted output using Rich console with emoji support detection."""
 
-    def __init__(self, color: ColorFormatter):
+    def __init__(self, no_color: bool = False):
         """Initialize output formatter.
 
         Args:
-            color: Color formatter instance
+            no_color: If True, disable all colors and styling
         """
-        self.color = color
-        self.supports_emoji = self._detect_emoji_support()
+        self._no_color = no_color
+        self._console = Console(
+            no_color=no_color,
+            force_terminal=None,
+            highlight=False,
+        )
+        self._symbols = SymbolsFormatter(no_color=no_color)
 
-    def _detect_emoji_support(self) -> bool:
-        """Detect if terminal supports emoji display.
+    @property
+    def console(self) -> Console:
+        """Get the underlying Rich console."""
+        return self._console
 
-        Returns:
-            True if emojis are supported, False otherwise
+    @property
+    def symbols(self) -> SymbolsFormatter:
+        """Get the symbols formatter for emoji/ASCII symbol access.
+
+        Usage:
+            output.symbols.Check  # Returns "✅" or "+"
+            output.symbols.Globe  # Returns "🌍" or "*"
         """
-        # If colors are disabled, don't use emojis
-        if not self.color.enabled:
-            return False
+        return self._symbols
 
-        # Check if stdout has encoding attribute
-        if not hasattr(sys.stdout, 'encoding') or sys.stdout.encoding is None:
-            return False
+    @property
+    def supports_emoji(self) -> bool:
+        """Check if terminal supports emoji display."""
+        return self._symbols._supports_emoji
 
-        encoding = sys.stdout.encoding.lower()
+    @property
+    def no_color(self) -> bool:
+        """Check if colors are disabled."""
+        return self._no_color
 
-        # Common encodings that support emojis
-        emoji_encodings = ['utf-8', 'utf8', 'utf-16', 'utf16']
-
-        # Check if encoding supports Unicode
-        return any(enc in encoding for enc in emoji_encodings)
-
-    def emoji(self, emoji_char: str, fallback: str) -> str:
-        """Return emoji or fallback based on terminal support.
+    def print(self, message: Union[str, Text]) -> None:
+        """Print message using Rich console.
 
         Args:
-            emoji_char: The emoji character to display
-            fallback: ASCII fallback character
-
-        Returns:
-            Emoji if supported, otherwise fallback
+            message: Message to print (string or Rich Text)
         """
-        return emoji_char if self.supports_emoji else fallback
-
-    def print(self, message: str) -> None:
-        """Print message with proper encoding handling.
-
-        Args:
-            message: Message to print
-        """
-        try:
-            print(message)
-        except UnicodeEncodeError:
-            # Fallback: encode as ASCII with replacement
-            safe_message = message.encode('ascii', errors='replace').decode('ascii')
-            print(safe_message)
+        self._console.print(message, highlight=False)

@@ -135,11 +135,12 @@ class TestBasicOperations:
         """Test that JSON output is properly structured."""
         result = mdl.run_success([":write-message"])
 
-        # Extract JSON from output (after "▸ Outputs:")
+        # Extract JSON from output (after Outputs: header - with emoji or ASCII)
         output_lines = result.stdout.split("\n")
         json_start = None
         for i, line in enumerate(output_lines):
-            if "▸ Outputs:" in line:
+            # Match either emoji "📊 Outputs:" or ASCII "> Outputs:"
+            if "Outputs:" in line and ("📊" in line or ">" in line):
                 json_start = i + 1
                 break
 
