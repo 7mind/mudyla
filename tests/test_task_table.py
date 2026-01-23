@@ -475,28 +475,107 @@ class TestTableBuilding:
         assert table is not None
 
     def test_build_table_with_running_task(self):
-        """Test building table with a running task shows time."""
+        """Test building table with a running task shows status in legend."""
         mgr = TaskTableManager(["task1"])
         mgr.mark_running("task1")
         time.sleep(0.1)
 
         table = mgr._build_table()
-        header = mgr._build_header()
+        legend = mgr._build_legend()
 
         assert table is not None
-        assert "running" in header.lower()
+        assert "running" in legend.plain.lower()
 
     def test_build_table_with_completed_task(self):
-        """Test building table with a completed task."""
+        """Test building table with a completed task shows status in legend."""
         mgr = TaskTableManager(["task1"])
         mgr.mark_running("task1")
         mgr.mark_done("task1", 2.5)
 
         table = mgr._build_table()
-        header = mgr._build_header()
+        legend = mgr._build_legend()
 
         assert table is not None
-        assert "done" in header.lower()
+        assert "done" in legend.plain.lower()
+
+
+class TestProgressBarHeader:
+    """Tests for progress bar and caption functionality."""
+
+    def test_progress_caption_empty_tasks(self):
+        """Test progress caption with no tasks."""
+        mgr = TaskTableManager([])
+        caption = mgr._build_progress_caption()
+        # Returns a Table
+        assert caption is not None
+
+    def test_progress_caption_all_pending(self):
+        """Test progress caption shows pending tasks in legend."""
+        mgr = TaskTableManager(["task1", "task2", "task3"])
+        # Test via legend which is still accessible
+        legend = mgr._build_legend()
+        assert "pending" in legend.plain.lower()
+        assert "3" in legend.plain
+
+    def test_progress_caption_mixed_statuses(self):
+        """Test progress caption with mixed statuses."""
+        mgr = TaskTableManager(["task1", "task2", "task3", "task4"])
+        mgr.mark_running("task1")
+        mgr.mark_done("task2", 1.0)
+        mgr.mark_failed("task3", 0.5)
+        # task4 remains TBD
+        # Test via legend
+        legend = mgr._build_legend()
+        plain = legend.plain.lower()
+        assert "running" in plain
+        assert "done" in plain
+        assert "failed" in plain
+        assert "pending" in plain
+
+    def test_legend_shows_counts(self):
+        """Test legend displays correct counts for each status."""
+        mgr = TaskTableManager(["task1", "task2", "task3", "task4"])
+        mgr.mark_running("task1")
+        mgr.mark_done("task2", 1.0)
+        # task3 and task4 remain TBD
+
+        legend = mgr._build_legend()
+        plain = legend.plain.lower()
+
+        assert "running" in plain
+        assert "done" in plain
+        assert "pending" in plain
+        # Counts should be present
+        assert "1" in legend.plain  # 1 running, 1 done
+        assert "2" in legend.plain  # 2 pending
+
+    def test_legend_excludes_zero_count_statuses(self):
+        """Test legend excludes statuses with zero count."""
+        mgr = TaskTableManager(["task1"])
+        mgr.mark_done("task1", 1.0)
+
+        legend = mgr._build_legend()
+        plain = legend.plain.lower()
+
+        assert "done" in plain
+        assert "pending" not in plain
+        assert "running" not in plain
+        assert "failed" not in plain
+
+    def test_text_status_header_no_color_mode(self):
+        """Test text status header in no_color mode shows counts."""
+        mgr = TaskTableManager(["task1", "task2", "task3"], no_color=True)
+        mgr.mark_done("task1", 1.0)
+        mgr.mark_running("task2")
+        # task3 remains TBD
+
+        header = mgr._build_text_status_header()
+        plain = header.plain.lower()
+
+        assert "done" in plain
+        assert "running" in plain
+        assert "pending" in plain
+        assert "1" in header.plain  # counts
 
 
 class TestFormatting:
@@ -705,10 +784,10 @@ class TestKeyBindings:
 
     def test_scroll_keys_defined(self):
         """Test that SCROLL_KEYS is defined."""
-        assert "scroll" in TaskTableManager.SCROLL_KEYS
+        assert "j/k" in TaskTableManager.SCROLL_KEYS
         assert "back" in TaskTableManager.SCROLL_KEYS
 
     def test_log_keys_defined(self):
         """Test that LOG_KEYS is defined."""
-        assert "scroll" in TaskTableManager.LOG_KEYS
+        assert "j/k" in TaskTableManager.LOG_KEYS
         assert "refresh" in TaskTableManager.LOG_KEYS

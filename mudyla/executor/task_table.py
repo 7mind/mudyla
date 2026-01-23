@@ -13,6 +13,7 @@ All views share a common layout: Header | Content | Footer
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -28,6 +29,9 @@ from rich.text import Text
 
 # Cross-platform terminal handling
 IS_WINDOWS = sys.platform == "win32"
+
+# Selection indicator - Windows console encoding doesn't support Unicode triangles
+SELECTION_INDICATOR = ">" if IS_WINDOWS else "▶"
 
 if IS_WINDOWS:
     import msvcrt
@@ -87,9 +91,9 @@ class TaskTableManager:
     """
 
     # Key bindings per state
-    TABLE_KEYS = "↑/↓/j/k navigate | Enter/l stdout | e stderr | m meta | o output | s source | q kill"
-    SCROLL_KEYS = "↑/↓/j/k scroll | Shift+↑ top | Shift+↓ bottom | q back"
-    LOG_KEYS = "↑/↓/j/k scroll | Shift+↑ top | Shift+↓ bottom | r refresh | q back"
+    TABLE_KEYS = "j/k/Arrows navigate | Enter/l stdout | e stderr | m meta | o output | s source | q kill"
+    SCROLL_KEYS = "j/k/Arrows scroll | d/u half | PgUp/PgDn/f/b page | gg/Home top | G/End bottom | q back"
+    LOG_KEYS = "j/k/Arrows | d/u half | PgUp/PgDn page | gg/G top/bottom | r refresh | q back"
 
     def __init__(
         self,
@@ -122,6 +126,9 @@ class TaskTableManager:
 
         # Scroll states per view (keyed by task_name + view)
         self._scroll_states: dict[str, ScrollState] = {}
+
+        # Vim-like 'gg' sequence tracking
+        self._pending_g: bool = False
 
         # Terminal state
         self._old_terminal_settings: Optional[list[Any]] = None
@@ -281,7 +288,7 @@ class TaskTableManager:
 
         ch = msvcrt.getch()
 
-        # Handle special keys (arrow keys return two bytes)
+        # Handle special keys (arrow keys, page up/down, home/end return two bytes)
         if ch in (b'\x00', b'\xe0'):
             if msvcrt.kbhit():
                 ch2 = msvcrt.getch()
@@ -289,6 +296,14 @@ class TaskTableManager:
                     return "up"
                 elif ch2 == b'P':  # Down arrow
                     return "down"
+                elif ch2 == b'I':  # Page Up
+                    return "page_up"
+                elif ch2 == b'Q':  # Page Down
+                    return "page_down"
+                elif ch2 == b'G':  # Home
+                    return "top"
+                elif ch2 == b'O':  # End
+                    return "bottom"
                 elif ch2 == b'\x8d':  # Shift+Up (141)
                     return "top"
                 elif ch2 == b'\x91':  # Shift+Down (145)
@@ -311,6 +326,12 @@ class TaskTableManager:
             "r": "r", "R": "r",
             "j": "down", "J": "down",
             "k": "up", "K": "up",
+            "g": "g",
+            "G": "G",
+            "d": "half_down", "\x04": "half_down",  # d or Ctrl+d
+            "u": "half_up", "\x15": "half_up",      # u or Ctrl+u
+            "f": "page_down", "\x06": "page_down",  # f or Ctrl+f
+            "b": "page_up", "\x02": "page_up",      # b or Ctrl+b
         }
         return key_map.get(char, "")
 
@@ -361,7 +382,17 @@ class TaskTableManager:
                         return "right"
                     elif seq_str.startswith("[D") or seq_str == "OD":
                         return "left"
-                    # Some terminals send different sequences
+                    # Page Up/Down (various terminal sequences)
+                    elif seq_str.startswith("[5~"):
+                        return "page_up"
+                    elif seq_str.startswith("[6~"):
+                        return "page_down"
+                    # Home/End keys
+                    elif seq_str.startswith("[H") or seq_str.startswith("[1~") or seq_str == "OH":
+                        return "top"
+                    elif seq_str.startswith("[F") or seq_str.startswith("[4~") or seq_str == "OF":
+                        return "bottom"
+                    # Some terminals send different arrow sequences
                     elif "A" in seq_str and "[" in seq_str:
                         return "up"
                     elif "B" in seq_str and "[" in seq_str:
@@ -384,6 +415,12 @@ class TaskTableManager:
                 "r": "r", "R": "r",
                 "j": "down", "J": "down",
                 "k": "up", "K": "up",
+                "g": "g",
+                "G": "G",
+                "d": "half_down", "\x04": "half_down",  # d or Ctrl+d
+                "u": "half_up", "\x15": "half_up",      # u or Ctrl+u
+                "f": "page_down", "\x06": "page_down",  # f or Ctrl+f
+                "b": "page_up", "\x02": "page_up",      # b or Ctrl+b
             }
             return key_map.get(ch, "")
         except Exception:
@@ -429,19 +466,34 @@ class TaskTableManager:
         return False
 
     def _handle_key_scroll(self, key: str) -> None:
-        """Handle key in scrollable views."""
+        """Handle key in scrollable views with vim-like navigation."""
         with self.lock:
             task_name = self._get_selected_task_name()
             if not task_name:
+                self._pending_g = False
                 return
 
             if key == "q":
                 self.state = ViewState.TABLE
+                self._pending_g = False
                 return
 
             scroll_state = self._get_scroll_state(task_name, self.state)
             visible_height = self._get_content_height()
             max_offset = max(0, scroll_state.total_lines - visible_height)
+            half_page = max(1, visible_height // 2)
+
+            # Handle 'gg' sequence
+            if key == "g":
+                if self._pending_g:
+                    scroll_state.offset = 0
+                    scroll_state.at_end = max_offset == 0
+                    self._pending_g = False
+                else:
+                    self._pending_g = True
+                return
+            else:
+                self._pending_g = False
 
             if key == "up":
                 scroll_state.offset = max(0, scroll_state.offset - 1)
@@ -452,9 +504,21 @@ class TaskTableManager:
             elif key == "top":
                 scroll_state.offset = 0
                 scroll_state.at_end = max_offset == 0
-            elif key == "bottom":
+            elif key in ("bottom", "G"):
                 scroll_state.offset = max_offset
                 scroll_state.at_end = True
+            elif key == "half_down":
+                scroll_state.offset = min(max_offset, scroll_state.offset + half_page)
+                scroll_state.at_end = scroll_state.offset >= max_offset
+            elif key == "half_up":
+                scroll_state.offset = max(0, scroll_state.offset - half_page)
+                scroll_state.at_end = False
+            elif key == "page_down":
+                scroll_state.offset = min(max_offset, scroll_state.offset + visible_height)
+                scroll_state.at_end = scroll_state.offset >= max_offset
+            elif key == "page_up":
+                scroll_state.offset = max(0, scroll_state.offset - visible_height)
+                scroll_state.at_end = False
 
     # =========================================================================
     # Formatting Helpers
@@ -524,12 +588,21 @@ class TaskTableManager:
     # View Renderers
     # =========================================================================
 
-    def _build_table(self) -> Table:
-        """Build the task table (original style with context markers)."""
+    def _build_table(self, include_progress: bool = False) -> Table:
+        """Build the task table (original style with context markers).
+
+        Args:
+            include_progress: If True, adds progress bar and legend as table caption.
+        """
         with self.lock:
             has_context = any("#" in name for name in self.task_order)
 
-            table = Table(show_header=True, header_style="bold")
+            # Build caption with progress bar and legend if requested
+            caption = None
+            if include_progress and not self.no_color:
+                caption = self._build_progress_caption()
+
+            table = Table(show_header=True, header_style="bold", caption=caption, caption_justify="left")
 
             # Selection indicator column
             table.add_column("", width=1, no_wrap=True)
@@ -554,7 +627,7 @@ class TaskTableManager:
                 is_selected = idx == self.selected_index
 
                 # Selection indicator
-                sel_indicator = "▶" if is_selected else " "
+                sel_indicator = SELECTION_INDICATOR if is_selected else " "
 
                 # Calculate time
                 if status == TaskStatus.RUNNING and task.start_time:
@@ -602,27 +675,158 @@ class TaskTableManager:
 
             return table
 
+    # Status display configuration: (symbol_ascii, symbol_unicode, color, label)
+    STATUS_DISPLAY = {
+        TaskStatus.TBD: (".", "░", "dim", "pending"),
+        TaskStatus.RUNNING: ("~", "▒", "cyan", "running"),
+        TaskStatus.DONE: ("#", "█", "green", "done"),
+        TaskStatus.RESTORED: ("+", "▓", "blue", "restored"),
+        TaskStatus.FAILED: ("!", "█", "red", "failed"),
+    }
+
+    def _build_progress_caption(self) -> Table:
+        """Build progress bar and legend as table caption.
+
+        Returns a Table containing the progress bar and legend.
+        The table uses expand=True to fill the parent table's width.
+        """
+        with self.lock:
+            # Count tasks by status
+            counts: dict[TaskStatus, int] = {}
+            for task in self.tasks.values():
+                counts[task.status] = counts.get(task.status, 0) + 1
+
+            total = len(self.tasks)
+
+            # Container table for caption content
+            caption_table = Table(
+                show_header=False,
+                show_edge=False,
+                box=None,
+                padding=0,
+                expand=True,
+            )
+            caption_table.add_column(ratio=1)
+
+            if total == 0:
+                caption_table.add_row(Text("No tasks", style="dim"))
+                return caption_table
+
+            # Order: DONE, RESTORED, RUNNING, FAILED, TBD
+            status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
+
+            # Build progress bar using nested table with ratio columns
+            bar_table = Table(
+                show_header=False,
+                show_edge=False,
+                box=None,
+                padding=0,
+                expand=True,
+            )
+
+            # Add columns with ratios based on counts
+            for status in status_order:
+                count = counts.get(status, 0)
+                if count > 0:
+                    bar_table.add_column(ratio=count, no_wrap=True, overflow="crop")
+
+            # Add row with filled segments
+            row_data = []
+            for status in status_order:
+                count = counts.get(status, 0)
+                if count > 0:
+                    _, unicode_sym, color, _ = self.STATUS_DISPLAY[status]
+                    # Long string that will be cropped to column width
+                    row_data.append(Text(unicode_sym * 500, style=color))
+
+            if row_data:
+                bar_table.add_row(*row_data)
+
+            # Build legend line
+            legend = Text()
+            first = True
+            for status in status_order:
+                count = counts.get(status, 0)
+                if count == 0:
+                    continue
+
+                _, unicode_sym, color, label = self.STATUS_DISPLAY[status]
+
+                if not first:
+                    legend.append("  ")
+                first = False
+
+                legend.append(unicode_sym, style=color)
+                legend.append(f" {label}: ", style="dim")
+                legend.append(str(count), style=color)
+
+            # Add progress bar and legend to caption
+            caption_table.add_row(bar_table)
+            caption_table.add_row(legend)
+
+            return caption_table
+
+    def _build_text_status_header(self) -> Text:
+        """Build text-based status header with counts (for no-color mode)."""
+        with self.lock:
+            counts: dict[TaskStatus, int] = {}
+            for task in self.tasks.values():
+                counts[task.status] = counts.get(task.status, 0) + 1
+
+            parts = []
+            if counts.get(TaskStatus.DONE, 0) > 0:
+                parts.append(f"{counts[TaskStatus.DONE]} done")
+            if counts.get(TaskStatus.RESTORED, 0) > 0:
+                parts.append(f"{counts[TaskStatus.RESTORED]} restored")
+            if counts.get(TaskStatus.RUNNING, 0) > 0:
+                parts.append(f"{counts[TaskStatus.RUNNING]} running")
+            if counts.get(TaskStatus.FAILED, 0) > 0:
+                parts.append(f"{counts[TaskStatus.FAILED]} failed")
+            if counts.get(TaskStatus.TBD, 0) > 0:
+                parts.append(f"{counts[TaskStatus.TBD]} pending")
+
+            return Text(" | ".join(parts) if parts else "No tasks")
+
+    def _build_legend(self) -> Text:
+        """Build legend showing status symbols, colors, and counts."""
+        with self.lock:
+            # Count tasks by status
+            counts: dict[TaskStatus, int] = {}
+            for task in self.tasks.values():
+                counts[task.status] = counts.get(task.status, 0) + 1
+
+            legend = Text()
+            # Order: DONE, RESTORED, RUNNING, FAILED, TBD
+            status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
+
+            first = True
+            for status in status_order:
+                count = counts.get(status, 0)
+                if count == 0:
+                    continue
+
+                ascii_sym, unicode_sym, color, label = self.STATUS_DISPLAY[status]
+                symbol = ascii_sym if IS_WINDOWS or self.no_color else unicode_sym
+
+                if not first:
+                    legend.append("  ", style="dim")
+                first = False
+
+                if self.no_color:
+                    legend.append(f"{symbol} {label}: {count}")
+                else:
+                    legend.append(symbol, style=color)
+                    legend.append(f" {label}: ", style="dim")
+                    legend.append(str(count), style=color)
+
+            return legend
+
     def _build_header(self) -> str:
-        """Build header text with status counts."""
+        """Build header text for detail views."""
         with self.lock:
             if self.state == ViewState.TABLE:
-                counts: dict[TaskStatus, int] = {}
-                for task in self.tasks.values():
-                    counts[task.status] = counts.get(task.status, 0) + 1
-
-                parts = []
-                if counts.get(TaskStatus.TBD, 0) > 0:
-                    parts.append(f"{counts[TaskStatus.TBD]} pending")
-                if counts.get(TaskStatus.RUNNING, 0) > 0:
-                    parts.append(f"{counts[TaskStatus.RUNNING]} running")
-                if counts.get(TaskStatus.DONE, 0) > 0:
-                    parts.append(f"{counts[TaskStatus.DONE]} done")
-                if counts.get(TaskStatus.RESTORED, 0) > 0:
-                    parts.append(f"{counts[TaskStatus.RESTORED]} restored")
-                if counts.get(TaskStatus.FAILED, 0) > 0:
-                    parts.append(f"{counts[TaskStatus.FAILED]} failed")
-
-                return " | ".join(parts) if parts else "Tasks"
+                # This is not used for TABLE view anymore (see _build_renderable)
+                return "Tasks"
             else:
                 task = self._get_selected_task()
                 task_name = task.name if task else "Unknown"
@@ -635,26 +839,157 @@ class TaskTableManager:
                 }
                 return f"{view_names.get(self.state, 'View')} - {task_name}"
 
-    def _build_footer(self) -> str:
-        """Build footer text with key bindings."""
+    def _build_footer(self) -> Text:
+        """Build footer with key bindings, line counter, and progress bar."""
         if self.state == ViewState.TABLE:
-            return self.TABLE_KEYS
-        elif self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR):
-            return self.LOG_KEYS
-        else:
-            return self.SCROLL_KEYS
+            return Text(self.TABLE_KEYS, style="dim")
 
-    def _build_detail_content(self) -> str:
-        """Build content for detail views (logs, meta, output, source)."""
+        # Get scroll state for detail views
+        task = self._get_selected_task()
+        if not task:
+            keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
+            return Text(keys, style="dim")
+
+        scroll_state = self._get_scroll_state(task.name, self.state)
+        visible_height = self._get_content_height()
+        total = scroll_state.total_lines
+
+        if total == 0:
+            line_info = "0 lines"
+            progress_pct = 100
+        else:
+            start_line = scroll_state.offset + 1
+            end_line = min(scroll_state.offset + visible_height, total)
+            line_info = f"{start_line}-{end_line}/{total}"
+            progress_pct = min(100, int((end_line / total) * 100)) if total > 0 else 100
+
+        # Build progress bar (10 chars wide, ASCII on Windows)
+        bar_width = 10
+        filled = int(bar_width * progress_pct / 100)
+        if IS_WINDOWS:
+            bar = "#" * filled + "-" * (bar_width - filled)
+        else:
+            bar = "█" * filled + "░" * (bar_width - filled)
+
+        keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
+
+        separator = " | " if IS_WINDOWS else " │ "
+
+        footer = Text()
+        footer.append(keys, style="dim")
+        footer.append(separator, style="dim")
+        footer.append(line_info, style="cyan")
+        footer.append(" ", style="dim")
+        footer.append(bar, style="cyan dim")
+        footer.append(f" {progress_pct}%", style="cyan")
+
+        return footer
+
+    def _format_line_number(self, line_num: int, total_lines: int) -> Text:
+        """Format line number prefix with appropriate width."""
+        width = max(4, len(str(total_lines)))
+        sep = "|" if IS_WINDOWS else "│"
+        text = Text()
+        text.append(f"{line_num:{width}} ", style="dim")
+        text.append(f"{sep} ", style="dim")
+        return text
+
+    def _highlight_json_line(self, line: str, line_num: int, total_lines: int) -> Text:
+        """Apply simple JSON syntax highlighting to a line."""
+        text = self._format_line_number(line_num, total_lines)
+        pos = 0
+        # Match JSON keys, strings, numbers, booleans, null
+        pattern = re.compile(r'("(?:[^"\\]|\\.)*")\s*:|("(?:[^"\\]|\\.)*")|(true|false|null)|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)')
+
+        for match in pattern.finditer(line):
+            # Add text before match
+            if match.start() > pos:
+                text.append(line[pos:match.start()])
+
+            if match.group(1):  # Key
+                text.append(match.group(1), style="cyan")
+                text.append(":")
+            elif match.group(2):  # String value
+                text.append(match.group(2), style="green")
+            elif match.group(3):  # Boolean/null
+                text.append(match.group(3), style="yellow")
+            elif match.group(4):  # Number
+                text.append(match.group(4), style="magenta")
+
+            pos = match.end()
+
+        # Add remaining text
+        if pos < len(line):
+            text.append(line[pos:])
+
+        return text
+
+    def _highlight_shell_line(self, line: str, line_num: int, total_lines: int) -> Text:
+        """Apply simple shell syntax highlighting to a source line."""
+        text = self._format_line_number(line_num, total_lines)
+
+        # Check for comment
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            text.append(line, style="dim italic")
+            return text
+
+        pos = 0
+        # Keywords, strings, variables, commands
+        keywords = r'\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|exit|export|local|readonly|set|unset|echo|printf|cd|pwd|ls|cat|grep|sed|awk|cut|sort|uniq|wc|head|tail|find|xargs|mkdir|rm|cp|mv|touch|chmod|chown|source)\b'
+        pattern = re.compile(
+            r'(\$\{[^}]+\}|\$\w+)|'  # Variables
+            r'("(?:[^"\\]|\\.)*"|\'[^\']*\')|'  # Strings
+            + keywords
+        )
+
+        for match in pattern.finditer(line):
+            if match.start() > pos:
+                text.append(line[pos:match.start()])
+
+            if match.group(1):  # Variable
+                text.append(match.group(1), style="cyan")
+            elif match.group(2):  # String
+                text.append(match.group(2), style="green")
+            elif match.group(3):  # Keyword
+                text.append(match.group(3), style="yellow bold")
+
+            pos = match.end()
+
+        if pos < len(line):
+            text.append(line[pos:])
+
+        return text
+
+    def _highlight_log_line(self, line: str, line_num: int, total_lines: int) -> Text:
+        """Apply simple log highlighting (errors, warnings)."""
+        text = self._format_line_number(line_num, total_lines)
+        lower = line.lower()
+
+        if "error" in lower or "fail" in lower or "exception" in lower:
+            text.append(line, style="red")
+        elif "warn" in lower:
+            text.append(line, style="yellow")
+        elif "success" in lower or "pass" in lower or "ok" in lower:
+            text.append(line, style="green")
+        else:
+            text.append(line)
+
+        return text
+
+    def _build_detail_content(self) -> Text:
+        """Build content for detail views with syntax highlighting."""
         task = self._get_selected_task()
         if not task or not task.action_dir:
-            return "(no action directory)"
+            return Text("(no action directory)", style="dim")
 
         visible_height = self._get_content_height()
         lines: list[str] = []
+        content_type = "text"  # text, json, shell, log
 
         if self.state == ViewState.LOGS_STDOUT:
             log_path = task.action_dir / "stdout.log"
+            content_type = "log"
             if log_path.exists():
                 try:
                     lines = log_path.read_text().splitlines()
@@ -662,6 +997,7 @@ class TaskTableManager:
                     lines = ["(error reading file)"]
         elif self.state == ViewState.LOGS_STDERR:
             log_path = task.action_dir / "stderr.log"
+            content_type = "log"
             if log_path.exists():
                 try:
                     lines = log_path.read_text().splitlines()
@@ -669,6 +1005,7 @@ class TaskTableManager:
                     lines = ["(error reading file)"]
         elif self.state == ViewState.META:
             meta_path = task.action_dir / "meta.json"
+            content_type = "json"
             if meta_path.exists():
                 try:
                     data = json.loads(meta_path.read_text())
@@ -679,6 +1016,7 @@ class TaskTableManager:
                 lines = ["(meta.json not found)"]
         elif self.state == ViewState.OUTPUT:
             output_path = task.action_dir / "output.json"
+            content_type = "json"
             if output_path.exists():
                 try:
                     data = json.loads(output_path.read_text())
@@ -694,10 +1032,10 @@ class TaskTableManager:
                 if path.exists():
                     script_path = path
                     break
+            content_type = "shell"
             if script_path:
                 try:
-                    source_lines = script_path.read_text().splitlines()
-                    lines = [f"{i+1:4} │ {line}" for i, line in enumerate(source_lines)]
+                    lines = script_path.read_text().splitlines()
                 except Exception as e:
                     lines = [f"(error: {e})"]
             else:
@@ -715,27 +1053,66 @@ class TaskTableManager:
         end = start + visible_height
         visible_lines = lines[start:end]
 
-        return "\n".join(visible_lines)
+        # Build highlighted content with line numbers
+        result = Text()
+        width = max(4, len(str(total_lines)))
+        sep = "|" if IS_WINDOWS else "│"
+
+        for i, line in enumerate(visible_lines):
+            if i > 0:
+                result.append("\n")
+
+            line_num = start + i + 1
+
+            if self.no_color:
+                result.append(f"{line_num:{width}} {sep} {line}")
+            elif content_type == "json":
+                result.append_text(self._highlight_json_line(line, line_num, total_lines))
+            elif content_type == "shell":
+                result.append_text(self._highlight_shell_line(line, line_num, total_lines))
+            elif content_type == "log":
+                result.append_text(self._highlight_log_line(line, line_num, total_lines))
+            else:
+                result.append_text(self._format_line_number(line_num, total_lines))
+                result.append(line)
+
+        return result
 
     def _build_renderable(self) -> Group:
         """Build the complete renderable for the current state."""
-        header = self._build_header()
         footer = self._build_footer()
 
         if self.state == ViewState.TABLE:
-            content = self._build_table()
+            if self.no_color:
+                # No-color mode: text status header above table
+                header = self._build_text_status_header()
+                content = self._build_table(include_progress=False)
+                return Group(
+                    header,
+                    content,
+                    Text(""),
+                    footer,
+                )
+            else:
+                # Color mode: table with progress legend as caption
+                content = self._build_table(include_progress=True)
+                return Group(
+                    content,
+                    Text(""),
+                    footer,
+                )
         else:
-            content = Text(self._build_detail_content())
+            # Simple text header for detail views
+            header = self._build_header()
+            content = self._build_detail_content()
+            header_text = Text(f" {header} ", style="bold reverse")
 
-        header_text = Text(f" {header} ", style="bold reverse")
-        footer_text = Text(footer, style="dim")
-
-        return Group(
-            header_text,
-            content,
-            Text(""),
-            footer_text,
-        )
+            return Group(
+                header_text,
+                content,
+                Text(""),
+                footer,
+            )
 
     # =========================================================================
     # Main Loop (single-threaded for input + updates)

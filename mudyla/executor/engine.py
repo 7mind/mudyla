@@ -248,6 +248,8 @@ class ExecutionEngine:
         self._kill_event = threading.Event()
         self._current_table_manager: Any = None
         self._current_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._running_processes: set[subprocess.Popen] = set()
+        self._processes_lock = threading.Lock()
 
     def _request_kill(self) -> None:
         """Request graceful termination of all running processes.
@@ -255,6 +257,15 @@ class ExecutionEngine:
         Called by table_manager when user presses 'q' in main view.
         """
         self._kill_event.set()
+
+        # Terminate all running subprocesses
+        with self._processes_lock:
+            for process in self._running_processes:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+
         # If we have an executor, try to shutdown
         if self._current_executor:
             try:
@@ -895,46 +906,71 @@ class ExecutionEngine:
                     bufsize=1,
                 )
 
-                size_lock = threading.Lock()
+                # Register process for kill signal handling
+                with self._processes_lock:
+                    self._running_processes.add(process)
 
-                def stream_output(pipe, console_stream, file_stream, is_stdout: bool):
-                    nonlocal stdout_size, stderr_size
-                    if pipe:
-                        for line in pipe:
-                            if self.github_actions or self.verbose:
-                                console_stream.write(line)
-                                console_stream.flush()
+                try:
+                    size_lock = threading.Lock()
 
-                            file_stream.write(line)
-                            file_stream.flush()
+                    def stream_output(pipe, console_stream, file_stream, combined_file, is_stdout: bool):
+                        """Stream output from pipe to console and file(s).
 
-                            line_bytes = len(line.encode("utf-8"))
-                            with size_lock:
-                                if is_stdout:
-                                    stdout_size += line_bytes
-                                else:
-                                    stderr_size += line_bytes
+                        Args:
+                            pipe: The subprocess pipe to read from
+                            console_stream: Console stream for verbose output
+                            file_stream: Primary file to write to (stdout.log or stderr.log)
+                            combined_file: Combined log file (stdout.log) - stderr also writes here
+                            is_stdout: True if this is stdout, False if stderr
+                        """
+                        nonlocal stdout_size, stderr_size
+                        if pipe:
+                            for line in pipe:
+                                if self.github_actions or self.verbose:
+                                    console_stream.write(line)
+                                    console_stream.flush()
 
-                                if table_manager and self.use_rich_table:
-                                    table_manager.update_output_sizes(
-                                        action_name, stdout_size, stderr_size
-                                    )
+                                file_stream.write(line)
+                                file_stream.flush()
 
-                stdout_thread = threading.Thread(
-                    target=stream_output,
-                    args=(process.stdout, sys.stdout, stdout_file, True),
-                )
-                stderr_thread = threading.Thread(
-                    target=stream_output,
-                    args=(process.stderr, sys.stderr, stderr_file, False),
-                )
+                                # Write stderr to combined log (stdout.log) as well
+                                if not is_stdout and combined_file:
+                                    combined_file.write(line)
+                                    combined_file.flush()
 
-                stdout_thread.start()
-                stderr_thread.start()
+                                line_bytes = len(line.encode("utf-8"))
+                                with size_lock:
+                                    if is_stdout:
+                                        stdout_size += line_bytes
+                                    else:
+                                        stderr_size += line_bytes
+                                        # Add stderr size to stdout_size since it's in combined log
+                                        stdout_size += line_bytes
 
-                returncode = process.wait()
-                stdout_thread.join()
-                stderr_thread.join()
+                                    if table_manager and self.use_rich_table:
+                                        table_manager.update_output_sizes(
+                                            action_name, stdout_size, stderr_size
+                                        )
+
+                    stdout_thread = threading.Thread(
+                        target=stream_output,
+                        args=(process.stdout, sys.stdout, stdout_file, None, True),
+                    )
+                    stderr_thread = threading.Thread(
+                        target=stream_output,
+                        args=(process.stderr, sys.stderr, stderr_file, stdout_file, False),
+                    )
+
+                    stdout_thread.start()
+                    stderr_thread.start()
+
+                    returncode = process.wait()
+                    stdout_thread.join()
+                    stderr_thread.join()
+                finally:
+                    # Unregister process
+                    with self._processes_lock:
+                        self._running_processes.discard(process)
 
             if self.github_actions:
                 print("::endgroup::")
