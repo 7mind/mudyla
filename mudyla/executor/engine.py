@@ -16,9 +16,8 @@ from typing import Any, Optional
 from ..ast.types import ReturnType
 from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph, ActionKey
-from ..utils.colors import ColorFormatter
 from ..utils.output import OutputFormatter
-from ..utils.context_ids import format_action_label, truncate_dirname
+from ..utils.action_formatter import ActionFormatter
 from .runtime_registry import RuntimeRegistry
 from .bash_runtime import BashRuntime
 from .python_runtime import PythonRuntime
@@ -194,7 +193,6 @@ class ExecutionEngine:
         show_dirs: bool = False,
         parallel_execution: bool = True,
         use_short_context_ids: bool = False,
-        context_id_mapping: Optional[dict[str, str]] = None,
         keep_running: bool = False,
     ):
         self.graph = graph
@@ -216,16 +214,15 @@ class ExecutionEngine:
         self.show_dirs = show_dirs
         self.parallel_execution = parallel_execution
         self.use_short_context_ids = use_short_context_ids
-        self.context_id_mapping = context_id_mapping or {}
         self.keep_running = keep_running
 
         # Determine if we should use rich table
         # Use simple log if: --simple-log, --no-color, --github-actions, --verbose, or not a TTY
         self.use_rich_table = not (simple_log or no_color or github_actions or verbose)
 
-        # Create color formatter and output formatter
-        self.color = ColorFormatter(no_color=no_color)
-        self.output = OutputFormatter(self.color)
+        # Create output formatter and action formatter
+        self.output = OutputFormatter(no_color=no_color)
+        self.action_formatter = ActionFormatter(no_color=no_color)
 
         # Register built-in runtimes once.
         for runtime_cls in (BashRuntime, PythonRuntime):
@@ -282,7 +279,7 @@ class ExecutionEngine:
         Returns:
             Formatted string (short ID with symbol/emoji or full context)
         """
-        return format_action_label(action_key, use_short_ids=self.use_short_context_ids)
+        return self.action_formatter.format_label_plain(action_key, self.use_short_context_ids)
 
     def _get_action_dirname(self, action_key: ActionKey) -> str:
         """Get the directory name for an action.
@@ -300,7 +297,7 @@ class ExecutionEngine:
 
         if use_context_in_dirname:
             action_key_str = str(action_key)
-            return truncate_dirname(action_key_str.replace(":", "_"))
+            return ActionFormatter.truncate_dirname(action_key_str.replace(":", "_"))
         else:
             return action_key.id.name
 
@@ -339,9 +336,13 @@ class ExecutionEngine:
         Args:
             action_name: Name of the action starting
         """
+        from rich.text import Text
+
         if not self.github_actions:
-            action_colored = self.color.format_action_key(action_name)
-            self.output.print(f"{self.color.dim('start:')} {action_colored}")
+            line = Text()
+            line.append("start: ", style="" if self.no_color else "dim")
+            line.append(action_name, style="" if self.no_color else "bold cyan")
+            self.output.print(line)
 
     def _print_action_completion(self, result: ActionResult) -> None:
         """Print action completion message with duration.
@@ -349,15 +350,27 @@ class ExecutionEngine:
         Args:
             result: The completed action result
         """
+        from rich.text import Text
+
         if not self.github_actions:
-            action_colored = self.color.format_action_key(result.action_name)
-            duration_str = f"{result.duration_seconds:.1f}s"
+            duration_str = f"({result.duration_seconds:.1f}s)"
             restored_str = " (restored from previous run)" if result.restored else ""
+
+            sym = self.output.symbols
+            line = Text()
             if result.success:
-                emoji = self.output.emoji('♻️', '✓') if result.restored else ""
-                self.output.print(f"{emoji} {self.color.dim('done:')} {action_colored} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
+                if result.restored:
+                    line.append(f"{sym.Recycle} ")
+                line.append("done: ", style="" if self.no_color else "dim")
+                line.append(result.action_name, style="" if self.no_color else "bold cyan")
+                line.append(f" {duration_str}", style="" if self.no_color else "dim")
+                line.append(restored_str, style="" if self.no_color else "dim")
             else:
-                self.output.print(f"{self.color.error('failed:')} {action_colored} {self.color.dim(f'({duration_str})')}{self.color.dim(restored_str)}")
+                line.append("failed: ", style="" if self.no_color else "bold red")
+                line.append(result.action_name, style="" if self.no_color else "bold cyan")
+                line.append(f" {duration_str}", style="" if self.no_color else "dim")
+                line.append(restored_str, style="" if self.no_color else "dim")
+            self.output.print(line)
 
     def _print_action_failure(self, result: ActionResult) -> None:
         """Print diagnostic information for a failed action.
@@ -365,20 +378,50 @@ class ExecutionEngine:
         Args:
             result: The failed action result
         """
+        from rich.text import Text
+
         suppress_outputs = self.no_output_on_fail and not (self.github_actions or self.verbose)
-        error_msg = f"Action '{result.action_name}' failed!"
-        self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error(error_msg)}")
-        self.output.print(f"{self.output.emoji('📂', '▸')} {self.color.dim('Run directory:')} {self.color.highlight(str(self.run_directory))}")
-        self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stdout:')} {self.color.info(str(result.stdout_path))}")
+        sym = self.output.symbols
+
+        error_line = Text()
+        error_line.append(f"\n{sym.Cross} ")
+        error_line.append(f"Action '{result.action_name}' failed!", style="" if self.no_color else "bold red")
+        self.output.print(error_line)
+
+        run_dir_line = Text()
+        run_dir_line.append(f"{sym.Folder} ")
+        run_dir_line.append("Run directory: ", style="" if self.no_color else "dim")
+        run_dir_line.append(str(self.run_directory), style="" if self.no_color else "bold cyan")
+        self.output.print(run_dir_line)
+
+        stdout_line = Text()
+        stdout_line.append(f"\n{sym.File} ")
+        stdout_line.append("Stdout: ", style="" if self.no_color else "dim")
+        stdout_line.append(str(result.stdout_path), style="" if self.no_color else "blue")
+        self.output.print(stdout_line)
         if result.stdout_path.exists() and not suppress_outputs:
             self.output.print(result.stdout_path.read_text())
-        self.output.print(f"\n{self.output.emoji('📄', '▸')} {self.color.dim('Stderr:')} {self.color.info(str(result.stderr_path))}")
+
+        stderr_line = Text()
+        stderr_line.append(f"\n{sym.File} ")
+        stderr_line.append("Stderr: ", style="" if self.no_color else "dim")
+        stderr_line.append(str(result.stderr_path), style="" if self.no_color else "blue")
+        self.output.print(stderr_line)
         if result.stderr_path.exists() and not suppress_outputs:
             self.output.print(result.stderr_path.read_text())
+
         if suppress_outputs:
-            self.output.print(self.color.dim("Output suppressed; re-run with --verbose or inspect log files for details."))
+            self.output.print(Text(
+                "Output suppressed; re-run with --verbose or inspect log files for details.",
+                style="" if self.no_color else "dim"
+            ))
+
         if result.error_message:
-            self.output.print(f"\n{self.output.emoji('❌', '✗')} {self.color.error('Error:')} {result.error_message}")
+            error_detail = Text()
+            error_detail.append(f"\n{sym.Cross} ")
+            error_detail.append("Error: ", style="" if self.no_color else "bold red")
+            error_detail.append(result.error_message)
+            self.output.print(error_detail)
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -406,17 +449,16 @@ class ExecutionEngine:
         table_manager = None
         if self.use_rich_table:
             from .task_table import TaskTableManager
-            # Convert ActionKey list to action names for table display
-            action_names = [self._format_action_key(key) for key in execution_order]
             # Build action directory mapping
             action_dirs = self._build_action_dir_mapping(execution_order)
             table_manager = TaskTableManager(
-                action_names,
+                execution_order,
                 no_color=self.no_color,
                 action_dirs=action_dirs,
                 show_dirs=self.show_dirs,
                 run_directory=self.run_directory,
                 keep_running=self.keep_running,
+                use_short_ids=self.use_short_context_ids,
             )
             table_manager.start()
             # Register kill callback for graceful termination
@@ -493,11 +535,12 @@ class ExecutionEngine:
             if table_manager and not self.keep_running:
                 table_manager.stop()
 
-        result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
-
-        # If --it flag, wait for user to quit after reviewing
+        # If --it flag, wait for user to quit BEFORE printing final messages
+        # This prevents output from interfering with the live table display
         if table_manager and self.keep_running:
             table_manager.wait_for_quit()
+
+        result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
         return result
 
@@ -529,17 +572,16 @@ class ExecutionEngine:
             try:
                 execution_order = self.graph.get_execution_order()
                 from .task_table import TaskTableManager
-                # Convert ActionKey list to action names for table display
-                action_names = [self._format_action_key(key) for key in execution_order]
                 # Build action directory mapping
                 action_dirs = self._build_action_dir_mapping(execution_order)
                 table_manager = TaskTableManager(
-                    action_names,
+                    execution_order,
                     no_color=self.no_color,
                     action_dirs=action_dirs,
                     show_dirs=self.show_dirs,
                     run_directory=self.run_directory,
                     keep_running=self.keep_running,
+                    use_short_ids=self.use_short_context_ids,
                 )
                 table_manager.start()
                 # Register kill callback for graceful termination
@@ -685,11 +727,12 @@ class ExecutionEngine:
             if table_manager and not self.keep_running:
                 table_manager.stop()
 
-        result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
-
-        # If --it flag, wait for user to quit after reviewing
+        # If --it flag, wait for user to quit BEFORE printing final messages
+        # This prevents output from interfering with the live table display
         if table_manager and self.keep_running:
             table_manager.wait_for_quit()
+
+        result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
         return result
 
@@ -703,7 +746,7 @@ class ExecutionEngine:
         contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
         use_context_in_dirname = len(contexts_in_graph) > 1
         if use_context_in_dirname:
-            action_dirname = truncate_dirname(action_key_str.replace(":", "_"))
+            action_dirname = ActionFormatter.truncate_dirname(action_key_str.replace(":", "_"))
         else:
             action_dirname = action_key.id.name
 
@@ -759,7 +802,7 @@ class ExecutionEngine:
             # E.g., "platform:jvm+scala:2.12#build" becomes "platform_jvm+scala_2.12#build"
             # Truncate long names to avoid filesystem limits
             action_key_str = str(action_key)
-            safe_dir_name = truncate_dirname(action_key_str.replace(":", "_"))
+            safe_dir_name = ActionFormatter.truncate_dirname(action_key_str.replace(":", "_"))
         else:
             # Single context - use simple action name for backward compatibility
             safe_dir_name = action_key.id.name
@@ -883,7 +926,11 @@ class ExecutionEngine:
             print(f"::group::{action_name}")
 
         if self.github_actions or self.verbose:
-            print(f"{self.color.dim('Command:')} {' '.join(prepared.exec_cmd)}")
+            cmd_str = ' '.join(prepared.exec_cmd)
+            if self.no_color:
+                print(f"Command: {cmd_str}")
+            else:
+                print(f"\033[2mCommand:\033[0m {cmd_str}")
 
         start_time = datetime.now()
         start_time_iso = start_time.isoformat()
@@ -1249,19 +1296,34 @@ class ExecutionEngine:
     ) -> ExecutionResult:
         graph_duration = time.time() - graph_start_time
 
+        from rich.text import Text
+
+        sym = self.output.symbols
+
         if restored_actions and not self.github_actions:
             restored_list = ", ".join(restored_actions)
-            self.output.print(f"\n{self.output.emoji('♻️', '▸')} {self.color.dim('restored from previous run:')} {self.color.highlight(restored_list)}")
+            line = Text()
+            line.append(f"\n{sym.Recycle} ")
+            line.append("restored from previous run: ", style="" if self.no_color else "dim")
+            line.append(restored_list, style="" if self.no_color else "bold cyan")
+            self.output.print(line)
 
         if not self.keep_run_dir:
             try:
                 shutil.rmtree(self.run_directory)
             except Exception as e:
-                emoji = "!" if self.no_color else "⚠️"
-                print(f"{emoji} {self.color.warning('Warning:')} Failed to clean up run directory: {e}")
+                warn_line = Text()
+                warn_line.append(f"{sym.Warning} ")
+                warn_line.append("Warning: ", style="" if self.no_color else "bold yellow")
+                warn_line.append(f"Failed to clean up run directory: {e}")
+                self.output.print(warn_line)
 
         if not self.github_actions:
-            self.output.print(f"\n{self.color.dim('Total wall time:')} {self.color.highlight(f'{graph_duration:.1f}s')}")
+            time_line = Text()
+            time_line.append("\n")
+            time_line.append("Total wall time: ", style="" if self.no_color else "dim")
+            time_line.append(f"{graph_duration:.1f}s", style="" if self.no_color else "bold cyan")
+            self.output.print(time_line)
 
         return ExecutionResult(
             success=True,

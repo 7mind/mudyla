@@ -2,7 +2,7 @@
 
 import hashlib
 
-from mudyla.utils.context_ids import (
+from mudyla.utils.string_utils import (
     MAX_DIRNAME_LENGTH,
     TRUNCATED_HASH_LENGTH,
     truncate_dirname,

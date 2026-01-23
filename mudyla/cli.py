@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
 from typing import Optional
+from rich.text import Text
 
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.builder import DAGBuilder
@@ -30,9 +31,8 @@ from .cli_args import (
 from .cli_builder import build_arg_parser
 from .axis_wildcards import expand_all_wildcards
 from .utils.project_root import find_project_root
-from .utils.colors import ColorFormatter
-from .utils.context_ids import build_context_mapping, format_action_label
 from .utils.output import OutputFormatter
+from .utils.action_formatter import ActionFormatter
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
 
@@ -72,18 +72,21 @@ class CLI:
         if args.autocomplete:
             return self._handle_autocomplete(args)
 
-        color, output = self._build_formatters(args.no_color)
+        action_fmt, output = self._build_formatters(args.no_color)
+        from rich.text import Text
 
         try:
             # All arguments (goals, axes, args, flags) are in 'unknown' since we don't
             # define a positional 'goals' parameter in argparse (to preserve order)
             parsed_inputs = parse_custom_inputs([], unknown)
         except CLIParseError as e:
-            output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
+            sym = output.symbols
+            output.print(f"{sym.Cross} [bold red]Error:[/bold red] {e}")
             return 1
 
+        sym = output.symbols
         try:
-            setup = self._prepare_execution_setup(args, parsed_inputs, color, output)
+            setup = self._prepare_execution_setup(args, parsed_inputs, action_fmt, output)
             self._validate_required_env(setup.document)
 
             document = setup.document
@@ -104,10 +107,13 @@ class CLI:
                 and not document.properties.sequential_execution_default
             )
 
-            output.print(f"{output.emoji('📚', '▸')} {color.dim('Found')} {color.bold(str(len(setup.markdown_files)))} {color.dim('definition file(s) with')} {color.bold(str(len(document.actions)))} {color.dim('actions')}")
+            output.print(
+                f"{sym.Book} [dim]Found[/dim] [bold]{len(setup.markdown_files)}[/bold] "
+                f"[dim]definition file(s) with[/dim] [bold]{len(document.actions)}[/bold] [dim]actions[/dim]"
+            )
 
             for warning in setup.parsed_inputs.goal_warnings:
-                output.print(f"{output.emoji('⚠️', '!')} {color.warning('Warning:')} {warning}")
+                output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] {warning}")
 
             # Use the new compiler for multi-context support
             planning_start = time.perf_counter()
@@ -116,32 +122,44 @@ class CLI:
             graph = compiler.compile()
             planning_elapsed_ms = (time.perf_counter() - planning_start) * 1000
 
-            # Build context mapping early (from full graph) for logging
             use_short_ids = not args.full_ctx_reprs
-            context_mapping: dict[str, str] = {}
-            if use_short_ids:
-                context_mapping = build_context_mapping(graph.nodes.keys())
 
-            # Show contexts and goals BEFORE retainer execution
-            goal_keys = sorted(graph.goals, key=str)
-            if use_short_ids and context_mapping:
-                goal_strs = [
-                    color.format_action_key(format_action_label(goal, use_short_ids=True))
-                    for goal in goal_keys
+            # Get unique contexts from action keys, with default context first
+            all_contexts = {ak.context_id for ak in graph.nodes.keys()}
+            default_ctx = [ctx for ctx in all_contexts if str(ctx) == "default"]
+            other_contexts = sorted([ctx for ctx in all_contexts if str(ctx) != "default"], key=str)
+            unique_contexts = default_ctx + other_contexts
+
+            # Show contexts BEFORE retainer execution
+            if len(unique_contexts) > 0:
+                output.print(f"\n{sym.Link} [bold]Contexts:[/bold]")
+
+                # Format all contexts to calculate max width for padding
+                formatted_ids = [
+                    action_fmt.context_formatter.format_id_with_symbol(ctx, use_short_ids)
+                    for ctx in unique_contexts
                 ]
-            else:
-                goal_strs = [color.format_action_key(str(goal)) for goal in goal_keys]
-            goal_keys_str = ", ".join(goal_strs)
+                max_id_len = max(len(fid.plain) for fid in formatted_ids) if formatted_ids else 0
 
-            if use_short_ids and context_mapping:
-                output.print(f"\n{output.emoji('🔗', '▸')} {color.bold('Contexts:')}")
-                for short_id in sorted(context_mapping.keys()):
-                    full_ctx = context_mapping[short_id]
-                    short_id_colored = color.format_short_context_id(short_id)
-                    full_ctx_colored = color.format_context_string(full_ctx)
-                    output.print(f"  {short_id_colored}: {full_ctx_colored}")
+                for ctx, formatted_id in zip(unique_contexts, formatted_ids):
+                    padding = " " * (max_id_len - len(formatted_id.plain))
+                    ctx_line = Text("  ")
+                    ctx_line.append_text(formatted_id)
+                    ctx_line.append(padding + " : ")
+                    ctx_line.append_text(action_fmt.context_formatter.format_full(ctx))
+                    output.print(ctx_line)
 
-            output.print(f"\n{output.emoji('🎯', '▸')} {color.dim('Goals:')} {goal_keys_str}")
+            # Show goals BEFORE retainer execution
+            goal_keys = sorted(graph.goals, key=str)
+            goal_texts = [action_fmt.format_label(goal, use_short_ids) for goal in goal_keys]
+            goals_line = Text()
+            goals_line.append(f"\n{sym.Target} ")
+            goals_line.append("Goals: ", style="dim")
+            for i, goal_text in enumerate(goal_texts):
+                if i > 0:
+                    goals_line.append(", ")
+                goals_line.append_text(goal_text)
+            output.print(goals_line)
 
             # Execute retainers for soft dependencies to determine which to retain
             retainer_executor = RetainerExecutor(
@@ -160,55 +178,52 @@ class CLI:
 
             # Log retainer results with context info
             if retainer_results:
-                output.print(f"\n{output.emoji('🔄', '▸')} {color.bold('Retainers:')}")
-            for result in retainer_results:
-                retainer_label = format_action_label(result.retainer_key, use_short_ids=use_short_ids)
-                time_str = f"{result.execution_time_ms:.0f}ms"
-                if result.retained:
-                    # Deduplicate targets (multiple soft deps may point to the same target)
-                    unique_targets = list(dict.fromkeys(result.soft_dep_targets))
-                    targets = [
-                        format_action_label(t, use_short_ids=use_short_ids)
+                output.print(f"\n{sym.Refresh} [bold]Retainers:[/bold]")
+
+            for ret_result in retainer_results:
+                retainer_label = action_fmt.format_label_plain(ret_result.retainer_key, use_short_ids)
+                time_str = f"{ret_result.execution_time_ms:.0f}ms"
+
+                if ret_result.retained:
+                    unique_targets = list(dict.fromkeys(ret_result.soft_dep_targets))
+                    targets_str = ", ".join(
+                        f"[bold cyan]{action_fmt.format_label_plain(t, use_short_ids)}[/bold cyan]"
                         for t in unique_targets
-                    ]
-                    targets_str = ", ".join(color.highlight(t) for t in targets)
-                    output.print(
-                        f"  {color.highlight(retainer_label)} {color.dim('ran in')} {time_str} "
-                        f"{color.dim('→ retained')} {targets_str}"
                     )
+                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]→ retained[/dim] {targets_str}")
                 else:
-                    output.print(
-                        f"  {color.highlight(retainer_label)} {color.dim('ran in')} {time_str} "
-                        f"{color.dim('→ retained nothing')}"
-                    )
-                # Log stdout/stderr in verbose mode
-                if args.verbose and (result.stdout or result.stderr):
-                    if result.stdout:
-                        for line in result.stdout.rstrip().split("\n"):
-                            output.print(f"    {color.dim('stdout:')} {line}")
-                    if result.stderr:
-                        for line in result.stderr.rstrip().split("\n"):
-                            output.print(f"    {color.dim('stderr:')} {line}")
+                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]→ retained nothing[/dim]")
+
+                if args.verbose and (ret_result.stdout or ret_result.stderr):
+                    if ret_result.stdout:
+                        for stdout_line in ret_result.stdout.rstrip().split("\n"):
+                            output.print(f"    [dim]stdout:[/dim] {stdout_line}")
+                    if ret_result.stderr:
+                        for stderr_line in ret_result.stderr.rstrip().split("\n"):
+                            output.print(f"    [dim]stderr:[/dim] {stderr_line}")
 
             pruned_graph = graph.prune_to_goals(retained_soft_targets)
 
             # Show execution mode
             if not quiet_mode:
                 mode_label = "dry-run" if args.dry_run else ("parallel" if parallel_execution else "sequential")
-                output.print(f"\n{output.emoji('⚙️', '▸')} {color.dim('Execution mode:')} {color.highlight(mode_label)}")
+                output.print(f"\n{sym.Gear} [dim]Execution mode:[/dim] [bold cyan]{mode_label}[/bold cyan]")
 
             validator = DAGValidator(document, pruned_graph)
             validator.validate_all(custom_args, all_flags, axis_values)
             if not quiet_mode:
-                output.print(f"{output.emoji('✅', '✓')} {color.dim('Built plan graph with')} {color.bold(str(len(pruned_graph.nodes)))} {color.dim('required action(s)')} {color.dim(f'(planning took {planning_elapsed_ms:.0f}ms)')}")
+                output.print(
+                    f"{sym.Check} [dim]Built plan graph with[/dim] [bold]{len(pruned_graph.nodes)}[/bold] "
+                    f"[dim]required action(s) (planning took {planning_elapsed_ms:.0f}ms)[/dim]"
+                )
 
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
-                output.print(f"\n{output.emoji('📋', '▸')} {color.bold('Execution plan:')}")
-                self._visualize_execution_plan(pruned_graph, execution_order, goals, color, output, use_short_ids)
+                output.print(f"\n{sym.Clipboard} [bold]Execution plan:[/bold]")
+                self._visualize_execution_plan(pruned_graph, execution_order, goals, action_fmt, output, use_short_ids)
 
             if args.dry_run:
-                output.print(f"\n{output.emoji('ℹ️', 'i')} {color.info('Dry run - not executing')}")
+                output.print(f"\n{sym.Info} [blue]Dry run - not executing[/blue]")
                 return 0
 
             previous_run_dir = None
@@ -218,11 +233,14 @@ class CLI:
                     run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
                     if run_dirs:
                         previous_run_dir = run_dirs[-1]
-                        output.print(f"\n{output.emoji('🔄', '▸')} {color.info('Continuing from previous run:')} {color.highlight(previous_run_dir.name)}")
+                        output.print(
+                            f"\n{sym.Refresh} [blue]Continuing from previous run:[/blue] "
+                            f"[bold cyan]{previous_run_dir.name}[/bold cyan]"
+                        )
                     else:
-                        output.print(f"\n{output.emoji('⚠️', '!')} {color.warning('Warning:')} No previous runs found, starting fresh")
+                        output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No previous runs found, starting fresh")
                 else:
-                    output.print(f"\n{output.emoji('⚠️', '!')} {color.warning('Warning:')} No runs directory found, starting fresh")
+                    output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No runs directory found, starting fresh")
 
             # --it flag keeps process running after completion for reviewing
             keep_running = (
@@ -251,18 +269,17 @@ class CLI:
                 show_dirs=args.show_dirs,
                 parallel_execution=parallel_execution,
                 use_short_context_ids=use_short_ids,
-                context_id_mapping=context_mapping,
                 keep_running=keep_running,
             )
 
             # Print run ID
             run_id = engine.run_directory.name
-            output.print(f"\n{output.emoji('🆔', '▸')} {color.dim('Run ID:')} {color.highlight(run_id)}")
+            output.print(f"\n{sym.Id} [dim]Run ID:[/dim] [bold cyan]{run_id}[/bold cyan]")
 
             result = engine.execute_all()
 
             if not result.success:
-                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Execution failed!')}")
+                output.print(f"\n{sym.Cross} [bold red]Execution failed![/bold red]")
                 return 1
 
             # Get outputs using ActionKeys (with context) instead of just action names
@@ -270,10 +287,11 @@ class CLI:
                 outputs_to_report = result.get_all_outputs(pruned_graph.nodes.keys())
             else:
                 outputs_to_report = result.get_goal_outputs(graph.goals)
-            output.print(f"\n{output.emoji('✅', '✓')} {color.success('Execution completed successfully!')}")
+
+            output.print(f"\n{sym.Check} [bold green]Execution completed successfully![/bold green]")
 
             output_json = json.dumps(outputs_to_report, indent=2)
-            output.print(f"\n{output.emoji('📊', '▸')} {color.bold('Outputs:')}")
+            output.print(f"\n{sym.Chart} [bold]Outputs:[/bold]")
 
             if not args.no_color:
                 from rich.console import Console
@@ -286,10 +304,10 @@ class CLI:
             if args.out:
                 out_path = Path(args.out)
                 out_path.write_text(output_json)
-                output.print(f"\n{output.emoji('💾', '▸')} {color.dim('Outputs saved to:')} {color.highlight(str(out_path))}")
+                output.print(f"\n{sym.Save} [dim]Outputs saved to:[/dim] [bold cyan]{out_path}[/bold cyan]")
 
             if args.keep_run_dir:
-                output.print(f"\n{output.emoji('📂', '▸')} {color.dim('Run directory:')} {color.highlight(str(result.run_directory))}")
+                output.print(f"\n{sym.Folder} [dim]Run directory:[/dim] [bold cyan]{result.run_directory}[/bold cyan]")
 
             # Clean up run directory after --it mode (unless --keep-run-dir)
             if keep_running and not args.keep_run_dir and result.run_directory.exists():
@@ -302,27 +320,27 @@ class CLI:
             return 0
 
         except ValueError as err:
-            output.print(f"{output.emoji('❌', '✗')} {color.error('Error:')} {err}")
+            output.print(f"{sym.Cross} [bold red]Error:[/bold red] {err}")
             if "No goals specified" in str(err):
                 self.parser.print_help()
             return 1
-        except ValidationError as e:
+        except ValidationError as validation_err:
             try:
-                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Validation error:')}\n{e}")
+                output.print(f"\n{sym.Cross} [bold red]Validation error:[/bold red]\n{validation_err}")
             except (NameError, UnicodeEncodeError):
-                print(f"\n[!] Validation error:\n{e}")
+                print(f"\n[!] Validation error:\n{validation_err}")
             return 1
-        except CompilationError as e:
+        except CompilationError as comp_err:
             try:
-                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Compilation error:')}\n{e}")
+                output.print(f"\n{sym.Cross} [bold red]Compilation error:[/bold red]\n{comp_err}")
             except (NameError, UnicodeEncodeError):
-                print(f"\n[!] Compilation error:\n{e}")
+                print(f"\n[!] Compilation error:\n{comp_err}")
             return 1
-        except Exception as e:
+        except Exception as gen_err:
             try:
-                output.print(f"\n{output.emoji('❌', '✗')} {color.error('Error:')} {e}")
+                output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {gen_err}")
             except (NameError, UnicodeEncodeError):
-                print(f"\n[!] Error: {e}")
+                print(f"\n[!] Error: {gen_err}")
             import traceback
 
             traceback.print_exc()
@@ -420,21 +438,21 @@ class CLI:
         axis_def = document.axis[axis_name]
         return [av.value for av in axis_def.values]
 
-    def _build_formatters(self, no_color: bool) -> tuple[ColorFormatter, OutputFormatter]:
-        color = ColorFormatter(no_color=no_color)
-        output = OutputFormatter(color)
-        return color, output
+    def _build_formatters(self, no_color: bool) -> tuple[ActionFormatter, OutputFormatter]:
+        output = OutputFormatter(no_color=no_color)
+        action_fmt = ActionFormatter(no_color=no_color)
+        return action_fmt, output
 
     def _prepare_execution_setup(
         self,
         args: argparse.Namespace,
         parsed_inputs: ParsedCLIInputs,
-        color: ColorFormatter,
+        action_fmt: ActionFormatter,
         output: OutputFormatter,
     ) -> ExecutionSetup:
         """Load markdown definitions and merge CLI inputs with defaults."""
         project_root = find_project_root()
-        output.print(f"{color.dim('Project root:')} {color.highlight(str(project_root))}")
+        output.print(f"[dim]Project root:[/dim] [bold cyan]{project_root}[/bold cyan]")
 
         md_files = self._discover_markdown_files(args.defs, project_root)
         if not md_files:
@@ -453,7 +471,7 @@ class CLI:
         axis_values = dict(parsed_inputs.axis_values)
         goals = list(parsed_inputs.goals)
 
-        self._apply_default_axis_values(document, axis_values, color)
+        self._apply_default_axis_values(document, axis_values, output)
         self._apply_default_argument_values(document, custom_args)
         self._normalize_array_arguments(document, custom_args)
 
@@ -488,7 +506,7 @@ class CLI:
         self,
         document: ParsedDocument,
         axis_values: dict[str, str],
-        color: ColorFormatter,
+        output: OutputFormatter,
     ) -> None:
         for axis_name, axis_def in document.axis.items():
             if axis_name in axis_values:
@@ -496,12 +514,10 @@ class CLI:
             default_value = axis_def.get_default_value()
             if default_value:
                 axis_values[axis_name] = default_value
-                # Format axis name and value with consistent colors
-                from .utils.colors import Colors
-                axis_colored = color.colorize(axis_name, Colors.MAGENTA)
-                separator = color.dim(":")
-                value_colored = color.colorize(default_value, Colors.YELLOW)
-                print(f"{color.dim('Using default axis value:')} {axis_colored}{separator}{value_colored}")
+                output.print(
+                    f"[dim]Using default axis value:[/dim] [magenta]{axis_name}[/magenta]"
+                    f"[dim]:[/dim][yellow]{default_value}[/yellow]"
+                )
 
     def _resolve_argument_aliases(
         self,
@@ -676,7 +692,7 @@ class CLI:
         graph,
         execution_order,
         goals: list[str],
-        color,
+        action_fmt: ActionFormatter,
         output: OutputFormatter,
         use_short_ids: bool = False,
     ) -> None:
@@ -686,23 +702,33 @@ class CLI:
             graph: The execution graph
             execution_order: List of action keys in execution order
             goals: List of goal action names
-            color: Color formatter
+            action_fmt: Action formatter
             output: Output formatter
             use_short_ids: Whether to use short context IDs
         """
-        from rich.console import Console
         from rich.table import Table
+
+        sym = output.symbols
+        no_color = output.no_color
 
         # Compute sharing counts: how many unique goal contexts use each action
         sharing_counts = self._compute_sharing_counts(graph, execution_order, goals)
 
-        table = Table(show_header=True, header_style="bold")
+        # Styles conditional on no_color
+        header_style = "" if no_color else "bold"
+        action_style = "" if no_color else "cyan"
+        dim_style = "" if no_color else "dim"
+        blue_style = "" if no_color else "blue"
+
+        table = Table(show_header=True, header_style=header_style)
         table.add_column("#", justify="right")
-        table.add_column("Context", style="dim")
-        table.add_column("Action", style="cyan")
+        table.add_column("Context")
+        table.add_column("Action", style=action_style)
         table.add_column("Goal", justify="center")
-        table.add_column("Deps", style="dim")
-        table.add_column("Shared", justify="right", style="blue")
+        table.add_column("Deps", style=dim_style)
+        table.add_column("Shared", justify="right", style=blue_style)
+
+        ctx_fmt = action_fmt.context_formatter
 
         for i, action_key in enumerate(execution_order, 1):
             node = graph.get_node(action_key)
@@ -711,17 +737,14 @@ class CLI:
             # Number column
             num_str = str(i)
 
-            # Context column
-            if use_short_ids:
-                context_str = format_action_label(action_key, use_short_ids=True).split("#")[0]
-            else:
-                context_str = str(action_key.context_id) if action_key.context_id else "default"
+            # Context column - use formatter for colored output
+            context_text = ctx_fmt.format_id_with_symbol(action_key.context_id, use_short_ids)
 
             # Action column
             action_str = action_key.id.name
 
             # Goal column
-            goal_str = output.emoji("🎯", "*") if is_goal else ""
+            goal_str = sym.Target if is_goal else ""
 
             # Dependencies column
             if node.dependencies:
@@ -745,39 +768,33 @@ class CLI:
             share_count = sharing_counts.get(action_key, 1)
             shared_str = str(share_count) if share_count > 1 else "-"
 
-            table.add_row(num_str, context_str, action_str, goal_str, deps_str, shared_str)
+            table.add_row(num_str, context_text, action_str, goal_str, deps_str, shared_str)
 
-        console = Console()
-        console.print(table)
+        # Use output's console to respect no_color setting
+        output.console.print(table)
         output.print("")  # Empty line after plan
 
     def _list_actions(self, document: ParsedDocument, no_color: bool = False) -> None:
         """List all available actions."""
-        from .utils.colors import ColorFormatter
-        from .utils.output import OutputFormatter
-
-        color = ColorFormatter(no_color=no_color)
-        output = OutputFormatter(color)
+        output = OutputFormatter(no_color=no_color)
+        sym = output.symbols
 
         # Show available axes first
         if document.axis:
-            print(f"\n{color.info('Available axes:')}\n")
+            output.print("\n[blue]Available axes:[/blue]\n")
+
             for axis_name in sorted(document.axis.keys()):
                 axis_def = document.axis[axis_name]
-
-                # Format values with default marked
-                value_strs = []
+                values_parts = []
                 for axis_val in axis_def.values:
                     if axis_val.is_default:
-                        value_strs.append(f"{color.success(axis_val.value)}*")
+                        values_parts.append(f"[bold green]{axis_val.value}[/bold green]*")
                     else:
-                        value_strs.append(axis_val.value)
+                        values_parts.append(axis_val.value)
+                output.print(f"  [bold cyan]{axis_name}[/bold cyan]: {', '.join(values_parts)}")
+            output.print("")
 
-                values_str = ', '.join(value_strs)
-                print(f"  {color.highlight(axis_name)}: {values_str}")
-            print()
-
-        print(f"{color.info('Available actions:')}\n")
+        output.print("[blue]Available actions:[/blue]\n")
 
         root_actions, non_root_actions = self._partition_actions(document)
         metadata = {
@@ -794,19 +811,15 @@ class CLI:
 
             # Format action name
             if is_root:
-                # Root actions are bold with goal emoji
-                goal_marker = output.emoji("🎯", "*")
-                formatted_name = f"{goal_marker} {color.bold(color.highlight(action_name))}"
+                output.print(f"{sym.Target} [bold cyan]{action_name}[/bold cyan]")
             else:
-                formatted_name = f"  {color.highlight(action_name)}"
-
-            print(formatted_name)
+                output.print(f"  [bold cyan]{action_name}[/bold cyan]")
 
             if action.description:
-                for line in action.description.splitlines():
-                    stripped_line = line.strip()
+                for desc_line in action.description.splitlines():
+                    stripped_line = desc_line.strip()
                     if stripped_line:
-                        print(f"    {color.dim(stripped_line)}")
+                        output.print(f"    [dim]{stripped_line}[/dim]")
 
             if typed_deps:
                 dep_strs = []
@@ -818,44 +831,40 @@ class CLI:
                         dep_strs.append(f"?{dep_name}")
                     else:
                         dep_strs.append(dep_name)
-                dep_str = ', '.join(dep_strs)
-                print(f"    {color.dim('Dependencies:')} {dep_str}")
+                output.print(f"    [dim]Dependencies:[/dim] {', '.join(dep_strs)}")
 
             args_used = info["args_used"]
             if args_used:
-                args_str = ', '.join(sorted(args_used))
-                print(f"    {color.dim('Arguments:')} {color.warning(args_str)}")
+                output.print(f"    [dim]Arguments:[/dim] [bold yellow]{', '.join(sorted(args_used))}[/bold yellow]")
+
             flags_used = info["flags_used"]
             if flags_used:
-                flags_str = ', '.join(sorted(flags_used))
-                print(f"    {color.dim('Flags:')} {color.warning(flags_str)}")
+                output.print(f"    [dim]Flags:[/dim] [bold yellow]{', '.join(sorted(flags_used))}[/bold yellow]")
 
             all_env_vars = info["env_vars"]
             if all_env_vars:
-                env_str = ', '.join(sorted(all_env_vars))
-                print(f"    {color.dim('Env vars:')} {env_str}")
+                output.print(f"    [dim]Env vars:[/dim] {', '.join(sorted(all_env_vars))}")
 
             inputs_map = info["inputs"]
             if inputs_map:
-                input_strs = []
+                input_parts = []
                 for act_name in sorted(inputs_map.keys()):
                     vars_str = ', '.join(sorted(inputs_map[act_name]))
-                    input_strs.append(f"{color.highlight(act_name)}.{{{vars_str}}}")
-                print(f"    {color.dim('Inputs:')} {', '.join(input_strs)}")
+                    input_parts.append(f"{act_name}.{{{vars_str}}}")
+                output.print(f"    [dim]Inputs:[/dim] {', '.join(input_parts)}")
 
             all_returns = info["returns"]
             if all_returns:
-                return_strs = [
-                    f"{color.success(r.name)}:{color.dim(r.return_type.value)}"
-                    for r in all_returns
-                ]
-                print(f"    {color.dim('Returns:')} {', '.join(return_strs)}")
+                returns_parts = []
+                for r in all_returns:
+                    returns_parts.append(f"[bold green]{r.name}[/bold green][dim]:{r.return_type.value}[/dim]")
+                output.print(f"    [dim]Returns:[/dim] {', '.join(returns_parts)}")
 
             # Show versions if action has multiple versions
             if len(action.versions) > 1:
                 from .ast.models import AxisCondition, PlatformCondition
                 version_strs = []
-                for i, version in enumerate(action.versions, 1):
+                for ver_i, version in enumerate(action.versions, 1):
                     cond_parts = []
                     for cond in version.conditions:
                         if isinstance(cond, AxisCondition):
@@ -864,13 +873,13 @@ class CLI:
                             cond_parts.append(f"platform: {cond.platform_value}")
 
                     if cond_parts:
-                        version_strs.append(f"{i} ({', '.join(cond_parts)})")
+                        version_strs.append(f"{ver_i} ({', '.join(cond_parts)})")
                     else:
-                        version_strs.append(str(i))
+                        version_strs.append(str(ver_i))
 
-                print(f"    {color.dim('Versions:')} {', '.join(version_strs)}")
+                output.print(f"    [dim]Versions:[/dim] {', '.join(version_strs)}")
 
-            print()
+            output.print("")
 
     def _list_action_names_ordered(self, document: ParsedDocument) -> list[str]:
         """Return action names in the same order as _list_actions prints them."""

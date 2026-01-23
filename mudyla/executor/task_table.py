@@ -13,7 +13,6 @@ All views share a common layout: Header | Content | Footer
 
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -24,8 +23,12 @@ from typing import Any, Optional
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
+
+from ..dag.graph import ActionKey
+from ..utils.action_formatter import ActionFormatter
 
 # Cross-platform terminal handling
 IS_WINDOWS = sys.platform == "win32"
@@ -97,23 +100,40 @@ class TaskTableManager:
 
     def __init__(
         self,
-        task_names: list[str],
+        action_keys: list[ActionKey],
         no_color: bool = False,
         action_dirs: Optional[dict[str, str]] = None,
         show_dirs: bool = False,
         run_directory: Optional[Path] = None,
         keep_running: bool = False,
+        use_short_ids: bool = True,
     ):
         self.no_color = no_color
         self.show_dirs = show_dirs
         self.run_directory = run_directory
         self.keep_running = keep_running
         self.action_dirs_map = action_dirs or {}
+        self.use_short_ids = use_short_ids
 
-        # Console for rendering
-        self.console = Console(force_terminal=True)
+        # Formatters
+        self._action_formatter = ActionFormatter(no_color=no_color)
+        self._context_formatter = self._action_formatter.context_formatter
 
-        # Shared state - updated by engine
+        # Store action keys and build name mappings
+        self.action_keys: list[ActionKey] = list(action_keys)
+        self.key_to_name: dict[ActionKey, str] = {
+            key: self._action_formatter.format_label_plain(key, use_short_ids)
+            for key in action_keys
+        }
+        self.name_to_key: dict[str, ActionKey] = {
+            name: key for key, name in self.key_to_name.items()
+        }
+
+        # Console for rendering - respect no_color setting
+        self.console = Console(force_terminal=True, no_color=no_color)
+
+        # Shared state - updated by engine (keyed by formatted name for API compatibility)
+        task_names = [self.key_to_name[key] for key in action_keys]
         self.tasks: dict[str, TaskState] = {
             name: TaskState(name=name) for name in task_names
         }
@@ -568,22 +588,6 @@ class TaskTableManager:
         name = self._get_selected_task_name()
         return self.tasks.get(name)
 
-    def _format_context(self, context_str: str) -> str:
-        """Format context with colors (symbol/emoji + blue bold hex ID)."""
-        if context_str and len(context_str) == 7:
-            hex_part = context_str[1:]
-            try:
-                int(hex_part, 16)
-                is_short_id = True
-            except ValueError:
-                is_short_id = False
-
-            if is_short_id:
-                symbol = context_str[0]
-                hex_id = context_str[1:]
-                return f"{symbol}[blue bold]{hex_id}[/blue bold]"
-        return context_str
-
     # =========================================================================
     # View Renderers
     # =========================================================================
@@ -602,19 +606,23 @@ class TaskTableManager:
             if include_progress and not self.no_color:
                 caption = self._build_progress_caption()
 
-            table = Table(show_header=True, header_style="bold", caption=caption, caption_justify="left")
+            header_style = "" if self.no_color else "bold"
+            action_style = "" if self.no_color else "cyan bold"
+            dim_style = "" if self.no_color else "dim"
+
+            table = Table(show_header=True, header_style=header_style, caption=caption, caption_justify="left")
 
             # Selection indicator column
             table.add_column("", width=1, no_wrap=True)
 
             if has_context:
                 table.add_column("Context", no_wrap=True)
-                table.add_column("Action", style="cyan bold", no_wrap=True)
+                table.add_column("Action", style=action_style, no_wrap=True)
             else:
-                table.add_column("Task", style="cyan bold", no_wrap=True)
+                table.add_column("Task", style=action_style, no_wrap=True)
 
             if self.show_dirs:
-                table.add_column("Dir", style="dim", no_wrap=True)
+                table.add_column("Dir", style=dim_style, no_wrap=True)
             table.add_column("Time", justify="right", no_wrap=True)
             table.add_column("Stdout", justify="right", no_wrap=True)
             table.add_column("Stderr", justify="right", no_wrap=True)
@@ -640,10 +648,16 @@ class TaskTableManager:
                 stdout_str = self._format_size(task.stdout_size)
                 stderr_str = self._format_size(task.stderr_size)
 
+                # Get ActionKey for this task to format context properly
+                action_key = self.name_to_key.get(task_name)
+
                 # Build row data
-                if has_context and "#" in task_name:
-                    context_str, action_name = task_name.split("#", 1)
-                    context_formatted = self._format_context(context_str)
+                if has_context and action_key:
+                    # Use ActionFormatter for consistent coloring
+                    context_formatted = self._context_formatter.format_id_with_symbol(
+                        action_key.context_id, self.use_short_ids
+                    )
+                    action_name = action_key.id.name
                     row_data = [
                         sel_indicator,
                         context_formatted,
@@ -801,6 +815,8 @@ class TaskTableManager:
             # Order: DONE, RESTORED, RUNNING, FAILED, TBD
             status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
 
+            dim_style = "" if self.no_color else "dim"
+
             first = True
             for status in status_order:
                 count = counts.get(status, 0)
@@ -811,14 +827,14 @@ class TaskTableManager:
                 symbol = ascii_sym if IS_WINDOWS or self.no_color else unicode_sym
 
                 if not first:
-                    legend.append("  ", style="dim")
+                    legend.append("  ", style=dim_style)
                 first = False
 
                 if self.no_color:
                     legend.append(f"{symbol} {label}: {count}")
                 else:
                     legend.append(symbol, style=color)
-                    legend.append(f" {label}: ", style="dim")
+                    legend.append(f" {label}: ", style=dim_style)
                     legend.append(str(count), style=color)
 
             return legend
@@ -843,14 +859,18 @@ class TaskTableManager:
 
     def _build_footer(self) -> Text:
         """Build footer with key bindings, line counter, and progress bar."""
+        dim_style = "" if self.no_color else "dim"
+        cyan_style = "" if self.no_color else "cyan"
+        cyan_dim_style = "" if self.no_color else "cyan dim"
+
         if self.state == ViewState.TABLE:
-            return Text(self.TABLE_KEYS, style="dim")
+            return Text(self.TABLE_KEYS, style=dim_style)
 
         # Get scroll state for detail views
         task = self._get_selected_task()
         if not task:
             keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
-            return Text(keys, style="dim")
+            return Text(keys, style=dim_style)
 
         scroll_state = self._get_scroll_state(task.name, self.state)
         visible_height = self._get_content_height()
@@ -865,102 +885,36 @@ class TaskTableManager:
             line_info = f"{start_line}-{end_line}/{total}"
             progress_pct = min(100, int((end_line / total) * 100)) if total > 0 else 100
 
-        # Build progress bar (10 chars wide, ASCII on Windows)
+        # Build progress bar (10 chars wide, ASCII on Windows or no_color)
         bar_width = 10
         filled = int(bar_width * progress_pct / 100)
-        if IS_WINDOWS:
+        if IS_WINDOWS or self.no_color:
             bar = "#" * filled + "-" * (bar_width - filled)
         else:
             bar = "█" * filled + "░" * (bar_width - filled)
 
         keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
 
-        separator = " | " if IS_WINDOWS else " │ "
+        separator = " | " if IS_WINDOWS or self.no_color else " │ "
 
         footer = Text()
-        footer.append(keys, style="dim")
-        footer.append(separator, style="dim")
-        footer.append(line_info, style="cyan")
-        footer.append(" ", style="dim")
-        footer.append(bar, style="cyan dim")
-        footer.append(f" {progress_pct}%", style="cyan")
+        footer.append(keys, style=dim_style)
+        footer.append(separator, style=dim_style)
+        footer.append(line_info, style=cyan_style)
+        footer.append(" ", style=dim_style)
+        footer.append(bar, style=cyan_dim_style)
+        footer.append(f" {progress_pct}%", style=cyan_style)
 
         return footer
 
     def _format_line_number(self, line_num: int, total_lines: int) -> Text:
         """Format line number prefix with appropriate width."""
         width = max(4, len(str(total_lines)))
-        sep = "|" if IS_WINDOWS else "│"
+        sep = "|" if IS_WINDOWS or self.no_color else "│"
+        dim_style = "" if self.no_color else "dim"
         text = Text()
-        text.append(f"{line_num:{width}} ", style="dim")
-        text.append(f"{sep} ", style="dim")
-        return text
-
-    def _highlight_json_line(self, line: str, line_num: int, total_lines: int) -> Text:
-        """Apply simple JSON syntax highlighting to a line."""
-        text = self._format_line_number(line_num, total_lines)
-        pos = 0
-        # Match JSON keys, strings, numbers, booleans, null
-        pattern = re.compile(r'("(?:[^"\\]|\\.)*")\s*:|("(?:[^"\\]|\\.)*")|(true|false|null)|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)')
-
-        for match in pattern.finditer(line):
-            # Add text before match
-            if match.start() > pos:
-                text.append(line[pos:match.start()])
-
-            if match.group(1):  # Key
-                text.append(match.group(1), style="cyan")
-                text.append(":")
-            elif match.group(2):  # String value
-                text.append(match.group(2), style="green")
-            elif match.group(3):  # Boolean/null
-                text.append(match.group(3), style="yellow")
-            elif match.group(4):  # Number
-                text.append(match.group(4), style="magenta")
-
-            pos = match.end()
-
-        # Add remaining text
-        if pos < len(line):
-            text.append(line[pos:])
-
-        return text
-
-    def _highlight_shell_line(self, line: str, line_num: int, total_lines: int) -> Text:
-        """Apply simple shell syntax highlighting to a source line."""
-        text = self._format_line_number(line_num, total_lines)
-
-        # Check for comment
-        stripped = line.lstrip()
-        if stripped.startswith("#"):
-            text.append(line, style="dim italic")
-            return text
-
-        pos = 0
-        # Keywords, strings, variables, commands
-        keywords = r'\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|exit|export|local|readonly|set|unset|echo|printf|cd|pwd|ls|cat|grep|sed|awk|cut|sort|uniq|wc|head|tail|find|xargs|mkdir|rm|cp|mv|touch|chmod|chown|source)\b'
-        pattern = re.compile(
-            r'(\$\{[^}]+\}|\$\w+)|'  # Variables
-            r'("(?:[^"\\]|\\.)*"|\'[^\']*\')|'  # Strings
-            + keywords
-        )
-
-        for match in pattern.finditer(line):
-            if match.start() > pos:
-                text.append(line[pos:match.start()])
-
-            if match.group(1):  # Variable
-                text.append(match.group(1), style="cyan")
-            elif match.group(2):  # String
-                text.append(match.group(2), style="green")
-            elif match.group(3):  # Keyword
-                text.append(match.group(3), style="yellow bold")
-
-            pos = match.end()
-
-        if pos < len(line):
-            text.append(line[pos:])
-
+        text.append(f"{line_num:{width}} ", style=dim_style)
+        text.append(f"{sep} ", style=dim_style)
         return text
 
     def _highlight_log_line(self, line: str, line_num: int, total_lines: int) -> Text:
@@ -979,7 +933,7 @@ class TaskTableManager:
 
         return text
 
-    def _build_detail_content(self) -> Text:
+    def _build_detail_content(self):
         """Build content for detail views with syntax highlighting."""
         task = self._get_selected_task()
         if not task or not task.action_dir:
@@ -1029,12 +983,13 @@ class TaskTableManager:
                 lines = ["(output.json not found)"]
         elif self.state == ViewState.SOURCE:
             script_path = None
+            content_type = "shell"  # default to shell
             for ext in [".sh", ".py"]:
                 path = task.action_dir / f"script{ext}"
                 if path.exists():
                     script_path = path
+                    content_type = "python" if ext == ".py" else "shell"
                     break
-            content_type = "shell"
             if script_path:
                 try:
                     lines = script_path.read_text().splitlines()
@@ -1056,9 +1011,33 @@ class TaskTableManager:
         visible_lines = lines[start:end]
 
         # Build highlighted content with line numbers
+        # Use Rich Syntax for json/shell/python, manual highlighting for logs
+        if not self.no_color and content_type in ("json", "shell", "python"):
+            # Determine lexer for syntax highlighting
+            lexer_map = {"json": "json", "shell": "bash", "python": "python"}
+            lexer = lexer_map[content_type]
+
+            # Join all lines for Syntax (it handles line ranges)
+            full_content = "\n".join(lines)
+
+            # Create Syntax with line numbers and range
+            # line_range is 1-indexed and inclusive
+            syntax = Syntax(
+                full_content,
+                lexer,
+                line_numbers=True,
+                line_range=(start + 1, end),
+                start_line=start + 1,
+                word_wrap=False,
+                background_color="default",
+            )
+            return syntax
+
+        # For logs/text or no_color mode, use manual per-line rendering
         result = Text()
         width = max(4, len(str(total_lines)))
-        sep = "|" if IS_WINDOWS else "│"
+        sep = "|" if IS_WINDOWS or self.no_color else "│"
+        dim_style = "" if self.no_color else "dim"
 
         for i, line in enumerate(visible_lines):
             if i > 0:
@@ -1068,14 +1047,11 @@ class TaskTableManager:
 
             if self.no_color:
                 result.append(f"{line_num:{width}} {sep} {line}")
-            elif content_type == "json":
-                result.append_text(self._highlight_json_line(line, line_num, total_lines))
-            elif content_type == "shell":
-                result.append_text(self._highlight_shell_line(line, line_num, total_lines))
             elif content_type == "log":
                 result.append_text(self._highlight_log_line(line, line_num, total_lines))
             else:
-                result.append_text(self._format_line_number(line_num, total_lines))
+                result.append(f"{line_num:{width}} ", style=dim_style)
+                result.append(f"{sep} ", style=dim_style)
                 result.append(line)
 
         return result
@@ -1107,7 +1083,8 @@ class TaskTableManager:
             # Simple text header for detail views
             header = self._build_header()
             content = self._build_detail_content()
-            header_text = Text(f" {header} ", style="bold reverse")
+            header_style = "" if self.no_color else "bold reverse"
+            header_text = Text(f" {header} ", style=header_style)
 
             return Group(
                 header_text,
@@ -1137,16 +1114,14 @@ class TaskTableManager:
 
                 # Immediate update after key press
                 if self.live:
-                    self.live.update(self._build_renderable())
-                    self.live.refresh()
+                    self.live.update(self._build_renderable(), refresh=True)
 
             # Periodic update for running timers at 24 FPS
             now = time.time()
             if now - last_update >= update_interval:
                 last_update = now
                 if self.live:
-                    self.live.update(self._build_renderable())
-                    self.live.refresh()
+                    self.live.update(self._build_renderable(), refresh=True)
 
             time.sleep(0.01)  # Small sleep to prevent CPU spinning
 
@@ -1159,12 +1134,15 @@ class TaskTableManager:
         self.stop_flag = False
 
         # Create and start Live display (auto_refresh=False for manual control)
+        # vertical_overflow="visible" prevents height tracking issues that cause
+        # header duplication when switching views or when content height changes
         self.live = Live(
             self._build_renderable(),
             console=self.console,
             refresh_per_second=24,
             transient=False,
             auto_refresh=False,
+            vertical_overflow="visible",
         )
         self.live.start()
         self.live.refresh()  # Initial render
@@ -1187,7 +1165,9 @@ class TaskTableManager:
         self._restore_terminal()
 
         if self.live:
-            self.live.update(self._build_renderable())  # Final update
+            # Final update to ensure table shows latest state before stopping
+            self.live.update(self._build_renderable(), refresh=True)
+            # Stop - Rich will preserve current content (transient=False)
             self.live.stop()
             self.live = None
 
