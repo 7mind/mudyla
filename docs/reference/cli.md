@@ -88,18 +88,23 @@ The interactive table uses a consistent layout across all views:
 **Log Views (stdout/stderr):**
 | Key | Action |
 |-----|--------|
-| `↑` / `↓` / `j` / `k` | Scroll up/down |
-| `Shift+↑` | Jump to top |
-| `Shift+↓` | Jump to bottom |
+| `↑` / `↓` / `j` / `k` | Scroll up/down one line |
+| `d` / `u` | Scroll half page down/up |
+| `PgUp` / `PgDn` | Scroll full page up/down |
+| `f` / `b` | Scroll full page down/up (vim-style) |
+| `gg` / `Home` | Jump to top |
+| `G` / `End` | Jump to bottom |
 | `r` | Refresh logs |
 | `q` | Go back to table |
 
 **Other Detail Views (meta/output/source):**
 | Key | Action |
 |-----|--------|
-| `↑` / `↓` / `j` / `k` | Scroll up/down |
-| `Shift+↑` | Jump to top |
-| `Shift+↓` | Jump to bottom |
+| `↑` / `↓` / `j` / `k` | Scroll up/down one line |
+| `d` / `u` | Scroll half page down/up |
+| `PgUp` / `PgDn` / `f` / `b` | Scroll full page |
+| `gg` / `Home` | Jump to top |
+| `G` / `End` | Jump to bottom |
 | `q` | Go back to table |
 
 ### Scrolling Behavior
@@ -108,25 +113,61 @@ The interactive table uses a consistent layout across all views:
 - **Scroll position preserved**: Scrolling up disables auto-scroll; your position is remembered
 - **Per-action scroll state**: Each action's log/source/meta view maintains its own scroll position
 
+### Footer Status Bar
+
+Detail views display a status bar in the footer showing:
+- Current keybindings for the view
+- Line position indicator (e.g., `1-50/100` for lines 1-50 of 100 total)
+- Visual progress bar showing scroll position
+- Percentage indicator
+
 ### Status Indicators
 
-| Status | Description |
-|--------|-------------|
-| `tbd` | Action waiting to run |
-| `running` | Action currently executing |
-| `done` | Action completed successfully |
-| `failed` | Action failed |
-| `restored` | Action restored from previous run |
+| Status | Symbol | Color | Description |
+|--------|--------|-------|-------------|
+| `pending` | `░` | dim | Action waiting to run |
+| `running` | `▒` | cyan | Action currently executing |
+| `done` | `█` | green | Action completed successfully |
+| `failed` | `█` | red | Action failed |
+| `restored` | `▓` | blue | Action restored from previous run |
+
+### Progress Bar
+
+The table view displays a visual progress bar below the task list showing overall execution progress. The bar uses colored segments proportional to task counts:
+
+```
+████████████████░░░░░░░░░░░░░░
+█ done: 5  ▒ running: 2  ░ pending: 8
+```
+
+The legend shows counts for each status category that has tasks.
 
 ### Views
 
 | View | Content | Scrollable | Auto-refresh |
 |------|---------|------------|--------------|
 | **Table** | Actions with status, time, output sizes | No (navigable) | Yes (24 FPS) |
-| **Stdout** | Plain text stdout.log | Yes | Yes (1s) |
-| **Stderr** | Plain text stderr.log | Yes | Yes (1s) |
-| **Meta** | Formatted meta.json | Yes | No |
-| **Output** | Formatted output.json | Yes | No |
-| **Source** | Script with line numbers | Yes | No |
+| **Stdout** | stdout.log with log highlighting | Yes | Yes |
+| **Stderr** | stderr.log with log highlighting | Yes | Yes |
+| **Meta** | meta.json with JSON highlighting | Yes | No |
+| **Output** | output.json with JSON highlighting | Yes | No |
+| **Source** | Script with shell syntax highlighting | Yes | No |
+
+### Syntax Highlighting
+
+Detail views apply context-aware syntax highlighting:
+
+- **Log views (stdout/stderr)**: Error lines in red, warnings in yellow, success messages in green
+- **JSON views (meta/output)**: Keys in cyan, strings in green, numbers in magenta, booleans/null in yellow
+- **Source view**: Shell keywords in bold yellow, variables in cyan, strings in green, comments in dim italic
+
+All views include line numbers for easy reference.
+
+### Windows Compatibility
+
+On Windows, the interactive table uses ASCII characters instead of Unicode symbols:
+- Progress bar: `#` (filled) and `-` (empty) instead of `█` and `░`
+- Selection indicator: `>` instead of `▶`
+- Status symbols: `.` (pending), `~` (running), `#` (done), `+` (restored), `!` (failed)
 
 Interactive table is disabled when using `--verbose` or `--github-actions` flags, or when stdout is not a TTY.
