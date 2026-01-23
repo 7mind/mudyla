@@ -735,9 +735,10 @@ class TaskTableManager:
             for status in status_order:
                 count = counts.get(status, 0)
                 if count > 0:
-                    _, unicode_sym, color, _ = self.STATUS_DISPLAY[status]
+                    ascii_sym, unicode_sym, color, _ = self.STATUS_DISPLAY[status]
+                    symbol = ascii_sym if IS_WINDOWS else unicode_sym
                     # Long string that will be cropped to column width
-                    row_data.append(Text(unicode_sym * 500, style=color))
+                    row_data.append(Text(symbol * 500, style=color))
 
             if row_data:
                 bar_table.add_row(*row_data)
@@ -750,13 +751,14 @@ class TaskTableManager:
                 if count == 0:
                     continue
 
-                _, unicode_sym, color, label = self.STATUS_DISPLAY[status]
+                ascii_sym, unicode_sym, color, label = self.STATUS_DISPLAY[status]
+                symbol = ascii_sym if IS_WINDOWS else unicode_sym
 
                 if not first:
                     legend.append("  ")
                 first = False
 
-                legend.append(unicode_sym, style=color)
+                legend.append(symbol, style=color)
                 legend.append(f" {label}: ", style="dim")
                 legend.append(str(count), style=color)
 
