@@ -139,8 +139,8 @@ class TestBasicOperations:
         output_lines = result.stdout.split("\n")
         json_start = None
         for i, line in enumerate(output_lines):
-            # Match either emoji "📊 Outputs:" or ASCII "▸ Outputs:"
-            if "Outputs:" in line and ("📊" in line or "▸" in line):
+            # Match either emoji "📊 Outputs:" or ASCII "> Outputs:"
+            if "Outputs:" in line and ("📊" in line or ">" in line):
                 json_start = i + 1
                 break
 

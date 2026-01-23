@@ -35,7 +35,7 @@ class OutputFormatter:
         """Get the symbols formatter for emoji/ASCII symbol access.
 
         Usage:
-            output.symbols.Check  # Returns "✅" or "✓"
+            output.symbols.Check  # Returns "✅" or "+"
             output.symbols.Globe  # Returns "🌍" or "*"
         """
         return self._symbols

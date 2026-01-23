@@ -190,9 +190,9 @@ class CLI:
                         f"[bold cyan]{action_fmt.format_label_plain(t, use_short_ids)}[/bold cyan]"
                         for t in unique_targets
                     )
-                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]→ retained[/dim] {targets_str}")
+                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]{output.symbols.Arrow} retained[/dim] {targets_str}")
                 else:
-                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]→ retained nothing[/dim]")
+                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]{output.symbols.Arrow} retained nothing[/dim]")
 
                 if args.verbose and (ret_result.stdout or ret_result.stderr):
                     if ret_result.stdout:

@@ -6,7 +6,7 @@ to ASCII when emoji support is not available or colors are disabled.
 Usage:
     symbols = SymbolsFormatter(no_color=False)
     print(symbols.Globe)  # Returns "🌍" or "*" depending on support
-    print(symbols.Check)  # Returns "✅" or "✓"
+    print(symbols.Check)  # Returns "✅" or "+"
 """
 
 import platform
@@ -27,27 +27,27 @@ class Symbols:
     """Symbol definitions as class attributes."""
 
     # Status indicators
-    Check = Symbol("✅", "✓")
-    Cross = Symbol("❌", "✗")
+    Check = Symbol("✅", "+")
+    Cross = Symbol("❌", "x")
     Warning = Symbol("⚠️", "!")
     Info = Symbol("ℹ️", "i")
 
     # Objects
     Globe = Symbol("🌍", "*")
-    Folder = Symbol("📂", "▸")
-    File = Symbol("📄", "▸")
-    Book = Symbol("📚", "▸")
-    Target = Symbol("🎯", "▸")
-    Link = Symbol("🔗", "▸")
-    Gear = Symbol("⚙️", "▸")
-    Chart = Symbol("📊", "▸")
-    Clipboard = Symbol("📋", "▸")
-    Save = Symbol("💾", "▸")
-    Id = Symbol("🆔", "▸")
+    Folder = Symbol("📂", ">")
+    File = Symbol("📄", ">")
+    Book = Symbol("📚", ">")
+    Target = Symbol("🎯", ">")
+    Link = Symbol("🔗", ">")
+    Gear = Symbol("⚙️", ">")
+    Chart = Symbol("📊", ">")
+    Clipboard = Symbol("📋", ">")
+    Save = Symbol("💾", ">")
+    Id = Symbol("🆔", ">")
 
     # Arrows and flow
-    Recycle = Symbol("♻️", "✓")
-    Refresh = Symbol("🔄", "▸")
+    Recycle = Symbol("♻️", "+")
+    Refresh = Symbol("🔄", ">")
     Arrow = Symbol("→", "->")
 
     # Context symbols (colored circles/shapes)
