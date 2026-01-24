@@ -1,4 +1,4 @@
-"""Rich table manager for displaying task execution status with interactive navigation.
+"""Interactive action logger with Rich table display for execution progress.
 
 State machine with views:
 - TABLE: Main task list with status (navigable with ↑/↓)
@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -28,7 +28,8 @@ from rich.table import Table
 from rich.text import Text
 
 from ..dag.graph import ActionKey
-from ..utils.action_formatter import ActionFormatter
+from ..formatters import OutputFormatter
+from .action_logger import ActionLogger
 
 # Cross-platform terminal handling
 IS_WINDOWS = sys.platform == "win32"
@@ -75,7 +76,7 @@ class ScrollState:
 @dataclass
 class TaskState:
     """State for a single task."""
-    name: str
+    action_key: ActionKey
     status: TaskStatus = TaskStatus.TBD
     start_time: Optional[float] = None
     duration: Optional[float] = None
@@ -84,9 +85,10 @@ class TaskState:
     action_dir: Optional[Path] = None
 
 
-class TaskTableManager:
+class ActionLoggerInteractive(ActionLogger):
     """State machine-based task table with interactive navigation.
 
+    Implements ActionLogger interface for interactive Rich table display.
     Uses Rich Live display for flicker-free rendering with:
     - Header: View name / status summary
     - Content: Table or scrollable text
@@ -115,36 +117,28 @@ class TaskTableManager:
         self.action_dirs_map = action_dirs or {}
         self.use_short_ids = use_short_ids
 
-        # Formatters
-        self._action_formatter = ActionFormatter(no_color=no_color)
-        self._context_formatter = self._action_formatter.context_formatter
+        # Formatters - use OutputFormatter which creates all sub-formatters
+        self._output = OutputFormatter(no_color=no_color)
+        self._action_formatter = self._output.action
+        self._context_formatter = self._output.context
 
-        # Store action keys and build name mappings
+        # Store action keys - these are the canonical identifiers
         self.action_keys: list[ActionKey] = list(action_keys)
-        self.key_to_name: dict[ActionKey, str] = {
-            key: self._action_formatter.format_label_plain(key, use_short_ids)
-            for key in action_keys
-        }
-        self.name_to_key: dict[str, ActionKey] = {
-            name: key for key, name in self.key_to_name.items()
-        }
 
         # Console for rendering - respect no_color setting
         self.console = Console(force_terminal=True, no_color=no_color)
 
-        # Shared state - updated by engine (keyed by formatted name for API compatibility)
-        task_names = [self.key_to_name[key] for key in action_keys]
-        self.tasks: dict[str, TaskState] = {
-            name: TaskState(name=name) for name in task_names
+        # Shared state - keyed by ActionKey, formatting done at display time
+        self.tasks: dict[ActionKey, TaskState] = {
+            key: TaskState(action_key=key) for key in action_keys
         }
-        self.task_order = list(task_names)
 
         # View state
         self.state = ViewState.TABLE
         self.selected_index = 0
         self.execution_complete = False
 
-        # Scroll states per view (keyed by task_name + view)
+        # Scroll states per view (keyed by ActionKey string + view)
         self._scroll_states: dict[str, ScrollState] = {}
 
         # Vim-like 'gg' sequence tracking
@@ -157,63 +151,60 @@ class TaskTableManager:
         self.lock = threading.RLock()
         self.stop_flag = False
         self.kill_requested = False  # Flag for engine to check
-        self._kill_callback: Optional[callable] = None  # Callback to kill engine processes
+        self._kill_callback: Optional[Callable[[], None]] = None
         self.live: Optional[Live] = None
         self._main_thread: Optional[threading.Thread] = None
 
     # =========================================================================
-    # Shared State API (called by engine)
+    # ActionLogger Interface Implementation
     # =========================================================================
 
-    def mark_running(self, task_name: str, action_dir: Optional[Path] = None) -> None:
+    def mark_running(self, action_key: ActionKey, action_dir: Optional[Path] = None) -> None:
         """Mark a task as running."""
         with self.lock:
-            if task_name in self.tasks:
-                self.tasks[task_name].status = TaskStatus.RUNNING
-                self.tasks[task_name].start_time = time.time()
+            if action_key in self.tasks:
+                self.tasks[action_key].status = TaskStatus.RUNNING
+                self.tasks[action_key].start_time = time.time()
                 if action_dir:
-                    self.tasks[task_name].action_dir = action_dir
+                    self.tasks[action_key].action_dir = action_dir
 
-    def mark_done(self, task_name: str, duration: float) -> None:
+    def mark_done(self, action_key: ActionKey, duration: float) -> None:
         """Mark a task as done."""
         with self.lock:
-            if task_name in self.tasks:
-                self.tasks[task_name].status = TaskStatus.DONE
-                self.tasks[task_name].duration = duration
+            if action_key in self.tasks:
+                self.tasks[action_key].status = TaskStatus.DONE
+                self.tasks[action_key].duration = duration
 
-    def mark_failed(self, task_name: str, duration: float) -> None:
+    def mark_failed(self, action_key: ActionKey, duration: float) -> None:
         """Mark a task as failed."""
         with self.lock:
-            if task_name in self.tasks:
-                self.tasks[task_name].status = TaskStatus.FAILED
-                self.tasks[task_name].duration = duration
+            if action_key in self.tasks:
+                self.tasks[action_key].status = TaskStatus.FAILED
+                self.tasks[action_key].duration = duration
 
-    def mark_restored(self, task_name: str, duration: float, action_dir: Optional[Path] = None) -> None:
+    def mark_restored(self, action_key: ActionKey, duration: float, action_dir: Optional[Path] = None) -> None:
         """Mark a task as restored from previous run."""
         with self.lock:
-            if task_name in self.tasks:
-                self.tasks[task_name].status = TaskStatus.RESTORED
-                self.tasks[task_name].duration = duration
+            if action_key in self.tasks:
+                self.tasks[action_key].status = TaskStatus.RESTORED
+                self.tasks[action_key].duration = duration
                 if action_dir:
-                    self.tasks[task_name].action_dir = action_dir
+                    self.tasks[action_key].action_dir = action_dir
 
     def mark_execution_complete(self) -> None:
         """Mark execution as complete."""
         with self.lock:
             self.execution_complete = True
 
-    def update_output_sizes(self, task_name: str, stdout_size: int, stderr_size: int) -> None:
+    def update_output_sizes(self, action_key: ActionKey, stdout_size: int, stderr_size: int) -> None:
         """Update stdout and stderr sizes for a task."""
         with self.lock:
-            if task_name in self.tasks:
-                self.tasks[task_name].stdout_size = stdout_size
-                self.tasks[task_name].stderr_size = stderr_size
+            if action_key in self.tasks:
+                self.tasks[action_key].stdout_size = stdout_size
+                self.tasks[action_key].stderr_size = stderr_size
 
-    def set_kill_callback(self, callback: callable) -> None:
-        """Set callback to be called when user requests kill (q key).
-
-        The callback should gracefully terminate all running processes.
-        """
+    def set_kill_callback(self, callback: Callable[[], None]) -> None:
+        """Set callback to be called when user requests kill (q key)."""
         self._kill_callback = callback
 
     def is_kill_requested(self) -> bool:
@@ -224,26 +215,26 @@ class TaskTableManager:
     # Scroll State Management
     # =========================================================================
 
-    def _get_scroll_key(self, task_name: str, view: ViewState) -> str:
+    def _get_scroll_key(self, action_key: ActionKey, view: ViewState) -> str:
         """Get unique key for scroll state."""
-        return f"{task_name}:{view.name}"
+        return f"{action_key}:{view.name}"
 
-    def _get_scroll_state(self, task_name: str, view: ViewState) -> ScrollState:
+    def _get_scroll_state(self, action_key: ActionKey, view: ViewState) -> ScrollState:
         """Get or create scroll state for a view."""
-        key = self._get_scroll_key(task_name, view)
+        key = self._get_scroll_key(action_key, view)
         if key not in self._scroll_states:
             self._scroll_states[key] = ScrollState()
         return self._scroll_states[key]
 
     def _update_scroll_state(
         self,
-        task_name: str,
+        action_key: ActionKey,
         view: ViewState,
         total_lines: int,
         visible_height: int
     ) -> ScrollState:
         """Update scroll state with new content info, handling auto-scroll."""
-        state = self._get_scroll_state(task_name, view)
+        state = self._get_scroll_state(action_key, view)
         prev_total = state.total_lines
         state.total_lines = total_lines
 
@@ -295,7 +286,7 @@ class TaskTableManager:
     def _get_content_height(self) -> int:
         """Get height available for content (minus header/footer)."""
         _, height = self._get_terminal_size()
-        return max(5, height - 6)  # Reserve lines for header/footer/panel borders
+        return max(5, height - 6)
 
     # =========================================================================
     # Key Input (Cross-platform)
@@ -308,25 +299,24 @@ class TaskTableManager:
 
         ch = msvcrt.getch()
 
-        # Handle special keys (arrow keys, page up/down, home/end return two bytes)
         if ch in (b'\x00', b'\xe0'):
             if msvcrt.kbhit():
                 ch2 = msvcrt.getch()
-                if ch2 == b'H':  # Up arrow
+                if ch2 == b'H':
                     return "up"
-                elif ch2 == b'P':  # Down arrow
+                elif ch2 == b'P':
                     return "down"
-                elif ch2 == b'I':  # Page Up
+                elif ch2 == b'I':
                     return "page_up"
-                elif ch2 == b'Q':  # Page Down
+                elif ch2 == b'Q':
                     return "page_down"
-                elif ch2 == b'G':  # Home
+                elif ch2 == b'G':
                     return "top"
-                elif ch2 == b'O':  # End
+                elif ch2 == b'O':
                     return "bottom"
-                elif ch2 == b'\x8d':  # Shift+Up (141)
+                elif ch2 == b'\x8d':
                     return "top"
-                elif ch2 == b'\x91':  # Shift+Down (145)
+                elif ch2 == b'\x91':
                     return "bottom"
             return ""
 
@@ -348,38 +338,31 @@ class TaskTableManager:
             "k": "up", "K": "up",
             "g": "g",
             "G": "G",
-            "d": "half_down", "\x04": "half_down",  # d or Ctrl+d
-            "u": "half_up", "\x15": "half_up",      # u or Ctrl+u
-            "f": "page_down", "\x06": "page_down",  # f or Ctrl+f
-            "b": "page_up", "\x02": "page_up",      # b or Ctrl+b
+            "d": "half_down", "\x04": "half_down",
+            "u": "half_up", "\x15": "half_up",
+            "f": "page_down", "\x06": "page_down",
+            "b": "page_up", "\x02": "page_up",
         }
         return key_map.get(char, "")
 
     def _read_key_unix(self) -> str:
         """Read a single key press on Unix (non-blocking with short timeout)."""
         try:
-            # Check if input is available
             ready, _, _ = select.select([sys.stdin], [], [], 0.02)
             if not ready:
                 return ""
 
-            # Read first character using os.read for more reliable behavior
             fd = sys.stdin.fileno()
             ch = os.read(fd, 1).decode('utf-8', errors='ignore')
             if not ch:
                 return ""
 
-            # Handle escape sequences for arrow keys
             if ch == "\x1b":
-                # Set stdin to non-blocking to read rest of escape sequence
                 old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
                 fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
 
                 try:
-                    # Small delay for escape sequence to arrive fully
                     time.sleep(0.02)
-
-                    # Read up to 5 bytes (handles various escape sequences)
                     seq = b""
                     try:
                         seq = os.read(fd, 5)
@@ -388,12 +371,10 @@ class TaskTableManager:
 
                     seq_str = seq.decode('utf-8', errors='ignore')
 
-                    # Shift+Arrow keys (go to top/bottom)
                     if seq_str.startswith("[1;2A"):
                         return "top"
                     elif seq_str.startswith("[1;2B"):
                         return "bottom"
-                    # Standard arrow key sequences
                     elif seq_str.startswith("[A") or seq_str == "OA":
                         return "up"
                     elif seq_str.startswith("[B") or seq_str == "OB":
@@ -402,28 +383,23 @@ class TaskTableManager:
                         return "right"
                     elif seq_str.startswith("[D") or seq_str == "OD":
                         return "left"
-                    # Page Up/Down (various terminal sequences)
                     elif seq_str.startswith("[5~"):
                         return "page_up"
                     elif seq_str.startswith("[6~"):
                         return "page_down"
-                    # Home/End keys
                     elif seq_str.startswith("[H") or seq_str.startswith("[1~") or seq_str == "OH":
                         return "top"
                     elif seq_str.startswith("[F") or seq_str.startswith("[4~") or seq_str == "OF":
                         return "bottom"
-                    # Some terminals send different arrow sequences
                     elif "A" in seq_str and "[" in seq_str:
                         return "up"
                     elif "B" in seq_str and "[" in seq_str:
                         return "down"
                 finally:
-                    # Restore original flags
                     fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
 
-                return ""  # Bare escape or unrecognized sequence
+                return ""
 
-            # Map character keys
             key_map = {
                 "\r": "enter", "\n": "enter",
                 "q": "q", "Q": "q",
@@ -437,10 +413,10 @@ class TaskTableManager:
                 "k": "up", "K": "up",
                 "g": "g",
                 "G": "G",
-                "d": "half_down", "\x04": "half_down",  # d or Ctrl+d
-                "u": "half_up", "\x15": "half_up",      # u or Ctrl+u
-                "f": "page_down", "\x06": "page_down",  # f or Ctrl+f
-                "b": "page_up", "\x02": "page_up",      # b or Ctrl+b
+                "d": "half_down", "\x04": "half_down",
+                "u": "half_up", "\x15": "half_up",
+                "f": "page_down", "\x06": "page_down",
+                "b": "page_up", "\x02": "page_up",
             }
             return key_map.get(ch, "")
         except Exception:
@@ -463,16 +439,15 @@ class TaskTableManager:
             if key == "up":
                 self.selected_index = max(0, self.selected_index - 1)
             elif key == "down":
-                self.selected_index = min(len(self.task_order) - 1, self.selected_index + 1)
+                self.selected_index = min(len(self.action_keys) - 1, self.selected_index + 1)
             elif key == "q":
-                # Signal kill - set flag and call callback
                 self.kill_requested = True
                 if self._kill_callback:
                     try:
                         self._kill_callback()
                     except Exception:
-                        pass  # Don't let callback errors break the UI
-                return True  # Signal exit/kill all processes
+                        pass
+                return True
             elif key == "m":
                 self.state = ViewState.META
             elif key in ("l", "enter"):
@@ -488,8 +463,8 @@ class TaskTableManager:
     def _handle_key_scroll(self, key: str) -> None:
         """Handle key in scrollable views with vim-like navigation."""
         with self.lock:
-            task_name = self._get_selected_task_name()
-            if not task_name:
+            action_key = self._get_selected_action_key()
+            if not action_key:
                 self._pending_g = False
                 return
 
@@ -498,12 +473,11 @@ class TaskTableManager:
                 self._pending_g = False
                 return
 
-            scroll_state = self._get_scroll_state(task_name, self.state)
+            scroll_state = self._get_scroll_state(action_key, self.state)
             visible_height = self._get_content_height()
             max_offset = max(0, scroll_state.total_lines - visible_height)
             half_page = max(1, visible_height // 2)
 
-            # Handle 'gg' sequence
             if key == "g":
                 if self._pending_g:
                     scroll_state.offset = 0
@@ -576,32 +550,38 @@ class TaskTableManager:
             TaskStatus.FAILED: "red",
         }[status]
 
-    def _get_selected_task_name(self) -> str:
-        """Get currently selected task name."""
+    def _get_selected_action_key(self) -> Optional[ActionKey]:
+        """Get currently selected action key."""
         with self.lock:
-            if 0 <= self.selected_index < len(self.task_order):
-                return self.task_order[self.selected_index]
-            return ""
+            if 0 <= self.selected_index < len(self.action_keys):
+                return self.action_keys[self.selected_index]
+            return None
 
     def _get_selected_task(self) -> Optional[TaskState]:
         """Get currently selected task."""
-        name = self._get_selected_task_name()
-        return self.tasks.get(name)
+        action_key = self._get_selected_action_key()
+        if action_key is None:
+            return None
+        return self.tasks.get(action_key)
 
     # =========================================================================
     # View Renderers
     # =========================================================================
 
+    # Status display configuration: (symbol_ascii, symbol_unicode, color, label)
+    STATUS_DISPLAY = {
+        TaskStatus.TBD: (".", "░", "dim", "pending"),
+        TaskStatus.RUNNING: ("~", "▒", "cyan", "running"),
+        TaskStatus.DONE: ("#", "█", "green", "done"),
+        TaskStatus.RESTORED: ("+", "▓", "blue", "restored"),
+        TaskStatus.FAILED: ("!", "█", "red", "failed"),
+    }
+
     def _build_table(self, include_progress: bool = False) -> Table:
-        """Build the task table (original style with context markers).
-
-        Args:
-            include_progress: If True, adds progress bar and legend as table caption.
-        """
+        """Build the task table."""
         with self.lock:
-            has_context = any("#" in name for name in self.task_order)
+            has_context = any(str(key.context_id) != "default" for key in self.action_keys)
 
-            # Build caption with progress bar and legend if requested
             caption = None
             if include_progress and not self.no_color:
                 caption = self._build_progress_caption()
@@ -612,7 +592,6 @@ class TaskTableManager:
 
             table = Table(show_header=True, header_style=header_style, caption=caption, caption_justify="left")
 
-            # Selection indicator column
             table.add_column("", width=1, no_wrap=True)
 
             if has_context:
@@ -628,16 +607,14 @@ class TaskTableManager:
             table.add_column("Stderr", justify="right", no_wrap=True)
             table.add_column("Status", justify="center", no_wrap=True)
 
-            for idx, task_name in enumerate(self.task_order):
-                task = self.tasks[task_name]
+            for idx, action_key in enumerate(self.action_keys):
+                task = self.tasks[action_key]
                 status = task.status
                 style = self._get_status_style(status)
                 is_selected = idx == self.selected_index
 
-                # Selection indicator
                 sel_indicator = SELECTION_INDICATOR if is_selected else " "
 
-                # Calculate time
                 if status == TaskStatus.RUNNING and task.start_time:
                     time_str = self._format_duration(time.time() - task.start_time)
                 elif task.duration is not None:
@@ -648,35 +625,26 @@ class TaskTableManager:
                 stdout_str = self._format_size(task.stdout_size)
                 stderr_str = self._format_size(task.stderr_size)
 
-                # Get ActionKey for this task to format context properly
-                action_key = self.name_to_key.get(task_name)
+                action_name = action_key.id.name
 
-                # Build row data
-                if has_context and action_key:
-                    # Use ActionFormatter for consistent coloring
+                if has_context:
                     context_formatted = self._context_formatter.format_id_with_symbol(
                         action_key.context_id, self.use_short_ids
                     )
-                    action_name = action_key.id.name
                     row_data = [
                         sel_indicator,
                         context_formatted,
                         f"[{style}]{action_name}[/{style}]" if style else action_name,
                     ]
-                elif has_context:
-                    row_data = [
-                        sel_indicator,
-                        "",
-                        f"[{style}]{task_name}[/{style}]" if style else task_name,
-                    ]
                 else:
                     row_data = [
                         sel_indicator,
-                        f"[{style}]{task_name}[/{style}]" if style else task_name,
+                        f"[{style}]{action_name}[/{style}]" if style else action_name,
                     ]
 
                 if self.show_dirs:
-                    row_data.append(self.action_dirs_map.get(task_name, "-"))
+                    action_key_str = self._action_formatter.format_label_plain(action_key, self.use_short_ids)
+                    row_data.append(self.action_dirs_map.get(action_key_str, "-"))
 
                 row_data.extend([
                     f"[{style}]{time_str}[/{style}]" if style else time_str,
@@ -689,30 +657,15 @@ class TaskTableManager:
 
             return table
 
-    # Status display configuration: (symbol_ascii, symbol_unicode, color, label)
-    STATUS_DISPLAY = {
-        TaskStatus.TBD: (".", "░", "dim", "pending"),
-        TaskStatus.RUNNING: ("~", "▒", "cyan", "running"),
-        TaskStatus.DONE: ("#", "█", "green", "done"),
-        TaskStatus.RESTORED: ("+", "▓", "blue", "restored"),
-        TaskStatus.FAILED: ("!", "█", "red", "failed"),
-    }
-
     def _build_progress_caption(self) -> Table:
-        """Build progress bar and legend as table caption.
-
-        Returns a Table containing the progress bar and legend.
-        The table uses expand=True to fill the parent table's width.
-        """
+        """Build progress bar and legend as table caption."""
         with self.lock:
-            # Count tasks by status
             counts: dict[TaskStatus, int] = {}
             for task in self.tasks.values():
                 counts[task.status] = counts.get(task.status, 0) + 1
 
             total = len(self.tasks)
 
-            # Container table for caption content
             caption_table = Table(
                 show_header=False,
                 show_edge=False,
@@ -726,10 +679,8 @@ class TaskTableManager:
                 caption_table.add_row(Text("No tasks", style="dim"))
                 return caption_table
 
-            # Order: DONE, RESTORED, RUNNING, FAILED, TBD
             status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
 
-            # Build progress bar using nested table with ratio columns
             bar_table = Table(
                 show_header=False,
                 show_edge=False,
@@ -738,26 +689,22 @@ class TaskTableManager:
                 expand=True,
             )
 
-            # Add columns with ratios based on counts
             for status in status_order:
                 count = counts.get(status, 0)
                 if count > 0:
                     bar_table.add_column(ratio=count, no_wrap=True, overflow="crop")
 
-            # Add row with filled segments
             row_data = []
             for status in status_order:
                 count = counts.get(status, 0)
                 if count > 0:
                     ascii_sym, unicode_sym, color, _ = self.STATUS_DISPLAY[status]
                     symbol = ascii_sym if IS_WINDOWS else unicode_sym
-                    # Long string that will be cropped to column width
                     row_data.append(Text(symbol * 500, style=color))
 
             if row_data:
                 bar_table.add_row(*row_data)
 
-            # Build legend line
             legend = Text()
             first = True
             for status in status_order:
@@ -776,7 +723,6 @@ class TaskTableManager:
                 legend.append(f" {label}: ", style="dim")
                 legend.append(str(count), style=color)
 
-            # Add progress bar and legend to caption
             caption_table.add_row(bar_table)
             caption_table.add_row(legend)
 
@@ -806,13 +752,11 @@ class TaskTableManager:
     def _build_legend(self) -> Text:
         """Build legend showing status symbols, colors, and counts."""
         with self.lock:
-            # Count tasks by status
             counts: dict[TaskStatus, int] = {}
             for task in self.tasks.values():
                 counts[task.status] = counts.get(task.status, 0) + 1
 
             legend = Text()
-            # Order: DONE, RESTORED, RUNNING, FAILED, TBD
             status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
 
             dim_style = "" if self.no_color else "dim"
@@ -843,11 +787,10 @@ class TaskTableManager:
         """Build header text for detail views."""
         with self.lock:
             if self.state == ViewState.TABLE:
-                # This is not used for TABLE view anymore (see _build_renderable)
                 return "Tasks"
             else:
                 task = self._get_selected_task()
-                task_name = task.name if task else "Unknown"
+                task_label = self._action_formatter.format_label_plain(task.action_key, self.use_short_ids) if task else "Unknown"
                 view_names = {
                     ViewState.META: "Meta",
                     ViewState.LOGS_STDOUT: "Stdout",
@@ -855,7 +798,7 @@ class TaskTableManager:
                     ViewState.OUTPUT: "Output",
                     ViewState.SOURCE: "Source",
                 }
-                return f"{view_names.get(self.state, 'View')} - {task_name}"
+                return f"{view_names.get(self.state, 'View')} - {task_label}"
 
     def _build_footer(self) -> Text:
         """Build footer with key bindings, line counter, and progress bar."""
@@ -866,13 +809,12 @@ class TaskTableManager:
         if self.state == ViewState.TABLE:
             return Text(self.TABLE_KEYS, style=dim_style)
 
-        # Get scroll state for detail views
         task = self._get_selected_task()
         if not task:
             keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
             return Text(keys, style=dim_style)
 
-        scroll_state = self._get_scroll_state(task.name, self.state)
+        scroll_state = self._get_scroll_state(task.action_key, self.state)
         visible_height = self._get_content_height()
         total = scroll_state.total_lines
 
@@ -885,7 +827,6 @@ class TaskTableManager:
             line_info = f"{start_line}-{end_line}/{total}"
             progress_pct = min(100, int((end_line / total) * 100)) if total > 0 else 100
 
-        # Build progress bar (10 chars wide, ASCII on Windows or no_color)
         bar_width = 10
         filled = int(bar_width * progress_pct / 100)
         if IS_WINDOWS or self.no_color:
@@ -917,38 +858,28 @@ class TaskTableManager:
         text.append(f"{sep} ", style=dim_style)
         return text
 
-    def _highlight_log_line(self, line: str, line_num: int, total_lines: int) -> Text:
-        """Apply simple log highlighting (errors, warnings)."""
+    def _format_log_line(self, line: str, line_num: int, total_lines: int) -> Text:
+        """Format log line with line number prefix, keeping original content unmodified."""
         text = self._format_line_number(line_num, total_lines)
-        lower = line.lower()
-
-        if "error" in lower or "fail" in lower or "exception" in lower:
-            text.append(line, style="red")
-        elif "warn" in lower:
-            text.append(line, style="yellow")
-        elif "success" in lower or "pass" in lower or "ok" in lower:
-            text.append(line, style="green")
-        else:
-            text.append(line)
-
+        text.append(line)
         return text
 
     def _build_detail_content(self):
         """Build content for detail views with syntax highlighting."""
         task = self._get_selected_task()
         if not task or not task.action_dir:
-            return Text("(no action directory)", style="dim")
+            return Text("(no action directory)")
 
         visible_height = self._get_content_height()
         lines: list[str] = []
-        content_type = "text"  # text, json, shell, log
+        content_type = "text"
 
         if self.state == ViewState.LOGS_STDOUT:
             log_path = task.action_dir / "stdout.log"
             content_type = "log"
             if log_path.exists():
                 try:
-                    lines = log_path.read_text().splitlines()
+                    lines = log_path.read_text(encoding="utf-8").splitlines()
                 except Exception:
                     lines = ["(error reading file)"]
         elif self.state == ViewState.LOGS_STDERR:
@@ -956,34 +887,37 @@ class TaskTableManager:
             content_type = "log"
             if log_path.exists():
                 try:
-                    lines = log_path.read_text().splitlines()
+                    lines = log_path.read_text(encoding="utf-8").splitlines()
                 except Exception:
                     lines = ["(error reading file)"]
         elif self.state == ViewState.META:
             meta_path = task.action_dir / "meta.json"
-            content_type = "json"
             if meta_path.exists():
+                content_type = "json"
                 try:
-                    data = json.loads(meta_path.read_text())
+                    data = json.loads(meta_path.read_text(encoding="utf-8"))
                     lines = json.dumps(data, indent=2).splitlines()
                 except Exception as e:
+                    content_type = "text"
                     lines = [f"(error: {e})"]
             else:
+                content_type = "text"
                 lines = ["(meta.json not found)"]
         elif self.state == ViewState.OUTPUT:
             output_path = task.action_dir / "output.json"
-            content_type = "json"
             if output_path.exists():
+                content_type = "json"
                 try:
-                    data = json.loads(output_path.read_text())
+                    data = json.loads(output_path.read_text(encoding="utf-8"))
                     lines = json.dumps(data, indent=2).splitlines()
                 except Exception as e:
+                    content_type = "text"
                     lines = [f"(error: {e})"]
             else:
+                content_type = "text"
                 lines = ["(output.json not found)"]
         elif self.state == ViewState.SOURCE:
             script_path = None
-            content_type = "shell"  # default to shell
             for ext in [".sh", ".py"]:
                 path = task.action_dir / f"script{ext}"
                 if path.exists():
@@ -992,36 +926,30 @@ class TaskTableManager:
                     break
             if script_path:
                 try:
-                    lines = script_path.read_text().splitlines()
+                    lines = script_path.read_text(encoding="utf-8").splitlines()
                 except Exception as e:
+                    content_type = "text"
                     lines = [f"(error: {e})"]
             else:
+                content_type = "text"
                 lines = ["(script not found)"]
 
         if not lines:
             lines = ["(empty)"]
 
-        # Update scroll state
         total_lines = len(lines)
-        scroll_state = self._update_scroll_state(task.name, self.state, total_lines, visible_height)
+        scroll_state = self._update_scroll_state(task.action_key, self.state, total_lines, visible_height)
 
-        # Get visible lines
         start = scroll_state.offset
         end = start + visible_height
         visible_lines = lines[start:end]
 
-        # Build highlighted content with line numbers
-        # Use Rich Syntax for json/shell/python, manual highlighting for logs
         if not self.no_color and content_type in ("json", "shell", "python"):
-            # Determine lexer for syntax highlighting
             lexer_map = {"json": "json", "shell": "bash", "python": "python"}
             lexer = lexer_map[content_type]
 
-            # Join all lines for Syntax (it handles line ranges)
             full_content = "\n".join(lines)
 
-            # Create Syntax with line numbers and range
-            # line_range is 1-indexed and inclusive
             syntax = Syntax(
                 full_content,
                 lexer,
@@ -1033,7 +961,6 @@ class TaskTableManager:
             )
             return syntax
 
-        # For logs/text or no_color mode, use manual per-line rendering
         result = Text()
         width = max(4, len(str(total_lines)))
         sep = "|" if IS_WINDOWS or self.no_color else "│"
@@ -1048,7 +975,7 @@ class TaskTableManager:
             if self.no_color:
                 result.append(f"{line_num:{width}} {sep} {line}")
             elif content_type == "log":
-                result.append_text(self._highlight_log_line(line, line_num, total_lines))
+                result.append_text(self._format_log_line(line, line_num, total_lines))
             else:
                 result.append(f"{line_num:{width}} ", style=dim_style)
                 result.append(f"{sep} ", style=dim_style)
@@ -1062,7 +989,6 @@ class TaskTableManager:
 
         if self.state == ViewState.TABLE:
             if self.no_color:
-                # No-color mode: text status header above table
                 header = self._build_text_status_header()
                 content = self._build_table(include_progress=False)
                 return Group(
@@ -1072,7 +998,6 @@ class TaskTableManager:
                     footer,
                 )
             else:
-                # Color mode: table with progress legend as caption
                 content = self._build_table(include_progress=True)
                 return Group(
                     content,
@@ -1080,7 +1005,6 @@ class TaskTableManager:
                     footer,
                 )
         else:
-            # Simple text header for detail views
             header = self._build_header()
             content = self._build_detail_content()
             header_style = "" if self.no_color else "bold reverse"
@@ -1094,16 +1018,15 @@ class TaskTableManager:
             )
 
     # =========================================================================
-    # Main Loop (single-threaded for input + updates)
+    # Main Loop
     # =========================================================================
 
     def _main_loop(self) -> None:
         """Main loop handling both input and display updates."""
         last_update = 0.0
-        update_interval = 1.0 / 24.0  # 24 FPS
+        update_interval = 1.0 / 24.0
 
         while not self.stop_flag:
-            # Handle input (non-blocking)
             key = self._read_key()
             if key:
                 if self.state == ViewState.TABLE:
@@ -1112,18 +1035,16 @@ class TaskTableManager:
                 else:
                     self._handle_key_scroll(key)
 
-                # Immediate update after key press
                 if self.live:
                     self.live.update(self._build_renderable(), refresh=True)
 
-            # Periodic update for running timers at 24 FPS
             now = time.time()
             if now - last_update >= update_interval:
                 last_update = now
                 if self.live:
                     self.live.update(self._build_renderable(), refresh=True)
 
-            time.sleep(0.01)  # Small sleep to prevent CPU spinning
+            time.sleep(0.01)
 
     # =========================================================================
     # Lifecycle
@@ -1133,9 +1054,6 @@ class TaskTableManager:
         """Start the interactive display."""
         self.stop_flag = False
 
-        # Create and start Live display (auto_refresh=False for manual control)
-        # vertical_overflow="visible" prevents height tracking issues that cause
-        # header duplication when switching views or when content height changes
         self.live = Live(
             self._build_renderable(),
             console=self.console,
@@ -1145,12 +1063,10 @@ class TaskTableManager:
             vertical_overflow="visible",
         )
         self.live.start()
-        self.live.refresh()  # Initial render
+        self.live.refresh()
 
-        # Setup terminal AFTER Live starts (important for proper stdin handling)
         self._setup_terminal()
 
-        # Start main loop in background thread
         self._main_thread = threading.Thread(target=self._main_loop, daemon=True)
         self._main_thread.start()
 
@@ -1161,13 +1077,10 @@ class TaskTableManager:
         if hasattr(self, '_main_thread') and self._main_thread.is_alive():
             self._main_thread.join(timeout=1.0)
 
-        # Restore terminal BEFORE stopping Live
         self._restore_terminal()
 
         if self.live:
-            # Final update to ensure table shows latest state before stopping
             self.live.update(self._build_renderable(), refresh=True)
-            # Stop - Rich will preserve current content (transient=False)
             self.live.stop()
             self.live = None
 
@@ -1179,7 +1092,6 @@ class TaskTableManager:
         with self.lock:
             self.execution_complete = True
 
-        # Wait for main thread to signal exit
         if hasattr(self, '_main_thread'):
             self._main_thread.join()
 

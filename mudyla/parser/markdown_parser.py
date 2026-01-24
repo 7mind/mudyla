@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import mistune
-
 from ..ast.models import (
     ActionDefinition,
     ActionVersion,
@@ -17,13 +15,11 @@ from ..ast.models import (
     AxisValue,
     DocumentProperties,
     Condition,
-    DependencyDeclaration,
     FlagDefinition,
     ParsedDocument,
-    PlatformCondition,
     SourceLocation,
 )
-from ..ast.types import ArgumentType, ReturnType
+from ..ast.types import ArgumentType
 from .dependency_parser import DependencyParser
 from .expansion_parser import ExpansionParser
 from .return_parser import ReturnParser
@@ -160,7 +156,7 @@ class MarkdownParser:
         properties = DocumentProperties()
 
         for file_path in file_paths:
-            content = file_path.read_text()
+            content = file_path.read_text(encoding="utf-8")
             (
                 actions,
                 arguments,
@@ -562,7 +558,7 @@ class MarkdownParser:
         return axis
 
     def _parse_passthrough_section(
-        self, section: Section, file_path: Path
+        self, section: Section, _file_path: Path
     ) -> list[str]:
         """Parse passthrough section using parser combinators."""
         passthrough = []
@@ -577,7 +573,7 @@ class MarkdownParser:
         return passthrough
 
     def _parse_required_env_section(
-        self, section: Section, file_path: Path
+        self, section: Section, _file_path: Path
     ) -> list[str]:
         """Parse required-env section using parser combinators."""
         required = []
@@ -590,7 +586,7 @@ class MarkdownParser:
         return required
 
     def _parse_environment_section(
-        self, section: Section, file_path: Path
+        self, section: Section, _file_path: Path
     ) -> tuple[dict[str, str], list[str], list[str]]:
         """Parse environment section with environment vars and passthrough vars.
 
@@ -719,7 +715,7 @@ class MarkdownParser:
         )
 
     def _parse_vars_subsection(
-        self, section: Section, file_path: Path
+        self, section: Section, _file_path: Path
     ) -> dict[str, str]:
         """Parse vars subsection within an action using parser combinators."""
         vars_dict = {}

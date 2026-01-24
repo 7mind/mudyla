@@ -1,19 +1,19 @@
 """Executor for retainer actions that decide soft dependency retention."""
 
+import os
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..ast.models import ActionDefinition, ActionVersion
+from ..ast.models import ParsedDocument
 from ..dag.graph import ActionGraph, ActionKey, Dependency
 from .runtime_registry import RuntimeRegistry
-from .bash_runtime import BashRuntime
-from .python_runtime import PythonRuntime
-from .language_runtime import ExecutionContext
+from .runtime_bash import BashRuntime
+from .runtime_python import PythonRuntime
+from .language_runtime import ExecutionContext, LanguageRuntime
 
 
 @dataclass
@@ -48,7 +48,7 @@ class RetainerExecutor:
     def __init__(
         self,
         graph: ActionGraph,
-        document: "ParsedDocument",
+        document: ParsedDocument,
         project_root: Path,
         environment_vars: dict[str, str],
         passthrough_env_vars: list[str],
@@ -160,7 +160,6 @@ class RetainerExecutor:
             return RetainerExecutionResult(retained_actions=None, stdout="", stderr="")
 
         retainer_node = self.graph.nodes[retainer_key]
-        action = retainer_node.action
         version = retainer_node.selected_version
 
         if not version:
@@ -176,7 +175,7 @@ class RetainerExecutor:
             output_json_path = temp_path / "output.json"
 
             # Build execution context with context-specific args/flags/axis
-            context = self._build_retainer_context(retainer_key, retain_signal_file)
+            context = self._build_retainer_context(retainer_key)
 
             # Prepare script
             rendered = runtime.prepare_script(
@@ -186,7 +185,7 @@ class RetainerExecutor:
             # Write script
             script_ext = ".sh" if version.language == "bash" else ".py"
             script_path = temp_path / f"retainer{script_ext}"
-            script_path.write_text(rendered.content)
+            script_path.write_text(rendered.content, encoding="utf-8")
             script_path.chmod(0o755)
 
             # Build execution command
@@ -202,6 +201,7 @@ class RetainerExecutor:
                     env=env,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     timeout=60,  # 1 minute timeout for retainers
                 )
 
@@ -217,7 +217,7 @@ class RetainerExecutor:
                     return RetainerExecutionResult(retained_actions=None, stdout=stdout, stderr=stderr)
 
                 # Read signal file to determine what to retain
-                content = retain_signal_file.read_text().strip()
+                content = retain_signal_file.read_text(encoding="utf-8").strip()
                 if not content:
                     # Empty file = retain all
                     return RetainerExecutionResult(retained_actions=set(), stdout=stdout, stderr=stderr)
@@ -232,15 +232,13 @@ class RetainerExecutor:
                 return RetainerExecutionResult(retained_actions=None, stdout="", stderr=str(e))
 
     def _build_retainer_context(
-        self, retainer_key: ActionKey, retain_signal_file: Path
+        self, retainer_key: ActionKey
     ) -> ExecutionContext:
         """Build execution context for a retainer action.
 
         Uses context-specific args/flags/axis_values from the retainer_key,
         falling back to global values for anything not specified in the context.
         """
-        import os
-
         # Build environment variables
         env_vars = dict(self.environment_vars)
         for var_name in self.passthrough_env_vars:
@@ -277,7 +275,7 @@ class RetainerExecutor:
         )
 
     def _build_execution_command(
-        self, runtime: Any, script_path: Path
+        self, runtime: LanguageRuntime, script_path: Path
     ) -> list[str]:
         """Build the command to execute the retainer script."""
         base_cmd = runtime.get_execution_command(script_path)
@@ -299,8 +297,6 @@ class RetainerExecutor:
 
     def _build_environment(self, retain_signal_file: Path) -> dict[str, str]:
         """Build environment variables for retainer execution."""
-        import os
-
         env = dict(os.environ)
         env["MDL_RETAIN_SIGNAL_FILE"] = str(retain_signal_file)
         return env

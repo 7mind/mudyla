@@ -4,7 +4,7 @@ Provides a clean API for accessing symbols that automatically fall back
 to ASCII when emoji support is not available or colors are disabled.
 
 Usage:
-    symbols = SymbolsFormatter(no_color=False)
+    symbols = SymbolsFormatter()
     print(symbols.Globe)  # Returns "🌍" or "*" depending on support
     print(symbols.Check)  # Returns "✅" or "+"
 """
@@ -31,6 +31,7 @@ class Symbols:
     Cross = Symbol("❌", "x")
     Warning = Symbol("⚠️", "!")
     Info = Symbol("ℹ️", "i")
+    Play = Symbol("▶️", ">")
 
     # Objects
     Globe = Symbol("🌍", "*")
@@ -90,19 +91,23 @@ class Symbols:
 
 
 class SymbolsFormatter:
-    """Provides symbols with automatic emoji/ASCII fallback based on terminal support."""
+    """Provides symbols with automatic emoji/ASCII fallback based on terminal support.
+
+    Emoji is disabled when no_color=True or when the terminal doesn't support it.
+    """
 
     def __init__(self, no_color: bool = False):
         """Initialize the symbols formatter.
 
         Args:
-            no_color: If True, always use ASCII fallbacks
+            no_color: If True, always use ASCII symbols instead of emoji
         """
         self._no_color = no_color
 
     @cached_property
-    def _supports_emoji(self) -> bool:
+    def supports_emoji(self) -> bool:
         """Detect if terminal supports emoji display."""
+        # Disable emoji when no_color is set
         if self._no_color:
             return False
 
@@ -119,7 +124,7 @@ class SymbolsFormatter:
 
     def _resolve(self, symbol: Symbol) -> str:
         """Resolve a symbol to emoji or ASCII based on support."""
-        return symbol.emoji if self._supports_emoji else symbol.ascii
+        return symbol.emoji if self.supports_emoji else symbol.ascii
 
     def get(self, symbol: Symbol) -> str:
         """Get the resolved symbol string.
@@ -148,6 +153,10 @@ class SymbolsFormatter:
     @property
     def Info(self) -> str:
         return self._resolve(Symbols.Info)
+
+    @property
+    def Play(self) -> str:
+        return self._resolve(Symbols.Play)
 
     # Objects
     @property

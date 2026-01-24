@@ -44,7 +44,7 @@ class PythonRuntime(LanguageRuntime):
             "flags": context.flags,
             "actions": context.action_outputs,
         }
-        context_json_path.write_text(json.dumps(context_data, indent=2))
+        context_json_path.write_text(json.dumps(context_data, indent=2), encoding="utf-8")
 
         # Build initialization code
         # Import runtime directly from mudyla package

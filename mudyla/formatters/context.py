@@ -2,18 +2,20 @@
 
 Provides formatted representations of ContextId for display purposes.
 All formatting methods return Rich Text objects with styling markers.
+
+Styling is always applied - the Rich console handles no_color mode.
 """
 
 from __future__ import annotations
 
 import hashlib
-import platform
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from rich.text import Text
 
 from .names_generator import generate_name
+from .symbols import SymbolsFormatter
 
 if TYPE_CHECKING:
     from ..dag.context import ContextId
@@ -33,61 +35,56 @@ CONTEXT_SYMBOLS_ASCII: tuple[str, ...] = (
     "1", "2", "3", "4", "5", "6", "7", "8",
 )
 
-# Colors for context identifiers - universally supported, visible on light and dark backgrounds
-# Using basic ANSI colors (0-15) and common 256-color codes for maximum terminal compatibility
 CONTEXT_COLORS: tuple[str, ...] = (
-    # Basic ANSI colors - supported by all terminals
     "cyan",
     "green",
     "yellow",
     "magenta",
     "red",
     "blue",
-    # Bright variants - widely supported
     "bright_cyan",
     "bright_green",
     "bright_yellow",
     "bright_magenta",
     "bright_red",
     "bright_blue",
-    # Additional distinguishable colors from 256-color palette
-    # These are chosen for visibility on both light and dark backgrounds
-    "color(37)",   # white/light gray - neutral
-    "color(73)",   # medium cyan
-    "color(107)",  # olive/khaki
-    "color(133)",  # medium magenta/purple
-    "color(137)",  # tan/sand
-    "color(167)",  # coral/salmon
-    "color(68)",   # steel blue
-    "color(71)",   # sea green
-    "color(101)",  # olive
-    "color(131)",  # indian red
-    "color(139)",  # rosy brown
-    "color(143)",  # khaki
-    "color(67)",   # slate blue
-    "color(103)",  # medium purple
-    "color(109)",  # cadet blue
-    "color(145)",  # gray
-    "color(175)",  # plum
-    "color(179)",  # gold
+    "color(37)",
+    "color(73)",
+    "color(107)",
+    "color(133)",
+    "color(137)",
+    "color(167)",
+    "color(68)",
+    "color(71)",
+    "color(101)",
+    "color(131)",
+    "color(139)",
+    "color(143)",
+    "color(67)",
+    "color(103)",
+    "color(109)",
+    "color(145)",
+    "color(175)",
+    "color(179)",
 )
 
-DEFAULT_CONTEXT_EMOJI = "🌍"
-DEFAULT_CONTEXT_SYMBOL_ASCII = "*"
 DEFAULT_CONTEXT_COLOR = "cyan"
 
 
 class ContextFormatter:
-    """Formats context identifiers for display with Rich styling."""
+    """Formats context identifiers for display with Rich styling.
 
-    def __init__(self, no_color: bool = False):
+    All methods return Rich Text objects with styling. The no_color handling
+    is delegated to the Rich console that prints these Text objects.
+    """
+
+    def __init__(self, symbols: SymbolsFormatter):
         """Initialize the context formatter.
 
         Args:
-            no_color: If True, disable all styling
+            symbols: SymbolsFormatter for emoji/ASCII symbol resolution
         """
-        self._no_color = no_color
-        self._use_ascii = platform.system() == "Windows" or no_color
+        self._symbols = symbols
 
     def format_id(self, context: ContextId, use_short_ids: bool) -> Text:
         """Format a context identifier for display.
@@ -124,7 +121,7 @@ class ContextFormatter:
         context_str = str(context)
 
         if context_str == "default":
-            return Text("default", style="" if self._no_color else "dim")
+            return Text("default", style="dim")
 
         return self._format_context_string(context_str)
 
@@ -150,11 +147,11 @@ class ContextFormatter:
         if use_short_ids:
             name = generate_name(hex_hash)
             result = Text(symbol)
-            result.append(name, style="" if self._no_color else f"bold {color}")
+            result.append(name, style=f"bold {color}")
             return result
         else:
             result = Text(symbol)
-            result.append(hex_hash[:6], style="" if self._no_color else f"bold {color}")
+            result.append(hex_hash[:6], style=f"bold {color}")
             return result
 
     def get_context_mapping(self, contexts: list[ContextId], use_short_ids: bool) -> dict[str, str]:
@@ -187,12 +184,9 @@ class ContextFormatter:
 
     def _format_default_context(self) -> Text:
         """Format the default (empty) context."""
-        if self._use_ascii:
-            symbol = f"{DEFAULT_CONTEXT_SYMBOL_ASCII}-"
-        else:
-            symbol = DEFAULT_CONTEXT_EMOJI
+        symbol = self._get_default_symbol()
         result = Text(symbol)
-        result.append("global", style="" if self._no_color else f"bold {DEFAULT_CONTEXT_COLOR}")
+        result.append("global", style=f"bold {DEFAULT_CONTEXT_COLOR}")
         return result
 
     def _format_default_context_with_symbol(self) -> Text:
@@ -202,21 +196,29 @@ class ContextFormatter:
     def _format_deterministic_name(self, hex_hash: str, color: str) -> Text:
         """Format a deterministic name from hash."""
         name = generate_name(hex_hash)
-        return Text(name, style="" if self._no_color else f"bold {color}")
+        return Text(name, style=f"bold {color}")
 
     def _format_hash_id(self, hex_hash: str, color: str) -> Text:
         """Format a short hash identifier."""
-        return Text(hex_hash[:6], style="" if self._no_color else f"bold {color}")
+        return Text(hex_hash[:6], style=f"bold {color}")
+
+    def _get_default_symbol(self) -> str:
+        """Get the default context symbol (emoji or ASCII)."""
+        if self._symbols.supports_emoji:
+            return self._symbols.Globe
+        else:
+            return f"{self._symbols.Globe}-"
 
     def _get_symbol_for_hash(self, hex_hash: str) -> str:
         """Get a deterministic symbol/emoji for a hash.
 
         Returns symbol with separator: emoji directly or ASCII letter followed by '-'.
         """
-        symbols = CONTEXT_SYMBOLS_ASCII if self._use_ascii else CONTEXT_EMOJIS
+        use_ascii = not self._symbols.supports_emoji
+        symbols = CONTEXT_SYMBOLS_ASCII if use_ascii else CONTEXT_EMOJIS
         symbol_index = int(hex_hash[8:10], 16) % len(symbols)
         symbol = symbols[symbol_index]
-        return f"{symbol}-" if self._use_ascii else symbol
+        return f"{symbol}-" if use_ascii else symbol
 
     def _get_color_for_hash(self, hex_hash: str) -> str:
         """Get a deterministic color for a hash."""
@@ -230,20 +232,14 @@ class ContextFormatter:
 
         for i, part in enumerate(parts):
             if i > 0:
-                result.append("+", style="" if self._no_color else "dim")
+                result.append("+", style="dim")
 
             if ":" in part:
                 axis_name, axis_value = part.split(":", 1)
-                result.append(axis_name, style="" if self._no_color else "magenta")
-                result.append(":", style="" if self._no_color else "dim")
-                result.append(axis_value, style="" if self._no_color else "yellow")
+                result.append(axis_name, style="magenta")
+                result.append(":", style="dim")
+                result.append(axis_value, style="yellow")
             else:
                 result.append(part)
 
         return result
-
-
-@lru_cache(maxsize=1)
-def get_default_formatter(no_color: bool = False) -> ContextFormatter:
-    """Get a cached ContextFormatter instance."""
-    return ContextFormatter(no_color=no_color)

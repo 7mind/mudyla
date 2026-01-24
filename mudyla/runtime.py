@@ -159,7 +159,7 @@ class MudilaContext:
                 path.touch()
             else:
                 # Specific actions: write each to the file
-                with open(path, "a") as f:
+                with open(path, "a", encoding="utf-8") as f:
                     for action in actions:
                         # Strip "action." prefix if present
                         name = action[7:] if action.startswith("action.") else action
@@ -211,7 +211,7 @@ class _OutputCollector:
         """Write outputs to JSON file on exit."""
         if self.output_path:
             output_file = Path(self.output_path)
-            with output_file.open("w") as f:
+            with output_file.open("w", encoding="utf-8") as f:
                 json.dump(self.outputs, f, indent=2)
 
 
@@ -228,7 +228,7 @@ def _initialize_runtime(context_json_path: str, output_json_path: str):
         output_json_path: Path where outputs should be written
     """
     # Load context
-    with open(context_json_path) as f:
+    with open(context_json_path, encoding="utf-8") as f:
         context_data = json.load(f)
 
     # Set output path

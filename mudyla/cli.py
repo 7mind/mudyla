@@ -13,12 +13,11 @@ from typing import Optional
 from rich.text import Text
 
 from .ast.models import ParsedDocument, ActionDefinition
-from .dag.builder import DAGBuilder
 from .dag.compiler import DAGCompiler, CompilationError
-from .dag.graph import ActionKey, Dependency
+from .dag.graph import ActionKey
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
-from .executor.retainer_executor import RetainerExecutor, RetainerResult
+from .executor.retainer_executor import RetainerExecutor
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
     AXIS_OPTIONS,
@@ -31,8 +30,7 @@ from .cli_args import (
 from .cli_builder import build_arg_parser
 from .axis_wildcards import expand_all_wildcards
 from .utils.project_root import find_project_root
-from .utils.output import OutputFormatter
-from .utils.action_formatter import ActionFormatter
+from .formatters import OutputFormatter
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
 
@@ -72,8 +70,7 @@ class CLI:
         if args.autocomplete:
             return self._handle_autocomplete(args)
 
-        action_fmt, output = self._build_formatters(args.no_color)
-        from rich.text import Text
+        output = self._build_formatters(args.no_color)
 
         try:
             # All arguments (goals, axes, args, flags) are in 'unknown' since we don't
@@ -86,7 +83,7 @@ class CLI:
 
         sym = output.symbols
         try:
-            setup = self._prepare_execution_setup(args, parsed_inputs, action_fmt, output)
+            setup = self._prepare_execution_setup(args, parsed_inputs, output)
             self._validate_required_env(setup.document)
 
             document = setup.document
@@ -124,44 +121,16 @@ class CLI:
 
             use_short_ids = not args.full_ctx_reprs
 
-            # Get unique contexts from action keys, with default context first
+            # Get unique contexts, with default context first
             all_contexts = {ak.context_id for ak in graph.nodes.keys()}
             default_ctx = [ctx for ctx in all_contexts if str(ctx) == "default"]
             other_contexts = sorted([ctx for ctx in all_contexts if str(ctx) != "default"], key=str)
             unique_contexts = default_ctx + other_contexts
 
-            # Show contexts BEFORE retainer execution
-            if len(unique_contexts) > 0:
-                output.print(f"\n{sym.Link} [bold]Contexts:[/bold]")
+            self._print_contexts(unique_contexts, output, use_short_ids)
+            self._print_goals(sorted(graph.goals, key=str), output, use_short_ids)
 
-                # Format all contexts to calculate max width for padding
-                formatted_ids = [
-                    action_fmt.context_formatter.format_id_with_symbol(ctx, use_short_ids)
-                    for ctx in unique_contexts
-                ]
-                max_id_len = max(len(fid.plain) for fid in formatted_ids) if formatted_ids else 0
-
-                for ctx, formatted_id in zip(unique_contexts, formatted_ids):
-                    padding = " " * (max_id_len - len(formatted_id.plain))
-                    ctx_line = Text("  ")
-                    ctx_line.append_text(formatted_id)
-                    ctx_line.append(padding + " : ")
-                    ctx_line.append_text(action_fmt.context_formatter.format_full(ctx))
-                    output.print(ctx_line)
-
-            # Show goals BEFORE retainer execution
-            goal_keys = sorted(graph.goals, key=str)
-            goal_texts = [action_fmt.format_label(goal, use_short_ids) for goal in goal_keys]
-            goals_line = Text()
-            goals_line.append(f"\n{sym.Target} ")
-            goals_line.append("Goals: ", style="dim")
-            for i, goal_text in enumerate(goal_texts):
-                if i > 0:
-                    goals_line.append(", ")
-                goals_line.append_text(goal_text)
-            output.print(goals_line)
-
-            # Execute retainers for soft dependencies to determine which to retain
+            # Execute retainers for soft dependencies
             retainer_executor = RetainerExecutor(
                 graph=graph,
                 document=document,
@@ -175,32 +144,7 @@ class CLI:
                 verbose=args.verbose,
             )
             retained_soft_targets, retainer_results = retainer_executor.execute_retainers()
-
-            # Log retainer results with context info
-            if retainer_results:
-                output.print(f"\n{sym.Refresh} [bold]Retainers:[/bold]")
-
-            for ret_result in retainer_results:
-                retainer_label = action_fmt.format_label_plain(ret_result.retainer_key, use_short_ids)
-                time_str = f"{ret_result.execution_time_ms:.0f}ms"
-
-                if ret_result.retained:
-                    unique_targets = list(dict.fromkeys(ret_result.soft_dep_targets))
-                    targets_str = ", ".join(
-                        f"[bold cyan]{action_fmt.format_label_plain(t, use_short_ids)}[/bold cyan]"
-                        for t in unique_targets
-                    )
-                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]{output.symbols.Arrow} retained[/dim] {targets_str}")
-                else:
-                    output.print(f"  [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} [dim]{output.symbols.Arrow} retained nothing[/dim]")
-
-                if args.verbose and (ret_result.stdout or ret_result.stderr):
-                    if ret_result.stdout:
-                        for stdout_line in ret_result.stdout.rstrip().split("\n"):
-                            output.print(f"    [dim]stdout:[/dim] {stdout_line}")
-                    if ret_result.stderr:
-                        for stderr_line in ret_result.stderr.rstrip().split("\n"):
-                            output.print(f"    [dim]stderr:[/dim] {stderr_line}")
+            self._print_retainer_results(retainer_results, output, use_short_ids, args.verbose)
 
             pruned_graph = graph.prune_to_goals(retained_soft_targets)
 
@@ -220,29 +164,13 @@ class CLI:
             execution_order = pruned_graph.get_execution_order()
             if not quiet_mode:
                 output.print(f"\n{sym.Clipboard} [bold]Execution plan:[/bold]")
-                self._visualize_execution_plan(pruned_graph, execution_order, goals, action_fmt, output, use_short_ids)
+                self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids)
 
             if args.dry_run:
                 output.print(f"\n{sym.Info} [blue]Dry run - not executing[/blue]")
                 return 0
 
-            previous_run_dir = None
-            if args.continue_run:
-                runs_dir = project_root / ".mdl" / "runs"
-                if runs_dir.exists():
-                    run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
-                    if run_dirs:
-                        previous_run_dir = run_dirs[-1]
-                        output.print(
-                            f"\n{sym.Refresh} [blue]Continuing from previous run:[/blue] "
-                            f"[bold cyan]{previous_run_dir.name}[/bold cyan]"
-                        )
-                    else:
-                        output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No previous runs found, starting fresh")
-                else:
-                    output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No runs directory found, starting fresh")
-
-            # --it flag keeps process running after completion for reviewing
+            previous_run_dir = self._get_previous_run_dir(project_root, output) if args.continue_run else None
             keep_running = (
                 args.interactive
                 and not args.verbose
@@ -255,7 +183,6 @@ class CLI:
                 project_root=project_root,
                 args=custom_args,
                 flags=all_flags,
-                axis_values=axis_values,
                 environment_vars=document.environment_vars,
                 passthrough_env_vars=document.passthrough_env_vars,
                 previous_run_directory=previous_run_dir,
@@ -289,22 +216,7 @@ class CLI:
                 outputs_to_report = result.get_goal_outputs(graph.goals)
 
             output.print(f"\n{sym.Check} [bold green]Execution completed successfully![/bold green]")
-
-            output_json = json.dumps(outputs_to_report, indent=2)
-            output.print(f"\n{sym.Chart} [bold]Outputs:[/bold]")
-
-            if not args.no_color:
-                from rich.console import Console
-                from rich.json import JSON
-                console = Console()
-                console.print(JSON(output_json))
-            else:
-                output.print(output_json)
-
-            if args.out:
-                out_path = Path(args.out)
-                out_path.write_text(output_json)
-                output.print(f"\n{sym.Save} [dim]Outputs saved to:[/dim] [bold cyan]{out_path}[/bold cyan]")
+            self._print_outputs(outputs_to_report, output, args.no_color, args.out)
 
             if args.keep_run_dir:
                 output.print(f"\n{sym.Folder} [dim]Run directory:[/dim] [bold cyan]{result.run_directory}[/bold cyan]")
@@ -346,14 +258,227 @@ class CLI:
             traceback.print_exc()
             return 1
 
-    def _validate_required_env(self, document: ParsedDocument):
-        missing_vars = []
-        for var in document.required_env_vars:
-            if var not in os.environ:
-                missing_vars.append(var)
-        
+    def _validate_required_env(self, document: ParsedDocument) -> None:
+        """Validate that all required environment variables are set."""
+        missing_vars = [var for var in document.required_env_vars if var not in os.environ]
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+    def _print_contexts(
+        self,
+        contexts: list,
+        output: OutputFormatter,
+        use_short_ids: bool,
+    ) -> None:
+        """Print the list of execution contexts.
+
+        Args:
+            contexts: List of ContextId objects
+            output: Output formatter
+            use_short_ids: Whether to use short context IDs
+        """
+        if not contexts:
+            return
+
+        sym = output.symbols
+        output.print(f"\n{sym.Link} [bold]Contexts:[/bold]")
+
+        formatted_ids = [
+            output.action.context.format_id_with_symbol(ctx, use_short_ids)
+            for ctx in contexts
+        ]
+        max_id_len = max(len(fid.plain) for fid in formatted_ids) if formatted_ids else 0
+
+        for ctx, formatted_id in zip(contexts, formatted_ids):
+            padding = " " * (max_id_len - len(formatted_id.plain))
+            ctx_line = Text("  ")
+            ctx_line.append_text(formatted_id)
+            ctx_line.append(padding + " : ")
+            ctx_line.append_text(output.action.context.format_full(ctx))
+            output.print(ctx_line)
+
+    def _print_goals(
+        self,
+        goal_keys: list,
+        output: OutputFormatter,
+        use_short_ids: bool,
+    ) -> None:
+        """Print the list of goal actions.
+
+        Args:
+            goal_keys: List of ActionKey objects representing goals
+            output: Output formatter
+            use_short_ids: Whether to use short context IDs
+        """
+        if not goal_keys:
+            return
+
+        sym = output.symbols
+        output.print(f"\n{sym.Target} [bold]Goals:[/bold]")
+
+        # Format each goal using format_label (context#action format)
+        for goal in goal_keys:
+            goal_line = Text("  ")
+            goal_line.append_text(output.action.format_label(goal, use_short_ids))
+            output.print(goal_line)
+
+    def _print_retainer_results(
+        self,
+        retainer_results: list,
+        output: OutputFormatter,
+        use_short_ids: bool,
+        verbose: bool,
+    ) -> None:
+        """Print results from retainer execution.
+
+        Args:
+            retainer_results: List of RetainerResult objects
+            output: Output formatter
+            use_short_ids: Whether to use short context IDs
+            verbose: Whether to print verbose output (detailed with stdout)
+        """
+        if not retainer_results:
+            return
+
+        sym = output.symbols
+
+        if verbose:
+            # Verbose mode: detailed output with stdout
+            output.print(f"\n{sym.Refresh} [bold]Retainers:[/bold]")
+            for ret_result in retainer_results:
+                retainer_label = output.action.format_label_plain(ret_result.retainer_key, use_short_ids)
+                time_str = f"{ret_result.execution_time_ms:.0f}ms"
+
+                if ret_result.retained:
+                    unique_targets = list(dict.fromkeys(ret_result.soft_dep_targets))
+                    targets_str = ", ".join(
+                        f"[bold cyan]{output.action.format_label_plain(t, use_short_ids)}[/bold cyan]"
+                        for t in unique_targets
+                    )
+                    output.print(
+                        f"  {sym.Check} [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} "
+                        f"[dim]{sym.Arrow} retained[/dim] {targets_str}"
+                    )
+                else:
+                    output.print(
+                        f"  {sym.Cross} [bold cyan]{retainer_label}[/bold cyan] [dim]ran in[/dim] {time_str} "
+                        f"[dim]{sym.Arrow} retained nothing[/dim]"
+                    )
+
+                if ret_result.stdout:
+                    for stdout_line in ret_result.stdout.rstrip().split("\n"):
+                        output.print(f"    [dim]stdout:[/dim] {stdout_line}")
+        else:
+            # Non-verbose mode: compact Rich table (same styling as execution plan)
+            from rich.table import Table
+
+            no_color = output.no_color
+            header_style = "" if no_color else "bold"
+            action_style = "" if no_color else "cyan"
+            dim_style = "" if no_color else "dim"
+
+            # Print title separately (same pattern as execution plan)
+            output.print(f"\n{sym.Refresh} [bold]Retainers:[/bold]")
+
+            table = Table(show_header=True, header_style=header_style)
+            table.add_column("Context")
+            table.add_column("Retainer", style=action_style)
+            table.add_column("Retained", style=action_style)
+            table.add_column("Result", justify="center")
+            table.add_column("Time", style=dim_style, justify="right")
+
+            ctx_fmt = output.context
+
+            for ret_result in retainer_results:
+                retainer_key = ret_result.retainer_key
+
+                # Context column - use formatter with symbol (same as execution plan)
+                context_text = ctx_fmt.format_id_with_symbol(retainer_key.context_id, use_short_ids)
+
+                # Retainer column - just the action name
+                retainer_name = retainer_key.id.name
+
+                # Time column
+                time_str = f"{ret_result.execution_time_ms:.0f}ms"
+
+                # Retained and Result columns
+                if ret_result.retained:
+                    unique_targets = list(dict.fromkeys(ret_result.soft_dep_targets))
+                    retained_str = ", ".join(t.id.name for t in unique_targets)
+                    result_str = f"[green]{sym.Check}[/green]"
+                else:
+                    retained_str = "-"
+                    result_str = f"[dim]{sym.Cross}[/dim]"
+
+                table.add_row(context_text, retainer_name, retained_str, result_str, time_str)
+
+            output.console.print(table)
+            output.print("")
+
+    def _get_previous_run_dir(
+        self,
+        project_root: Path,
+        output: OutputFormatter,
+    ) -> Optional[Path]:
+        """Get the most recent run directory for --continue-run mode.
+
+        Args:
+            project_root: Project root path
+            output: Output formatter for messages
+
+        Returns:
+            Path to previous run directory, or None if not found
+        """
+        sym = output.symbols
+        runs_dir = project_root / ".mdl" / "runs"
+
+        if not runs_dir.exists():
+            output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No runs directory found, starting fresh")
+            return None
+
+        run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
+        if not run_dirs:
+            output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No previous runs found, starting fresh")
+            return None
+
+        previous_run_dir = run_dirs[-1]
+        output.print(
+            f"\n{sym.Refresh} [blue]Continuing from previous run:[/blue] "
+            f"[bold cyan]{previous_run_dir.name}[/bold cyan]"
+        )
+        return previous_run_dir
+
+    def _print_outputs(
+        self,
+        outputs_to_report: dict,
+        output: OutputFormatter,
+        no_color: bool,
+        out_path: Optional[str],
+    ) -> None:
+        """Print execution outputs as JSON.
+
+        Args:
+            outputs_to_report: Dictionary of outputs to report
+            output: Output formatter
+            no_color: Whether colors are disabled
+            out_path: Optional file path to save outputs
+        """
+        sym = output.symbols
+        output_json = json.dumps(outputs_to_report, indent=2)
+        output.print(f"\n{sym.Chart} [bold]Outputs:[/bold]")
+
+        if not no_color:
+            from rich.console import Console
+            from rich.json import JSON
+            console = Console()
+            console.print(JSON(output_json))
+        else:
+            output.print(output_json)
+
+        if out_path:
+            path = Path(out_path)
+            path.write_text(output_json, encoding="utf-8")
+            output.print(f"\n{sym.Save} [dim]Outputs saved to:[/dim] [bold cyan]{path}[/bold cyan]")
 
     def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
         """Apply platform specific defaults."""
@@ -438,16 +563,21 @@ class CLI:
         axis_def = document.axis[axis_name]
         return [av.value for av in axis_def.values]
 
-    def _build_formatters(self, no_color: bool) -> tuple[ActionFormatter, OutputFormatter]:
-        output = OutputFormatter(no_color=no_color)
-        action_fmt = ActionFormatter(no_color=no_color)
-        return action_fmt, output
+    def _build_formatters(self, no_color: bool) -> OutputFormatter:
+        """Build the output formatter with all sub-formatters.
+
+        Args:
+            no_color: If True, disable colors
+
+        Returns:
+            OutputFormatter instance (access action via output.action)
+        """
+        return OutputFormatter(no_color=no_color)
 
     def _prepare_execution_setup(
         self,
         args: argparse.Namespace,
         parsed_inputs: ParsedCLIInputs,
-        action_fmt: ActionFormatter,
         output: OutputFormatter,
     ) -> ExecutionSetup:
         """Load markdown definitions and merge CLI inputs with defaults."""
@@ -547,7 +677,7 @@ class CLI:
         if not alias_to_canonical:
             return parsed_inputs
 
-        def resolve_args(args: dict[str, ArgValue], context: str) -> dict[str, ArgValue]:
+        def resolve_args(args: dict[str, ArgValue]) -> dict[str, ArgValue]:
             """Resolve aliases in a dict of arguments."""
             resolved = dict(args)
             for alias, canonical_name in alias_to_canonical.items():
@@ -571,14 +701,14 @@ class CLI:
             return resolved
 
         # Resolve global args
-        resolved_global_args = resolve_args(parsed_inputs.global_args, "global scope")
+        resolved_global_args = resolve_args(parsed_inputs.global_args)
 
         # Resolve per-action args
         resolved_invocations = []
         for inv in parsed_inputs.action_invocations:
             resolved_invocations.append(ActionInvocation(
                 action_name=inv.action_name,
-                args=resolve_args(inv.args, f"action '{inv.action_name}'"),
+                args=resolve_args(inv.args),
                 flags=inv.flags,
                 axes=inv.axes,
             ))
@@ -652,11 +782,6 @@ class CLI:
         Returns:
             Dictionary mapping ActionKey to count of goal contexts that use it
         """
-        from .dag.graph import ActionKey
-
-        # Find all goal action keys
-        goal_keys = [ak for ak in execution_order if ak.id.name in goals]
-
         # For each action, collect which goal contexts reach it
         action_to_goal_contexts: dict[ActionKey, set[str]] = {}
 
@@ -692,9 +817,8 @@ class CLI:
         graph,
         execution_order,
         goals: list[str],
-        action_fmt: ActionFormatter,
         output: OutputFormatter,
-        use_short_ids: bool = False,
+        use_short_ids: bool,
     ) -> None:
         """Visualize execution plan as a rich table.
 
@@ -702,7 +826,6 @@ class CLI:
             graph: The execution graph
             execution_order: List of action keys in execution order
             goals: List of goal action names
-            action_fmt: Action formatter
             output: Output formatter
             use_short_ids: Whether to use short context IDs
         """
@@ -728,7 +851,7 @@ class CLI:
         table.add_column("Deps", style=dim_style)
         table.add_column("Shared", justify="right", style=blue_style)
 
-        ctx_fmt = action_fmt.context_formatter
+        ctx_fmt = output.action.context
 
         for i, action_key in enumerate(execution_order, 1):
             node = graph.get_node(action_key)

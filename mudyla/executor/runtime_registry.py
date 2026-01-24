@@ -1,7 +1,6 @@
 """Runtime registry for language runtimes."""
 
 from collections.abc import Iterable
-from typing import Dict, Type
 
 from mudyla.executor.language_runtime import LanguageRuntime
 
@@ -9,17 +8,17 @@ from mudyla.executor.language_runtime import LanguageRuntime
 class RuntimeRegistry:
     """Registry for available language runtimes."""
 
-    _registry: Dict[str, Type[LanguageRuntime]] = {}
+    _registry: dict[str, type[LanguageRuntime]] = {}
 
     @classmethod
-    def register(cls, runtime_cls: Type[LanguageRuntime]) -> None:
+    def register(cls, runtime_cls: type[LanguageRuntime]) -> None:
         """Register a LanguageRuntime implementation."""
         runtime = runtime_cls()
         language_name = runtime.get_language_name()
         cls._registry[language_name] = runtime_cls
 
     @classmethod
-    def ensure_registered(cls, runtime_cls: Type[LanguageRuntime]) -> None:
+    def ensure_registered(cls, runtime_cls: type[LanguageRuntime]) -> None:
         """Register runtime only if not present."""
         runtime = runtime_cls()
         language_name = runtime.get_language_name()

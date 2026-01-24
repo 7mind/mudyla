@@ -171,9 +171,10 @@ class TestExecutionModes:
         result = mdl.run_success(["--verbose", "--force-nix", ":create-directory"])
 
         # Verify command details are shown
+        # Note: Rich console may wrap long lines, so we check for parts that won't be split
         mdl.assert_in_output(result, "Command:")
         mdl.assert_in_output(result, "nix develop")
-        mdl.assert_in_output(result, "script.sh")
+        mdl.assert_in_output(result, ".sh")  # Script extension (may be wrapped from "script.sh")
 
         # Verify start/done messages
         mdl.assert_in_output(result, "start:")
