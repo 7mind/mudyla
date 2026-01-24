@@ -8,6 +8,7 @@ import subprocess
 import time
 import threading
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,12 +17,13 @@ from typing import Any, Optional
 from ..ast.types import ReturnType
 from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph, ActionKey
-from ..utils.output import OutputFormatter
-from ..utils.action_formatter import ActionFormatter
+from ..formatters import OutputFormatter
+from ..formatters.action import truncate_dirname
 from .runtime_registry import RuntimeRegistry
-from .bash_runtime import BashRuntime
-from .python_runtime import PythonRuntime
+from .runtime_bash import BashRuntime
+from .runtime_python import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
+from .action_logger import ActionLogger
 
 
 @dataclass
@@ -45,14 +47,23 @@ class ActionResult:
 
 
 @dataclass
+class SubprocessResult:
+    """Result of running a subprocess."""
+
+    returncode: int
+    stdout_size: int
+    stderr_size: int
+
+
+@dataclass
 class ExecutionResult:
     """Result of executing all actions."""
 
     success: bool
-    action_results: dict[str, ActionResult]
+    action_results: dict[ActionKey, ActionResult]
     run_directory: Path
 
-    def get_goal_outputs(self, goal_keys) -> dict[str, dict[str, Any]]:
+    def get_goal_outputs(self, goal_keys: list[ActionKey]) -> dict[str, dict[str, Any]]:
         """Get outputs for goal actions.
 
         Args:
@@ -64,7 +75,7 @@ class ExecutionResult:
         """
         return self._build_nested_outputs(goal_keys)
 
-    def get_all_outputs(self, all_keys) -> dict[str, dict[str, Any]]:
+    def get_all_outputs(self, all_keys: list[ActionKey]) -> dict[str, dict[str, Any]]:
         """Get outputs for all actions, not just goals.
 
         Args:
@@ -76,7 +87,7 @@ class ExecutionResult:
         """
         return self._build_nested_outputs(all_keys)
 
-    def _build_nested_outputs(self, action_keys) -> dict[str, dict[str, Any]]:
+    def _build_nested_outputs(self, action_keys: list[ActionKey]) -> dict[str, dict[str, Any]]:
         """Build nested output structure for given action keys.
 
         Args:
@@ -85,64 +96,44 @@ class ExecutionResult:
         Returns:
             Dictionary with nested structure by axes, args, flags, then action name
         """
-        result = {}
+        result: dict[str, Any] = {}
         for action_key in action_keys:
-            # Convert ActionKey to string format
-            action_key_str = str(action_key)
+            if action_key not in self.action_results:
+                warnings.warn(f"No results found for action {action_key}", stacklevel=2)
+                continue
 
-            # Find matching action result
-            if action_key_str in self.action_results:
-                action_result = self.action_results[action_key_str]
+            action_result = self.action_results[action_key]
+            action_name = action_key.id.name
+            context_id = action_key.context_id
 
-                action_name = action_key.id.name
-                context_id = action_key.context_id
-                
-                # Collect all differentiation components in order
-                # 1. Axis values
-                # 2. Arguments
-                # 3. Flags
-                
-                path_components = []
-                for name, value in context_id.axis_values:
-                    path_components.append((name, value))
-                
-                # Arguments are tuples of (name, value). Value can be tuple for arrays.
-                for name, value in context_id.args:
-                    # Convert tuple values to comma-separated string for JSON compatibility
-                    if isinstance(value, tuple):
-                        str_value = ",".join(value)
-                    else:
-                        str_value = value
-                    path_components.append((f"args.{name}", str_value))
-                    
-                # Flags are tuples of (name, bool)
-                for name, value in context_id.flags:
-                    path_components.append((f"flags.{name}", str(value).lower()))
+            # Collect all differentiation components in order: axes, args, flags
+            path_components: list[tuple[str, str]] = []
+            for name, value in context_id.axis_values:
+                path_components.append((name, value))
 
-                # Build nested structure: navigate through all components
-                current = result
-                for comp_name, comp_value in path_components:
-                    # Create component name level if needed
-                    if comp_name not in current:
-                        current[comp_name] = {}
-                    current = current[comp_name]
+            for name, value in context_id.args:
+                str_value = ",".join(value) if isinstance(value, tuple) else value
+                path_components.append((f"args.{name}", str_value))
 
-                    # Create component value level if needed
-                    if comp_value not in current:
-                        current[comp_value] = {}
-                    current = current[comp_value]
+            for name, value in context_id.flags:
+                path_components.append((f"flags.{name}", str(value).lower()))
 
-                # At the deepest level, add the action outputs
-                if action_name in current:
-                    raise RuntimeError(
-                        f"Internal error: duplicate output for action '{action_name}' in context '{action_key.context_id}'. "
-                        "This indicates a bug in context isolation."
-                    )
+            # Build nested structure
+            current: dict[str, Any] = result
+            for comp_name, comp_value in path_components:
+                if comp_name not in current:
+                    current[comp_name] = {}
+                current = current[comp_name]
+                if comp_value not in current:
+                    current[comp_value] = {}
+                current = current[comp_value]
 
-                current[action_name] = action_result.outputs
-            else:
-                # This shouldn't happen - log warning but don't fail
-                print(f"Warning: No results found for action {action_key_str}", file=sys.stderr)
+            if action_name in current:
+                raise RuntimeError(
+                    f"Internal error: duplicate output for action '{action_name}' in context '{context_id}'. "
+                    "This indicates a bug in context isolation."
+                )
+            current[action_name] = action_result.outputs
 
         return result
 
@@ -151,6 +142,7 @@ class ExecutionResult:
 class PreparedAction:
     """Artifacts required to execute an action."""
 
+    action_key: ActionKey
     action: ActionDefinition
     version: ActionVersion
     runtime: LanguageRuntime
@@ -166,10 +158,8 @@ class PreparedAction:
 class ExecutionEngine:
     """Engine for executing actions in a DAG with context support.
 
-    NOTE: In the multi-context system, axis_values are no longer global.
     Each action has its own context embedded in its ActionKey. The args
-    and flags parameters are kept for backward compatibility but may be
-    overridden per-action in the future.
+    and flags parameters may be global or overridden per-action.
     """
 
     def __init__(
@@ -178,7 +168,6 @@ class ExecutionEngine:
         project_root: Path,
         args: dict[str, str],
         flags: dict[str, bool],
-        axis_values: dict[str, str],  # Deprecated - kept for backward compat
         environment_vars: dict[str, str],
         passthrough_env_vars: list[str],
         run_directory: Optional[Path] = None,
@@ -197,10 +186,8 @@ class ExecutionEngine:
     ):
         self.graph = graph
         self.project_root = project_root
-        self.args = args  # May be global or per-context
-        self.flags = flags  # May be global or per-context
-        # Note: axis_values parameter kept for compatibility but not used
-        # Each action's axes are now in its ActionKey.context_id
+        self.args = args
+        self.flags = flags
         self.environment_vars = environment_vars
         self.passthrough_env_vars = passthrough_env_vars
         self.previous_run_directory = previous_run_directory
@@ -216,13 +203,8 @@ class ExecutionEngine:
         self.use_short_context_ids = use_short_context_ids
         self.keep_running = keep_running
 
-        # Determine if we should use rich table
-        # Use simple log if: --simple-log, --no-color, --github-actions, --verbose, or not a TTY
-        self.use_rich_table = not (simple_log or no_color or github_actions or verbose)
-
-        # Create output formatter and action formatter
+        # Create output formatter (includes all sub-formatters)
         self.output = OutputFormatter(no_color=no_color)
-        self.action_formatter = ActionFormatter(no_color=no_color)
 
         # Register built-in runtimes once.
         for runtime_cls in (BashRuntime, PythonRuntime):
@@ -243,7 +225,7 @@ class ExecutionEngine:
 
         # Kill signal for graceful termination from interactive table
         self._kill_event = threading.Event()
-        self._current_table_manager: Any = None
+        self._current_logger: Optional["ActionLogger"] = None
         self._current_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._running_processes: set[subprocess.Popen] = set()
         self._processes_lock = threading.Lock()
@@ -251,7 +233,7 @@ class ExecutionEngine:
     def _request_kill(self) -> None:
         """Request graceful termination of all running processes.
 
-        Called by table_manager when user presses 'q' in main view.
+        Called by logger when user presses 'q' in main view.
         """
         self._kill_event.set()
 
@@ -279,7 +261,7 @@ class ExecutionEngine:
         Returns:
             Formatted string (short ID with symbol/emoji or full context)
         """
-        return self.action_formatter.format_label_plain(action_key, self.use_short_context_ids)
+        return self.output.action.format_label_plain(action_key, self.use_short_context_ids)
 
     def _get_action_dirname(self, action_key: ActionKey) -> str:
         """Get the directory name for an action.
@@ -297,7 +279,7 @@ class ExecutionEngine:
 
         if use_context_in_dirname:
             action_key_str = str(action_key)
-            return ActionFormatter.truncate_dirname(action_key_str.replace(":", "_"))
+            return truncate_dirname(action_key_str.replace(":", "_"))
         else:
             return action_key.id.name
 
@@ -330,47 +312,82 @@ class ExecutionEngine:
 
         return result
 
-    def _print_action_start(self, action_name: str) -> None:
-        """Print action start message.
+    def _create_action_logger(self, execution_order: list[ActionKey]) -> ActionLogger:
+        """Create and start an ActionLogger based on execution mode.
+
+        Uses ActionLoggerRaw for simple_log/github_actions/verbose modes,
+        otherwise uses ActionLoggerInteractive.
 
         Args:
-            action_name: Name of the action starting
+            execution_order: List of action keys in execution order
+
+        Returns:
+            ActionLogger instance (ActionLoggerRaw or ActionLoggerInteractive)
         """
-        from rich.text import Text
+        from .action_logger_raw import ActionLoggerRaw
+        from .action_logger_interactive import ActionLoggerInteractive
 
-        if not self.github_actions:
-            line = Text()
-            line.append("start: ", style="" if self.no_color else "dim")
-            line.append(action_name, style="" if self.no_color else "bold cyan")
-            self.output.print(line)
+        # Use raw logger for simple_log, github_actions or verbose modes
+        # Use interactive table for normal execution
+        if self.simple_log or self.github_actions or self.verbose:
+            logger = ActionLoggerRaw(
+                action_keys=execution_order,
+                output=self.output,
+                use_short_ids=self.use_short_context_ids,
+                github_actions=self.github_actions,
+            )
+        else:
+            logger = ActionLoggerInteractive(
+                execution_order,
+                no_color=self.no_color,
+                action_dirs=self._build_action_dir_mapping(execution_order),
+                show_dirs=self.show_dirs,
+                run_directory=self.run_directory,
+                keep_running=self.keep_running,
+                use_short_ids=self.use_short_context_ids,
+            )
+    
+        logger.start()
+        logger.set_kill_callback(self._request_kill)
+        return logger
 
-    def _print_action_completion(self, result: ActionResult) -> None:
-        """Print action completion message with duration.
+    def _notify_action_start(
+        self,
+        logger: ActionLogger,
+        action_key: ActionKey,
+        action_dir: Path,
+    ) -> None:
+        """Notify that an action is starting.
 
         Args:
-            result: The completed action result
+            logger: ActionLogger instance
+            action_key: Action key being started
+            action_dir: Action directory path
         """
-        from rich.text import Text
+        logger.mark_running(action_key, action_dir)
 
-        if not self.github_actions:
-            duration_str = f"({result.duration_seconds:.1f}s)"
-            restored_str = " (restored from previous run)" if result.restored else ""
+    def _notify_action_result(
+        self,
+        logger: ActionLogger,
+        action_key: ActionKey,
+        action_dir: Path,
+        result: ActionResult,
+    ) -> None:
+        """Notify that an action has completed.
 
-            sym = self.output.symbols
-            line = Text()
-            if result.success:
-                if result.restored:
-                    line.append(f"{sym.Recycle} ")
-                line.append("done: ", style="" if self.no_color else "dim")
-                line.append(result.action_name, style="" if self.no_color else "bold cyan")
-                line.append(f" {duration_str}", style="" if self.no_color else "dim")
-                line.append(restored_str, style="" if self.no_color else "dim")
-            else:
-                line.append("failed: ", style="" if self.no_color else "bold red")
-                line.append(result.action_name, style="" if self.no_color else "bold cyan")
-                line.append(f" {duration_str}", style="" if self.no_color else "dim")
-                line.append(restored_str, style="" if self.no_color else "dim")
-            self.output.print(line)
+        Args:
+            logger: ActionLogger instance
+            action_key: Action key that completed
+            action_dir: Action directory path
+            result: Action execution result
+        """
+        logger.update_output_sizes(action_key, result.stdout_size, result.stderr_size)
+        if result.restored:
+            logger.mark_restored(action_key, result.duration_seconds, action_dir)
+        elif result.success:
+            logger.mark_done(action_key, result.duration_seconds)
+        else:
+            logger.mark_failed(action_key, result.duration_seconds)
 
     def _print_action_failure(self, result: ActionResult) -> None:
         """Print diagnostic information for a failed action.
@@ -378,50 +395,25 @@ class ExecutionEngine:
         Args:
             result: The failed action result
         """
-        from rich.text import Text
-
         suppress_outputs = self.no_output_on_fail and not (self.github_actions or self.verbose)
         sym = self.output.symbols
 
-        error_line = Text()
-        error_line.append(f"\n{sym.Cross} ")
-        error_line.append(f"Action '{result.action_name}' failed!", style="" if self.no_color else "bold red")
-        self.output.print(error_line)
+        self.output.print(f"\n{sym.Cross} [bold red]Action '{result.action_name}' failed![/bold red]")
+        self.output.print(f"{sym.Folder} [dim]Run directory:[/dim] [bold cyan]{self.run_directory}[/bold cyan]")
 
-        run_dir_line = Text()
-        run_dir_line.append(f"{sym.Folder} ")
-        run_dir_line.append("Run directory: ", style="" if self.no_color else "dim")
-        run_dir_line.append(str(self.run_directory), style="" if self.no_color else "bold cyan")
-        self.output.print(run_dir_line)
-
-        stdout_line = Text()
-        stdout_line.append(f"\n{sym.File} ")
-        stdout_line.append("Stdout: ", style="" if self.no_color else "dim")
-        stdout_line.append(str(result.stdout_path), style="" if self.no_color else "blue")
-        self.output.print(stdout_line)
+        self.output.print(f"\n{sym.File} [dim]Stdout:[/dim] [blue]{result.stdout_path}[/blue]")
         if result.stdout_path.exists() and not suppress_outputs:
-            self.output.print(result.stdout_path.read_text())
+            self.output.print(result.stdout_path.read_text(encoding="utf-8"))
 
-        stderr_line = Text()
-        stderr_line.append(f"\n{sym.File} ")
-        stderr_line.append("Stderr: ", style="" if self.no_color else "dim")
-        stderr_line.append(str(result.stderr_path), style="" if self.no_color else "blue")
-        self.output.print(stderr_line)
+        self.output.print(f"\n{sym.File} [dim]Stderr:[/dim] [blue]{result.stderr_path}[/blue]")
         if result.stderr_path.exists() and not suppress_outputs:
-            self.output.print(result.stderr_path.read_text())
+            self.output.print(result.stderr_path.read_text(encoding="utf-8"))
 
         if suppress_outputs:
-            self.output.print(Text(
-                "Output suppressed; re-run with --verbose or inspect log files for details.",
-                style="" if self.no_color else "dim"
-            ))
+            self.output.print("[dim]Output suppressed; re-run with --verbose or inspect log files for details.[/dim]")
 
         if result.error_message:
-            error_detail = Text()
-            error_detail.append(f"\n{sym.Cross} ")
-            error_detail.append("Error: ", style="" if self.no_color else "bold red")
-            error_detail.append(result.error_message)
-            self.output.print(error_detail)
+            self.output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {result.error_message}")
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -438,87 +430,44 @@ class ExecutionEngine:
         # Get execution order
         try:
             execution_order = self.graph.get_execution_order()
-        except ValueError as e:
+        except ValueError:
             return ExecutionResult(
                 success=False,
                 action_results={},
                 run_directory=self.run_directory,
             )
 
-        # Setup rich table if enabled
-        table_manager = None
-        if self.use_rich_table:
-            from .task_table import TaskTableManager
-            # Build action directory mapping
-            action_dirs = self._build_action_dir_mapping(execution_order)
-            table_manager = TaskTableManager(
-                execution_order,
-                no_color=self.no_color,
-                action_dirs=action_dirs,
-                show_dirs=self.show_dirs,
-                run_directory=self.run_directory,
-                keep_running=self.keep_running,
-                use_short_ids=self.use_short_context_ids,
-            )
-            table_manager.start()
-            # Register kill callback for graceful termination
-            table_manager.set_kill_callback(self._request_kill)
-
-        # Store table manager for access by _execute_action
-        self._current_table_manager = table_manager
+        # Create action logger (interactive table or raw text output)
+        logger = self._create_action_logger(execution_order)
+        self._current_logger = logger  # Keep for subprocess access
 
         try:
-            # Execute actions in order
-            action_outputs: dict[str, dict[str, Any]] = {}
-            action_results: dict[str, ActionResult] = {}
-            restored_actions: list[str] = []
+            action_outputs: dict[ActionKey, dict[str, Any]] = {}
+            action_results: dict[ActionKey, ActionResult] = {}
+            restored_actions: list[ActionKey] = []
 
             for action_key in execution_order:
-                # Check for kill signal before starting each action
                 if self._kill_event.is_set():
-                    if table_manager:
-                        table_manager.stop()
+                    logger.stop()
                     return ExecutionResult(
                         success=False,
                         action_results=action_results,
                         run_directory=self.run_directory,
                     )
-                action_key_str = str(action_key)  # Internal key (full context)
-                display_name = self._format_action_key(action_key)  # Display name (short ID)
+
                 action_dir = self._get_action_dir(action_key)
+                self._notify_action_start(logger, action_key, action_dir)
 
-                # Update table or print start message
-                if table_manager:
-                    table_manager.mark_running(display_name, action_dir)
-                else:
-                    self._print_action_start(action_key_str)
-
-                # Execute action with its ActionKey
                 result = self._execute_action(action_key, action_outputs)
-                action_results[action_key_str] = result
+                action_results[action_key] = result
 
-                # Track restored actions
                 if result.restored:
-                    restored_actions.append(action_key_str)
+                    restored_actions.append(action_key)
 
-                # Update table or print completion message
-                if table_manager:
-                    # Update sizes first
-                    table_manager.update_output_sizes(display_name, result.stdout_size, result.stderr_size)
-                    # Then update status
-                    if result.restored:
-                        table_manager.mark_restored(display_name, result.duration_seconds, action_dir)
-                    elif result.success:
-                        table_manager.mark_done(display_name, result.duration_seconds)
-                    else:
-                        table_manager.mark_failed(display_name, result.duration_seconds)
-                else:
-                    self._print_action_completion(result)
+                self._notify_action_result(logger, action_key, action_dir, result)
 
                 if not result.success:
-                    # Action failed - stop execution
-                    if table_manager:
-                        table_manager.stop()
+                    logger.stop()
                     self._print_action_failure(result)
 
                     return ExecutionResult(
@@ -527,18 +476,15 @@ class ExecutionEngine:
                         run_directory=self.run_directory,
                     )
 
-                # Store outputs for dependent actions (keyed by ActionKey string)
-                action_outputs[action_key_str] = result.outputs
+                action_outputs[action_key] = result.outputs
 
         finally:
-            # Don't stop table manager here if keep_running - wait_for_quit will handle it
-            if table_manager and not self.keep_running:
-                table_manager.stop()
+            if not self.keep_running:
+                logger.stop()
 
         # If --it flag, wait for user to quit BEFORE printing final messages
-        # This prevents output from interfering with the live table display
-        if table_manager and self.keep_running:
-            table_manager.wait_for_quit()
+        if self.keep_running:
+            logger.wait_for_quit()
 
         result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
@@ -559,57 +505,24 @@ class ExecutionEngine:
         ready = [key for key, deps in pending_deps.items() if len(deps) == 0]
         scheduled: set[ActionKey] = set()
         completed: set[ActionKey] = set()
-        action_outputs: dict[str, dict[str, Any]] = {}
-        action_results: dict[str, ActionResult] = {}
+        action_outputs: dict[ActionKey, dict[str, Any]] = {}
+        action_results: dict[ActionKey, ActionResult] = {}
         lock = threading.Lock()
         running: dict[concurrent.futures.Future[ActionResult], ActionKey] = {}
         max_workers = max(1, min(32, os.cpu_count() or 1))
 
-        # Setup rich table if enabled
-        # Get execution order for table display
-        table_manager = None
-        if self.use_rich_table:
-            try:
-                execution_order = self.graph.get_execution_order()
-                from .task_table import TaskTableManager
-                # Build action directory mapping
-                action_dirs = self._build_action_dir_mapping(execution_order)
-                table_manager = TaskTableManager(
-                    execution_order,
-                    no_color=self.no_color,
-                    action_dirs=action_dirs,
-                    show_dirs=self.show_dirs,
-                    run_directory=self.run_directory,
-                    keep_running=self.keep_running,
-                    use_short_ids=self.use_short_context_ids,
-                )
-                table_manager.start()
-                # Register kill callback for graceful termination
-                table_manager.set_kill_callback(self._request_kill)
-            except ValueError:
-                # If we can't get execution order, skip table
-                pass
+        # Create action logger
+        execution_order = self.graph.get_execution_order()
+        logger = self._create_action_logger(execution_order)
+        self._current_logger = logger  # Keep for subprocess access
 
-        # Store table manager for access by _execute_action
-        self._current_table_manager = table_manager
-
-        # Track restored actions
-        restored_actions: list[str] = []
+        restored_actions: list[ActionKey] = []
 
         def submit_action(executor: concurrent.futures.ThreadPoolExecutor, action_key: ActionKey) -> None:
-            action_key_str = str(action_key)
-            display_name = self._format_action_key(action_key)
             scheduled.add(action_key)
             action_dir = self._get_action_dir(action_key)
-
-            # Update table or print start message
-            if table_manager:
-                table_manager.mark_running(display_name, action_dir)
-            else:
-                self._print_action_start(action_key_str)
-
+            self._notify_action_start(logger, action_key, action_dir)
             snapshot_outputs = dict(action_outputs)
-            # Pass ActionKey directly to _execute_action
             future = executor.submit(self._execute_action, action_key, snapshot_outputs)
             running[future] = action_key
 
@@ -620,11 +533,9 @@ class ExecutionEngine:
                     submit_action(executor, key)
 
                 while running:
-                    # Check for kill signal
                     if self._kill_event.is_set():
                         executor.shutdown(wait=False, cancel_futures=True)
-                        if table_manager:
-                            table_manager.stop()
+                        logger.stop()
                         return ExecutionResult(
                             success=False,
                             action_results=action_results,
@@ -633,22 +544,20 @@ class ExecutionEngine:
 
                     done, _ = concurrent.futures.wait(
                         running.keys(),
-                        timeout=0.1,  # Short timeout to check kill signal
+                        timeout=0.1,
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
 
-                    # If no tasks completed, continue loop to check kill signal
                     if not done:
                         continue
+
                     for future in done:
                         action_key = running.pop(future)
-                        action_key_str = str(action_key)  # Internal key (full context)
-                        display_name = self._format_action_key(action_key)  # Display name (short ID)
                         try:
                             result = future.result()
                         except Exception as exc:  # pragma: no cover - defensive
                             result = ActionResult(
-                                action_name=action_key_str,
+                                action_name=str(action_key),
                                 success=False,
                                 outputs={},
                                 stdout_path=Path("/dev/null"),
@@ -661,33 +570,17 @@ class ExecutionEngine:
                                 error_message=f"Execution error: {exc}",
                             )
 
-                        action_results[action_key_str] = result
+                        action_results[action_key] = result
 
-                        # Track restored actions
                         if result.restored:
                             with lock:
-                                restored_actions.append(action_key_str)
+                                restored_actions.append(action_key)
 
                         action_dir = self._get_action_dir(action_key)
-
-                        # Update table or print completion message
-                        if table_manager:
-                            # Update sizes first
-                            table_manager.update_output_sizes(display_name, result.stdout_size, result.stderr_size)
-                            # Then update status
-                            if result.restored:
-                                table_manager.mark_restored(display_name, result.duration_seconds, action_dir)
-                            elif result.success:
-                                table_manager.mark_done(display_name, result.duration_seconds)
-                            else:
-                                table_manager.mark_failed(display_name, result.duration_seconds)
-                        else:
-                            self._print_action_completion(result)
+                        self._notify_action_result(logger, action_key, action_dir, result)
 
                         if not result.success:
-                            # Action failed - stop execution
-                            if table_manager:
-                                table_manager.stop()
+                            logger.stop()
                             self._print_action_failure(result)
 
                             executor.shutdown(cancel_futures=True)
@@ -697,12 +590,10 @@ class ExecutionEngine:
                                 run_directory=self.run_directory,
                             )
 
-                        # Store outputs and mark as completed
                         with lock:
-                            action_outputs[action_key_str] = result.outputs
+                            action_outputs[action_key] = result.outputs
                             completed.add(action_key)
 
-                        # Schedule dependent actions
                         for dependent_key in dependents.get(action_key, set()):
                             if dependent_key in completed or dependent_key in scheduled:
                                 continue
@@ -713,8 +604,7 @@ class ExecutionEngine:
         except KeyboardInterrupt:
             for future in running:
                 future.cancel()
-            if table_manager:
-                table_manager.stop()
+            logger.stop()
 
             return ExecutionResult(
                 success=False,
@@ -723,21 +613,19 @@ class ExecutionEngine:
             )
         finally:
             self._current_executor = None
-            # Don't stop table manager here if keep_running - wait_for_quit will handle it
-            if table_manager and not self.keep_running:
-                table_manager.stop()
+            if not self.keep_running:
+                logger.stop()
 
         # If --it flag, wait for user to quit BEFORE printing final messages
-        # This prevents output from interfering with the live table display
-        if table_manager and self.keep_running:
-            table_manager.wait_for_quit()
+        if self.keep_running:
+            logger.wait_for_quit()
 
         result = self._finalize_successful_execution(action_results, restored_actions, graph_start_time)
 
         return result
 
     def _execute_action(
-        self, action_key: ActionKey, action_outputs: dict[str, dict[str, Any]]
+        self, action_key: ActionKey, action_outputs: dict[ActionKey, dict[str, Any]]
     ) -> ActionResult:
         """Execute a single action identified by its ActionKey."""
         action_key_str = str(action_key)
@@ -746,7 +634,7 @@ class ExecutionEngine:
         contexts_in_graph = {node.key.context_id for node in self.graph.nodes.values()}
         use_context_in_dirname = len(contexts_in_graph) > 1
         if use_context_in_dirname:
-            action_dirname = ActionFormatter.truncate_dirname(action_key_str.replace(":", "_"))
+            action_dirname = truncate_dirname(action_key_str.replace(":", "_"))
         else:
             action_dirname = action_key.id.name
 
@@ -774,7 +662,7 @@ class ExecutionEngine:
         return self._run_prepared_action(prepared)
 
     def _prepare_action_execution(
-        self, action_key: ActionKey, action_outputs: dict[str, dict[str, Any]]
+        self, action_key: ActionKey, action_outputs: dict[ActionKey, dict[str, Any]]
     ) -> PreparedAction:
         """Prepare an action for execution.
 
@@ -802,7 +690,7 @@ class ExecutionEngine:
             # E.g., "platform:jvm+scala:2.12#build" becomes "platform_jvm+scala_2.12#build"
             # Truncate long names to avoid filesystem limits
             action_key_str = str(action_key)
-            safe_dir_name = ActionFormatter.truncate_dirname(action_key_str.replace(":", "_"))
+            safe_dir_name = truncate_dirname(action_key_str.replace(":", "_"))
         else:
             # Single context - use simple action name for backward compatibility
             safe_dir_name = action_key.id.name
@@ -831,7 +719,7 @@ class ExecutionEngine:
 
         script_ext = ".sh" if version.language == "bash" else ".py"
         script_path = action_dir / f"script{script_ext}"
-        script_path.write_text(rendered.content)
+        script_path.write_text(rendered.content, encoding="utf-8")
         script_path.chmod(0o755)
 
         stdout_path = action_dir / "stdout.log"
@@ -841,6 +729,7 @@ class ExecutionEngine:
         exec_cmd = self._build_exec_command(action, base_exec_cmd)
 
         return PreparedAction(
+            action_key=action_key,
             action=action,
             version=version,
             runtime=runtime,
@@ -856,7 +745,7 @@ class ExecutionEngine:
     def _build_execution_context(
         self,
         action_dir: Path,
-        action_outputs: dict[str, dict[str, Any]],
+        action_outputs: dict[ActionKey, dict[str, Any]],
         args: dict[str, str],
         flags: dict[str, bool],
         action_key: ActionKey,
@@ -865,7 +754,7 @@ class ExecutionEngine:
 
         Args:
             action_dir: Action directory path
-            action_outputs: Outputs from previous actions (keyed by ActionKey string)
+            action_outputs: Outputs from previous actions (keyed by ActionKey)
             args: Arguments for this action (may be per-action or global)
             flags: Flags for this action (may be per-action or global)
             action_key: The ActionKey for this action (to resolve dependencies)
@@ -880,10 +769,9 @@ class ExecutionEngine:
         dependency_outputs: dict[str, dict[str, Any]] = {}
         node = self.graph.get_node(action_key)
         for dep in node.dependencies:
-            dep_key_str = str(dep.action)
-            if dep_key_str in action_outputs:
+            if dep.action in action_outputs:
                 # Use the dependency's action name as the key for ${action.name.var}
-                dependency_outputs[dep.action.id.name] = action_outputs[dep_key_str]
+                dependency_outputs[dep.action.id.name] = action_outputs[dep.action]
 
         axis_values = action_key.context_id.to_dict()
         axis_sys_vars = {f"axis.{name}": value for name, value in axis_values.items()}
@@ -919,263 +807,305 @@ class ExecutionEngine:
         exec_cmd.extend(["--command"] + base_exec_cmd)
         return exec_cmd
 
+    def _execute_subprocess(
+        self,
+        prepared: PreparedAction,
+        logger: Optional[ActionLogger],
+    ) -> SubprocessResult:
+        """Execute subprocess and stream output to files.
+
+        Args:
+            prepared: Prepared action with paths and command
+            logger: Optional action logger for progress updates
+
+        Returns:
+            SubprocessResult with returncode and output sizes
+        """
+        stdout_size = 0
+        stderr_size = 0
+
+        with open(prepared.stdout_path, "w", encoding="utf-8") as stdout_file, open(
+            prepared.stderr_path, "w", encoding="utf-8"
+        ) as stderr_file:
+            process = subprocess.Popen(
+                prepared.exec_cmd,
+                cwd=str(self.project_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=os.environ.copy(),
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+
+            with self._processes_lock:
+                self._running_processes.add(process)
+
+            try:
+                size_lock = threading.Lock()
+
+                def stream_output(
+                    pipe: Any,
+                    console_stream: Any,
+                    file_stream: Any,
+                    combined_file: Any,
+                    is_stdout: bool,
+                ) -> None:
+                    nonlocal stdout_size, stderr_size
+                    if not pipe:
+                        return
+                    for line in pipe:
+                        if self.github_actions or self.verbose:
+                            console_stream.write(line)
+                            console_stream.flush()
+
+                        file_stream.write(line)
+                        file_stream.flush()
+
+                        if not is_stdout and combined_file:
+                            combined_file.write(line)
+                            combined_file.flush()
+
+                        line_bytes = len(line.encode("utf-8"))
+                        with size_lock:
+                            if is_stdout:
+                                stdout_size += line_bytes
+                            else:
+                                stderr_size += line_bytes
+                                stdout_size += line_bytes
+
+                            if logger:
+                                logger.update_output_sizes(
+                                    prepared.action_key, stdout_size, stderr_size
+                                )
+
+                stdout_thread = threading.Thread(
+                    target=stream_output,
+                    args=(process.stdout, sys.stdout, stdout_file, None, True),
+                )
+                stderr_thread = threading.Thread(
+                    target=stream_output,
+                    args=(process.stderr, sys.stderr, stderr_file, stdout_file, False),
+                )
+
+                stdout_thread.start()
+                stderr_thread.start()
+                returncode = process.wait()
+                stdout_thread.join()
+                stderr_thread.join()
+            finally:
+                with self._processes_lock:
+                    self._running_processes.discard(process)
+
+        # Get final file sizes
+        if prepared.stdout_path.exists():
+            stdout_size = prepared.stdout_path.stat().st_size
+        if prepared.stderr_path.exists():
+            stderr_size = prepared.stderr_path.stat().st_size
+
+        if logger:
+            logger.update_output_sizes(prepared.action_key, stdout_size, stderr_size)
+
+        return SubprocessResult(
+            returncode=returncode,
+            stdout_size=stdout_size,
+            stderr_size=stderr_size,
+        )
+
+    def _create_action_result(
+        self,
+        prepared: PreparedAction,
+        success: bool,
+        outputs: dict[str, Any],
+        start_time_iso: str,
+        end_time_iso: str,
+        duration: float,
+        exit_code: int,
+        stdout_size: int,
+        stderr_size: int,
+        error_message: Optional[str] = None,
+    ) -> ActionResult:
+        """Create ActionResult with common parameters from PreparedAction.
+
+        Args:
+            prepared: Prepared action with paths
+            success: Whether action succeeded
+            outputs: Action outputs
+            start_time_iso: Start time in ISO format
+            end_time_iso: End time in ISO format
+            duration: Duration in seconds
+            exit_code: Process exit code
+            stdout_size: Size of stdout in bytes
+            stderr_size: Size of stderr in bytes
+            error_message: Optional error message
+
+        Returns:
+            ActionResult with all fields populated
+        """
+        self._write_action_meta(
+            prepared.action_dir,
+            prepared.action.name,
+            success=success,
+            start_time=start_time_iso,
+            end_time=end_time_iso,
+            duration=duration,
+            exit_code=exit_code,
+            error_message=error_message,
+            stdout_size=stdout_size,
+            stderr_size=stderr_size,
+        )
+        return ActionResult(
+            action_name=prepared.action.name,
+            success=success,
+            outputs=outputs,
+            stdout_path=prepared.stdout_path,
+            stderr_path=prepared.stderr_path,
+            script_path=prepared.script_path,
+            start_time=start_time_iso,
+            end_time=end_time_iso,
+            duration_seconds=duration,
+            exit_code=exit_code,
+            error_message=error_message,
+            stdout_size=stdout_size,
+            stderr_size=stderr_size,
+        )
+
+    def _validate_file_outputs(
+        self,
+        outputs: dict[str, Any],
+        return_declarations: list,
+    ) -> Optional[str]:
+        """Validate FILE/DIRECTORY outputs exist.
+
+        Args:
+            outputs: Parsed action outputs
+            return_declarations: Return declarations to validate
+
+        Returns:
+            Error message if validation fails, None if all valid
+        """
+        for ret_decl in return_declarations:
+            if ret_decl.return_type not in (ReturnType.FILE, ReturnType.DIRECTORY):
+                continue
+
+            output_value = outputs.get(ret_decl.name)
+            if output_value is None:
+                return f"Output '{ret_decl.name}' not found"
+
+            path = Path(output_value)
+            if not path.is_absolute():
+                path = self.project_root / path
+
+            if not path.exists():
+                return (
+                    f"{ret_decl.return_type.value.capitalize()} "
+                    f"'{ret_decl.name}' does not exist: {output_value}"
+                )
+
+            if ret_decl.return_type == ReturnType.FILE and not path.is_file():
+                return f"Output '{ret_decl.name}' is not a file: {output_value}"
+
+        return None
+
     def _run_prepared_action(self, prepared: PreparedAction) -> ActionResult:
+        """Execute a prepared action and return the result.
+
+        Args:
+            prepared: Prepared action with paths and command
+
+        Returns:
+            ActionResult with execution outcome
+        """
         action_name = prepared.action.name
+        logger = self._current_logger
 
+        # Print GitHub Actions group start
         if self.github_actions:
-            print(f"::group::{action_name}")
+            self.output.print_raw(f"::group::{action_name}")
 
+        # Print command if verbose
         if self.github_actions or self.verbose:
-            cmd_str = ' '.join(prepared.exec_cmd)
-            if self.no_color:
-                print(f"Command: {cmd_str}")
-            else:
-                print(f"\033[2mCommand:\033[0m {cmd_str}")
+            self.output.print_command(' '.join(prepared.exec_cmd))
 
         start_time = datetime.now()
         start_time_iso = start_time.isoformat()
 
-        stdout_size = 0
-        stderr_size = 0
-        table_manager = getattr(self, "_current_table_manager", None)
-
         try:
-            with open(prepared.stdout_path, "w") as stdout_file, open(
-                prepared.stderr_path, "w"
-            ) as stderr_file:
-                process = subprocess.Popen(
-                    prepared.exec_cmd,
-                    cwd=str(self.project_root),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=os.environ.copy(),
-                    text=True,
-                    bufsize=1,
-                )
-
-                # Register process for kill signal handling
-                with self._processes_lock:
-                    self._running_processes.add(process)
-
-                try:
-                    size_lock = threading.Lock()
-
-                    def stream_output(pipe, console_stream, file_stream, combined_file, is_stdout: bool):
-                        """Stream output from pipe to console and file(s).
-
-                        Args:
-                            pipe: The subprocess pipe to read from
-                            console_stream: Console stream for verbose output
-                            file_stream: Primary file to write to (stdout.log or stderr.log)
-                            combined_file: Combined log file (stdout.log) - stderr also writes here
-                            is_stdout: True if this is stdout, False if stderr
-                        """
-                        nonlocal stdout_size, stderr_size
-                        if pipe:
-                            for line in pipe:
-                                if self.github_actions or self.verbose:
-                                    console_stream.write(line)
-                                    console_stream.flush()
-
-                                file_stream.write(line)
-                                file_stream.flush()
-
-                                # Write stderr to combined log (stdout.log) as well
-                                if not is_stdout and combined_file:
-                                    combined_file.write(line)
-                                    combined_file.flush()
-
-                                line_bytes = len(line.encode("utf-8"))
-                                with size_lock:
-                                    if is_stdout:
-                                        stdout_size += line_bytes
-                                    else:
-                                        stderr_size += line_bytes
-                                        # Add stderr size to stdout_size since it's in combined log
-                                        stdout_size += line_bytes
-
-                                    if table_manager and self.use_rich_table:
-                                        table_manager.update_output_sizes(
-                                            action_name, stdout_size, stderr_size
-                                        )
-
-                    stdout_thread = threading.Thread(
-                        target=stream_output,
-                        args=(process.stdout, sys.stdout, stdout_file, None, True),
-                    )
-                    stderr_thread = threading.Thread(
-                        target=stream_output,
-                        args=(process.stderr, sys.stderr, stderr_file, stdout_file, False),
-                    )
-
-                    stdout_thread.start()
-                    stderr_thread.start()
-
-                    returncode = process.wait()
-                    stdout_thread.join()
-                    stderr_thread.join()
-                finally:
-                    # Unregister process
-                    with self._processes_lock:
-                        self._running_processes.discard(process)
+            # Execute subprocess with output streaming
+            subprocess_result = self._execute_subprocess(prepared, logger)
 
             if self.github_actions:
-                print("::endgroup::")
-
-            if prepared.stdout_path.exists():
-                stdout_size = prepared.stdout_path.stat().st_size
-            if prepared.stderr_path.exists():
-                stderr_size = prepared.stderr_path.stat().st_size
-
-            if table_manager and self.use_rich_table:
-                table_manager.update_output_sizes(action_name, stdout_size, stderr_size)
+                self.output.print_raw("::endgroup::")
 
             end_time = datetime.now()
             end_time_iso = end_time.isoformat()
             duration = (end_time - start_time).total_seconds()
 
-            if returncode != 0:
-                # Add success=false to output.json if it exists
+            # Handle non-zero exit code
+            if subprocess_result.returncode != 0:
                 if prepared.output_json_path.exists():
                     self._add_success_to_output_json(prepared.output_json_path, success=False)
-
-                self._write_action_meta(
-                    prepared.action_dir,
-                    action_name,
-                    success=False,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration=duration,
-                    exit_code=returncode,
-                    error_message=f"Script exited with code {returncode}",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
-                )
-                return ActionResult(
-                    action_name=action_name,
+                return self._create_action_result(
+                    prepared,
                     success=False,
                     outputs={},
-                    stdout_path=prepared.stdout_path,
-                    stderr_path=prepared.stderr_path,
-                    script_path=prepared.script_path,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration_seconds=duration,
-                    exit_code=returncode,
-                    error_message=f"Script exited with code {returncode}",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
+                    start_time_iso=start_time_iso,
+                    end_time_iso=end_time_iso,
+                    duration=duration,
+                    exit_code=subprocess_result.returncode,
+                    stdout_size=subprocess_result.stdout_size,
+                    stderr_size=subprocess_result.stderr_size,
+                    error_message=f"Script exited with code {subprocess_result.returncode}",
                 )
 
+            # Handle missing output.json
             if not prepared.output_json_path.exists():
-                self._write_action_meta(
-                    prepared.action_dir,
-                    action_name,
-                    success=False,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration=duration,
-                    exit_code=returncode,
-                    error_message="No output.json generated",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
-                )
-                return ActionResult(
-                    action_name=action_name,
+                return self._create_action_result(
+                    prepared,
                     success=False,
                     outputs={},
-                    stdout_path=prepared.stdout_path,
-                    stderr_path=prepared.stderr_path,
-                    script_path=prepared.script_path,
-                    start_time=start_time_iso,
-                    end_time=end_time_iso,
-                    duration_seconds=duration,
-                    exit_code=returncode,
+                    start_time_iso=start_time_iso,
+                    end_time_iso=end_time_iso,
+                    duration=duration,
+                    exit_code=subprocess_result.returncode,
+                    stdout_size=subprocess_result.stdout_size,
+                    stderr_size=subprocess_result.stderr_size,
                     error_message="No output.json generated",
-                    stdout_size=stdout_size,
-                    stderr_size=stderr_size,
                 )
 
-            outputs = self._parse_outputs(
-                prepared.output_json_path, prepared.version.return_declarations
-            )
-
-            # Add success field to output.json
+            # Parse outputs
+            outputs = self._parse_outputs(prepared.output_json_path)
             self._add_success_to_output_json(prepared.output_json_path, success=True)
 
-            for ret_decl in prepared.version.return_declarations:
-                if ret_decl.return_type not in (ReturnType.FILE, ReturnType.DIRECTORY):
-                    continue
-
-                output_value = outputs.get(ret_decl.name)
-                if output_value is None:
-                    return self._report_missing_output(
-                        prepared,
-                        action_name,
-                        start_time_iso,
-                        end_time_iso,
-                        duration,
-                        stdout_size,
-                        stderr_size,
-                        outputs,
-                        f"Output '{ret_decl.name}' not found",
-                    )
-
-                path = Path(output_value)
-                if not path.is_absolute():
-                    path = self.project_root / path
-
-                if not path.exists():
-                    return self._report_missing_output(
-                        prepared,
-                        action_name,
-                        start_time_iso,
-                        end_time_iso,
-                        duration,
-                        stdout_size,
-                        stderr_size,
-                        outputs,
-                        f"{ret_decl.return_type.value.capitalize()} '{ret_decl.name}' does not exist: {output_value}",
-                    )
-
-                if ret_decl.return_type == ReturnType.FILE and not path.is_file():
-                    return self._report_missing_output(
-                        prepared,
-                        action_name,
-                        start_time_iso,
-                        end_time_iso,
-                        duration,
-                        stdout_size,
-                        stderr_size,
-                        outputs,
-                        f"Output '{ret_decl.name}' is not a file: {output_value}",
-                    )
-
-            self._write_action_meta(
-                prepared.action_dir,
-                action_name,
-                success=True,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration=duration,
-                exit_code=0,
-                stdout_size=stdout_size,
-                stderr_size=stderr_size,
+            # Validate file/directory outputs
+            validation_error = self._validate_file_outputs(
+                outputs, prepared.version.return_declarations
             )
+            if validation_error:
+                return self._create_action_result(
+                    prepared,
+                    success=False,
+                    outputs=outputs,
+                    start_time_iso=start_time_iso,
+                    end_time_iso=end_time_iso,
+                    duration=duration,
+                    exit_code=0,
+                    stdout_size=subprocess_result.stdout_size,
+                    stderr_size=subprocess_result.stderr_size,
+                    error_message=validation_error,
+                )
 
-            return ActionResult(
-                action_name=action_name,
+            # Success
+            return self._create_action_result(
+                prepared,
                 success=True,
                 outputs=outputs,
-                stdout_path=prepared.stdout_path,
-                stderr_path=prepared.stderr_path,
-                script_path=prepared.script_path,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration_seconds=duration,
+                start_time_iso=start_time_iso,
+                end_time_iso=end_time_iso,
+                duration=duration,
                 exit_code=0,
-                stdout_size=stdout_size,
-                stderr_size=stderr_size,
+                stdout_size=subprocess_result.stdout_size,
+                stderr_size=subprocess_result.stderr_size,
             )
 
         except Exception as e:
@@ -1190,75 +1120,19 @@ class ExecutionEngine:
                 prepared.stderr_path.stat().st_size if prepared.stderr_path.exists() else 0
             )
 
-            error_msg = f"Execution error: {e}"
-            self._write_action_meta(
-                prepared.action_dir,
-                action_name,
-                success=False,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration=duration,
-                exit_code=-1,
-                error_message=error_msg,
-                stdout_size=exc_stdout_size,
-                stderr_size=exc_stderr_size,
-            )
-
-            return ActionResult(
-                action_name=action_name,
+            return self._create_action_result(
+                prepared,
                 success=False,
                 outputs={},
-                stdout_path=prepared.stdout_path,
-                stderr_path=prepared.stderr_path,
-                script_path=prepared.script_path,
-                start_time=start_time_iso,
-                end_time=end_time_iso,
-                duration_seconds=duration,
+                start_time_iso=start_time_iso,
+                end_time_iso=end_time_iso,
+                duration=duration,
                 exit_code=-1,
-                error_message=error_msg,
                 stdout_size=exc_stdout_size,
                 stderr_size=exc_stderr_size,
+                error_message=f"Execution error: {e}",
             )
 
-    def _report_missing_output(
-        self,
-        prepared: PreparedAction,
-        action_name: str,
-        start_time_iso: str,
-        end_time_iso: str,
-        duration: float,
-        stdout_size: int,
-        stderr_size: int,
-        outputs: dict[str, Any],
-        error_msg: str,
-    ) -> ActionResult:
-        self._write_action_meta(
-            prepared.action_dir,
-            action_name,
-            success=False,
-            start_time=start_time_iso,
-            end_time=end_time_iso,
-            duration=duration,
-            exit_code=0,
-            error_message=error_msg,
-            stdout_size=stdout_size,
-            stderr_size=stderr_size,
-        )
-        return ActionResult(
-            action_name=action_name,
-            success=False,
-            outputs=outputs,
-            stdout_path=prepared.stdout_path,
-            stderr_path=prepared.stderr_path,
-            script_path=prepared.script_path,
-            start_time=start_time_iso,
-            end_time=end_time_iso,
-            duration_seconds=duration,
-            exit_code=0,
-            error_message=error_msg,
-            stdout_size=stdout_size,
-            stderr_size=stderr_size,
-        )
     def _write_action_meta(
         self,
         action_dir: Path,
@@ -1286,44 +1160,29 @@ class ExecutionEngine:
         if error_message:
             meta["error_message"] = error_message
 
-        (action_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+        (action_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     def _finalize_successful_execution(
         self,
-        action_results: dict[str, ActionResult],
-        restored_actions: list[str],
+        action_results: dict[ActionKey, ActionResult],
+        restored_actions: list[ActionKey],
         graph_start_time: float,
     ) -> ExecutionResult:
         graph_duration = time.time() - graph_start_time
-
-        from rich.text import Text
-
         sym = self.output.symbols
 
         if restored_actions and not self.github_actions:
-            restored_list = ", ".join(restored_actions)
-            line = Text()
-            line.append(f"\n{sym.Recycle} ")
-            line.append("restored from previous run: ", style="" if self.no_color else "dim")
-            line.append(restored_list, style="" if self.no_color else "bold cyan")
-            self.output.print(line)
+            restored_list = ", ".join(str(key) for key in restored_actions)
+            self.output.print(f"\n{sym.Recycle} [dim]restored from previous run:[/dim] [bold cyan]{restored_list}[/bold cyan]")
 
         if not self.keep_run_dir:
             try:
                 shutil.rmtree(self.run_directory)
             except Exception as e:
-                warn_line = Text()
-                warn_line.append(f"{sym.Warning} ")
-                warn_line.append("Warning: ", style="" if self.no_color else "bold yellow")
-                warn_line.append(f"Failed to clean up run directory: {e}")
-                self.output.print(warn_line)
+                self.output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] Failed to clean up run directory: {e}")
 
         if not self.github_actions:
-            time_line = Text()
-            time_line.append("\n")
-            time_line.append("Total wall time: ", style="" if self.no_color else "dim")
-            time_line.append(f"{graph_duration:.1f}s", style="" if self.no_color else "bold cyan")
-            self.output.print(time_line)
+            self.output.print(f"\n[dim]Total wall time:[/dim] [bold cyan]{graph_duration:.1f}s[/bold cyan]")
 
         return ExecutionResult(
             success=True,
@@ -1350,7 +1209,7 @@ class ExecutionEngine:
             return False
 
         try:
-            meta = json.loads(prev_meta_path.read_text())
+            meta = json.loads(prev_meta_path.read_text(encoding="utf-8"))
             return meta.get("success", False)
         except Exception:
             return False
@@ -1370,7 +1229,7 @@ class ExecutionEngine:
         prev_output_path = prev_action_dir / "output.json"
 
         # Load metadata
-        meta = json.loads(prev_meta_path.read_text())
+        meta = json.loads(prev_meta_path.read_text(encoding="utf-8"))
 
         # Copy entire action directory to current run
         current_action_dir = self.run_directory / action_dirname
@@ -1388,7 +1247,7 @@ class ExecutionEngine:
 
         outputs = {}
         if prev_output_path.exists() and version is not None:
-            outputs = self._parse_outputs(prev_output_path, version.return_declarations)
+            outputs = self._parse_outputs(prev_output_path)
 
         return ActionResult(
             action_name=action_key_str,  # Use full key string for result
@@ -1406,20 +1265,17 @@ class ExecutionEngine:
             stderr_size=meta.get("stderr_size", 0),
         )
 
-    def _parse_outputs(
-        self, output_json_path: Path, return_declarations
-    ) -> dict[str, Any]:
+    def _parse_outputs(self, output_json_path: Path) -> dict[str, Any]:
         """Parse outputs from output.json.
 
         Args:
             output_json_path: Path to output.json
-            return_declarations: Expected return declarations
 
         Returns:
             Dictionary of outputs
         """
         try:
-            data = json.loads(output_json_path.read_text())
+            data = json.loads(output_json_path.read_text(encoding="utf-8"))
 
             # Extract just the values
             outputs = {}
@@ -1438,9 +1294,9 @@ class ExecutionEngine:
             success: Whether the action succeeded
         """
         try:
-            data = json.loads(output_json_path.read_text())
+            data = json.loads(output_json_path.read_text(encoding="utf-8"))
             data["success"] = {"type": "bool", "value": success}
-            output_json_path.write_text(json.dumps(data, indent=2))
+            output_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as e:
             # Don't fail if we can't add success field
-            print(f"Warning: Failed to add success field to output.json: {e}", file=sys.stderr)
+            self.output.print_warning(f"Failed to add success field to output.json: {e}")

@@ -2,36 +2,83 @@
 
 Provides formatted representations of ActionKey for display purposes.
 All formatting methods return Rich Text objects with styling markers.
+
+Styling is always applied - the Rich console handles no_color mode.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
+import hashlib
 from typing import TYPE_CHECKING, Iterable
 
 from rich.text import Text
 
-from .context_formatter import ContextFormatter
-from .string_utils import MAX_DIRNAME_LENGTH, TRUNCATED_HASH_LENGTH, truncate_dirname
+from .context import ContextFormatter
 
 if TYPE_CHECKING:
     from ..dag.graph import ActionKey
 
 
-class ActionFormatter:
-    """Formats action keys for display with Rich styling."""
+TRUNCATED_HASH_LENGTH = 7
+MAX_DIRNAME_LENGTH = 64
 
-    def __init__(self, no_color: bool = False):
+
+def truncate_dirname(name: str, max_length: int = MAX_DIRNAME_LENGTH) -> str:
+    """Truncate a directory name to max_length, adding a hash suffix if needed.
+
+    If the name exceeds max_length, it is truncated and a short hash of the
+    original name is appended, similar to git's abbreviated commit hashes.
+
+    If the name contains '#' (indicating a context#action format), the action
+    name suffix is preserved to allow finding actions by name.
+
+    Args:
+        name: The original directory name
+        max_length: Maximum allowed length (default 64)
+
+    Returns:
+        The original name if within limit, otherwise truncated with hash suffix
+    """
+    if len(name) <= max_length:
+        return name
+
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    short_hash = digest[:TRUNCATED_HASH_LENGTH]
+
+    if "#" in name:
+        hash_pos = name.rfind("#")
+        action_suffix = name[hash_pos:]
+        context_prefix = name[:hash_pos]
+
+        available_for_prefix = max_length - len(action_suffix) - 3 - TRUNCATED_HASH_LENGTH
+
+        if available_for_prefix > 0:
+            truncated_prefix = context_prefix[:available_for_prefix]
+            return f"{truncated_prefix}...{short_hash}{action_suffix}"
+
+    truncated_length = max_length - TRUNCATED_HASH_LENGTH - 3
+    truncated_name = name[:truncated_length]
+
+    return f"{truncated_name}...{short_hash}"
+
+
+class ActionFormatter:
+    """Formats action keys for display with Rich styling.
+
+    All methods return Rich Text objects with styling. The no_color handling
+    is delegated to the Rich console that prints these Text objects.
+    """
+
+    def __init__(self, context_formatter: ContextFormatter):
         """Initialize the action formatter.
 
         Args:
-            no_color: If True, disable all styling
+            context_formatter: The context formatter to use for context formatting
         """
-        self._no_color = no_color
-        self._context_formatter = ContextFormatter(no_color=no_color)
+        self._context_formatter = context_formatter
 
     @property
-    def context_formatter(self) -> ContextFormatter:
+    def context(self) -> ContextFormatter:
         """Get the underlying context formatter."""
         return self._context_formatter
 
@@ -45,7 +92,6 @@ class ActionFormatter:
         Returns:
             Rich Text with styled action label
         """
-        context_str = str(action_key.context_id)
         action_name = str(action_key.id)
 
         context_text = self._context_formatter.format_id_with_symbol(
@@ -54,8 +100,8 @@ class ActionFormatter:
 
         result = Text()
         result.append_text(context_text)
-        result.append("#", style="" if self._no_color else "dim")
-        result.append(action_name, style="" if self._no_color else "bold cyan")
+        result.append("#", style="dim")
+        result.append(action_name, style="bold cyan")
 
         return result
 
@@ -86,8 +132,8 @@ class ActionFormatter:
 
         result = Text()
         result.append_text(context_text)
-        result.append("#", style="" if self._no_color else "dim")
-        result.append(action_name, style="" if self._no_color else "bold cyan")
+        result.append("#", style="dim")
+        result.append(action_name, style="bold cyan")
 
         return result
 
@@ -118,17 +164,3 @@ class ActionFormatter:
             mapping[formatted_id.plain] = context_str
 
         return mapping
-
-    @staticmethod
-    def truncate_dirname(name: str, max_length: int = MAX_DIRNAME_LENGTH) -> str:
-        """Truncate a directory name to max_length, adding a hash suffix if needed.
-
-        Delegates to string_utils.truncate_dirname.
-        """
-        return truncate_dirname(name, max_length)
-
-
-@lru_cache(maxsize=1)
-def get_default_formatter(no_color: bool = False) -> ActionFormatter:
-    """Get a cached ActionFormatter instance."""
-    return ActionFormatter(no_color=no_color)
