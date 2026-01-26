@@ -4,6 +4,7 @@ import json
 import os
 import concurrent.futures
 import shutil
+import signal
 import subprocess
 import time
 import threading
@@ -230,20 +231,65 @@ class ExecutionEngine:
         self._running_processes: set[subprocess.Popen] = set()
         self._processes_lock = threading.Lock()
 
-    def _request_kill(self) -> None:
-        """Request graceful termination of all running processes.
+    def _kill_process_tree(self, process: subprocess.Popen) -> None:
+        """Kill a process and all its children.
 
-        Called by logger when user presses 'q' in main view.
+        On Unix: Uses process groups (SIGKILL to pgid) for reliable child termination.
+        On Windows: Uses taskkill /T /F for process tree termination.
+
+        Args:
+            process: The subprocess to kill
         """
-        self._kill_event.set()
+        # Check if process is still running
+        if process.poll() is not None:
+            return
 
-        # Terminate all running subprocesses
-        with self._processes_lock:
-            for process in self._running_processes:
+        pid = process.pid
+
+        if sys.platform == "win32":
+            # Windows: taskkill /T kills the process tree, /F forces termination
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True,
+                    timeout=5,
+                )
+            except Exception:
+                # Fallback to basic terminate
                 try:
                     process.terminate()
                 except Exception:
                     pass
+        else:
+            # Unix: Kill the entire process group
+            # This is necessary because nix develop spawns child processes that
+            # don't receive signals when we only terminate the parent
+            try:
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                # Process or group already terminated
+                pass
+            except Exception:
+                # Fallback: try regular kill on the process itself
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+    def _request_kill(self) -> None:
+        """Request immediate termination of all running processes.
+
+        Called by logger when user presses 'q' in main view.
+        Uses SIGKILL/taskkill for immediate termination since user explicitly
+        requested to quit.
+        """
+        self._kill_event.set()
+
+        # Kill all running subprocesses and their process trees
+        with self._processes_lock:
+            for process in list(self._running_processes):
+                self._kill_process_tree(process)
 
         # If we have an executor, try to shutdown
         if self._current_executor:
@@ -827,6 +873,9 @@ class ExecutionEngine:
         with open(prepared.stdout_path, "w", encoding="utf-8") as stdout_file, open(
             prepared.stderr_path, "w", encoding="utf-8"
         ) as stderr_file:
+            # Unix: start_new_session=True creates a new process group, allowing us to
+            # kill the entire process tree (including nix develop children) via os.killpg.
+            # Windows: Not needed - we use taskkill /T which traverses parent-child tree.
             process = subprocess.Popen(
                 prepared.exec_cmd,
                 cwd=str(self.project_root),
@@ -836,6 +885,7 @@ class ExecutionEngine:
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
+                start_new_session=(sys.platform != "win32"),
             )
 
             with self._processes_lock:
