@@ -36,7 +36,6 @@ Simple action that creates an output directory.
 ```bash
 mkdir -p "${args.output-dir}"
 echo "Created directory: ${args.output-dir}"
-
 ret output-directory:directory=${args.output-dir}
 ```
 
@@ -48,6 +47,14 @@ Writes a message to a file. Depends on create-directory.
 OUTPUT_FILE="${action.create-directory.output-directory}/message.txt"
 echo "${args.message}" > "$OUTPUT_FILE"
 echo "Wrote message to: $OUTPUT_FILE"
+
+
+for i in {1..50}; do
+    echo "This is a very long line that needs to be wrapped because it exceeds the terminal width and continues onto the next visual line while still being logical line"
+    echo "${i}"
+    sleep 0.1
+done
+
 
 ret message-file:file=$OUTPUT_FILE
 ret message-length:int=$(wc -c < "$OUTPUT_FILE")

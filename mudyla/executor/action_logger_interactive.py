@@ -848,22 +848,6 @@ class ActionLoggerInteractive(ActionLogger):
 
         return footer
 
-    def _format_line_number(self, line_num: int, total_lines: int) -> Text:
-        """Format line number prefix with appropriate width."""
-        width = max(4, len(str(total_lines)))
-        sep = "|" if IS_WINDOWS or self.no_color else "│"
-        dim_style = "" if self.no_color else "dim"
-        text = Text()
-        text.append(f"{line_num:{width}} ", style=dim_style)
-        text.append(f"{sep} ", style=dim_style)
-        return text
-
-    def _format_log_line(self, line: str, line_num: int, total_lines: int) -> Text:
-        """Format log line with line number prefix, keeping original content unmodified."""
-        text = self._format_line_number(line_num, total_lines)
-        text.append(line)
-        return text
-
     def _build_detail_content(self):
         """Build content for detail views with syntax highlighting."""
         task = self._get_selected_task()
@@ -871,87 +855,76 @@ class ActionLoggerInteractive(ActionLogger):
             return Text("(no action directory)")
 
         visible_height = self._get_content_height()
-        lines: list[str] = []
-        content_type = "text"
+
+        # Determine content source and type
+        content: str = ""
+        lexer: Optional[str] = None
+        preserve_ansi: bool = False
 
         if self.state == ViewState.LOGS_STDOUT:
             log_path = task.action_dir / "stdout.log"
-            content_type = "log"
+            preserve_ansi = True
             if log_path.exists():
                 try:
-                    lines = log_path.read_text(encoding="utf-8").splitlines()
+                    content = log_path.read_text(encoding="utf-8")
                 except Exception:
-                    lines = ["(error reading file)"]
+                    content = "(error reading file)"
         elif self.state == ViewState.LOGS_STDERR:
             log_path = task.action_dir / "stderr.log"
-            content_type = "log"
+            preserve_ansi = True
             if log_path.exists():
                 try:
-                    lines = log_path.read_text(encoding="utf-8").splitlines()
+                    content = log_path.read_text(encoding="utf-8")
                 except Exception:
-                    lines = ["(error reading file)"]
+                    content = "(error reading file)"
         elif self.state == ViewState.META:
             meta_path = task.action_dir / "meta.json"
             if meta_path.exists():
-                content_type = "json"
+                lexer = "json"
                 try:
                     data = json.loads(meta_path.read_text(encoding="utf-8"))
-                    lines = json.dumps(data, indent=2).splitlines()
+                    content = json.dumps(data, indent=2)
                 except Exception as e:
-                    content_type = "text"
-                    lines = [f"(error: {e})"]
+                    content = f"(error: {e})"
             else:
-                content_type = "text"
-                lines = ["(meta.json not found)"]
+                content = "(meta.json not found)"
         elif self.state == ViewState.OUTPUT:
             output_path = task.action_dir / "output.json"
             if output_path.exists():
-                content_type = "json"
+                lexer = "json"
                 try:
                     data = json.loads(output_path.read_text(encoding="utf-8"))
-                    lines = json.dumps(data, indent=2).splitlines()
+                    content = json.dumps(data, indent=2)
                 except Exception as e:
-                    content_type = "text"
-                    lines = [f"(error: {e})"]
+                    content = f"(error: {e})"
             else:
-                content_type = "text"
-                lines = ["(output.json not found)"]
+                content = "(output.json not found)"
         elif self.state == ViewState.SOURCE:
-            script_path = None
-            for ext in [".sh", ".py"]:
-                path = task.action_dir / f"script{ext}"
-                if path.exists():
-                    script_path = path
-                    content_type = "python" if ext == ".py" else "shell"
+            for ext, ext_lexer in [(".py", "python"), (".sh", "bash")]:
+                script_path = task.action_dir / f"script{ext}"
+                if script_path.exists():
+                    lexer = ext_lexer
+                    try:
+                        content = script_path.read_text(encoding="utf-8")
+                    except Exception as e:
+                        content = f"(error: {e})"
                     break
-            if script_path:
-                try:
-                    lines = script_path.read_text(encoding="utf-8").splitlines()
-                except Exception as e:
-                    content_type = "text"
-                    lines = [f"(error: {e})"]
             else:
-                content_type = "text"
-                lines = ["(script not found)"]
+                content = "(script not found)"
 
-        if not lines:
-            lines = ["(empty)"]
+        if not content:
+            content = "(empty)"
 
+        lines = content.splitlines()
         total_lines = len(lines)
-        scroll_state = self._update_scroll_state(task.action_key, self.state, total_lines, visible_height)
 
-        start = scroll_state.offset
-        end = start + visible_height
-        visible_lines = lines[start:end]
-
-        if not self.no_color and content_type in ("json", "shell", "python"):
-            lexer_map = {"json": "json", "shell": "bash", "python": "python"}
-            lexer = lexer_map[content_type]
-
-            full_content = "\n".join(lines)
-
-            syntax = Syntax(
-                full_content,
+        # Use Syntax for highlighted content (json, python, bash) - scroll by logical lines
+        if lexer and not self.no_color:
+            scroll_state = self._update_scroll_state(task.action_key, self.state, total_lines, visible_height)
+            start = scroll_state.offset
+            end = start + visible_height
+            return Syntax(
+                content,
                 lexer,
                 line_numbers=True,
                 line_range=(start + 1, end),
@@ -959,27 +932,53 @@ class ActionLoggerInteractive(ActionLogger):
                 word_wrap=False,
                 background_color="default",
             )
-            return syntax
 
-        result = Text()
-        width = max(4, len(str(total_lines)))
+        # Build Text output for logs (with ANSI preservation) and plain text
+        # Wrap lines and scroll by visual lines while showing logical line numbers
+        term_width, _ = self._get_terminal_size()
+        line_num_width = max(4, len(str(total_lines)))
+        prefix_width = line_num_width + 3  # " | "
+        content_width = max(20, term_width - prefix_width)
+
         sep = "|" if IS_WINDOWS or self.no_color else "│"
         dim_style = "" if self.no_color else "dim"
+        wrap_marker = ":" if IS_WINDOWS or self.no_color else "┆"
 
-        for i, line in enumerate(visible_lines):
+        # Build visual lines: list of (logical_line_num or None for continuation, text_content)
+        visual_lines: list[tuple[Optional[int], Text]] = []
+        for logical_idx, line in enumerate(lines):
+            if preserve_ansi and not self.no_color:
+                line_text = Text.from_ansi(line)
+            else:
+                line_text = Text(line)
+
+            # Wrap the line to content width
+            wrapped = line_text.wrap(self.console, content_width) if line_text.plain else [Text("")]
+            for wrap_idx, wrapped_part in enumerate(wrapped):
+                line_num = (logical_idx + 1) if wrap_idx == 0 else None
+                visual_lines.append((line_num, wrapped_part))
+
+        # Update scroll state with visual line count
+        total_visual = len(visual_lines)
+        scroll_state = self._update_scroll_state(task.action_key, self.state, total_visual, visible_height)
+
+        start = scroll_state.offset
+        end = start + visible_height
+        visible = visual_lines[start:end]
+
+        result = Text()
+        for i, (line_num, line_content) in enumerate(visible):
             if i > 0:
                 result.append("\n")
 
-            line_num = start + i + 1
-
-            if self.no_color:
-                result.append(f"{line_num:{width}} {sep} {line}")
-            elif content_type == "log":
-                result.append_text(self._format_log_line(line, line_num, total_lines))
-            else:
-                result.append(f"{line_num:{width}} ", style=dim_style)
+            if line_num is not None:
+                result.append(f"{line_num:{line_num_width}} ", style=dim_style)
                 result.append(f"{sep} ", style=dim_style)
-                result.append(line)
+            else:
+                result.append(" " * line_num_width + " ", style=dim_style)
+                result.append(f"{wrap_marker} ", style=dim_style)
+
+            result.append_text(line_content)
 
         return result
 
@@ -1037,6 +1036,8 @@ class ActionLoggerInteractive(ActionLogger):
 
                 if self.live:
                     self.live.update(self._build_renderable(), refresh=True)
+                last_update = time.time()
+                continue
 
             now = time.time()
             if now - last_update >= update_interval:
@@ -1080,6 +1081,10 @@ class ActionLoggerInteractive(ActionLogger):
         self._restore_terminal()
 
         if self.live:
+            # In non-interactive mode, always show final table view on exit
+            if not self.keep_running:
+                with self.lock:
+                    self.state = ViewState.TABLE
             self.live.update(self._build_renderable(), refresh=True)
             self.live.stop()
             self.live = None
