@@ -154,6 +154,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Include outputs from all tasks in the output JSON, not just goals",
     )
 
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        dest="timeout_ms",
+        help="Timeout in milliseconds: SIGKILL all running processes and their process trees when exceeded",
+    )
+
     # Note: We don't add a positional 'goals' argument here because we need to
     # preserve the order of all arguments (goals, axes, args, flags) as they appear
     # on the command line. All unrecognized arguments (including :goals) will be

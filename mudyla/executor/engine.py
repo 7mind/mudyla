@@ -184,6 +184,7 @@ class ExecutionEngine:
         parallel_execution: bool = True,
         use_short_context_ids: bool = False,
         keep_running: bool = False,
+        timeout_ms: Optional[int] = None,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -203,6 +204,7 @@ class ExecutionEngine:
         self.parallel_execution = parallel_execution
         self.use_short_context_ids = use_short_context_ids
         self.keep_running = keep_running
+        self.timeout_ms = timeout_ms
 
         # Create output formatter (includes all sub-formatters)
         self.output = OutputFormatter(no_color=no_color)
@@ -230,6 +232,33 @@ class ExecutionEngine:
         self._current_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._running_processes: set[subprocess.Popen] = set()
         self._processes_lock = threading.Lock()
+        self._timeout_timer: Optional[threading.Timer] = None
+
+    def _start_timeout_timer(self) -> None:
+        """Start a background timer that kills all processes on timeout.
+
+        Does nothing if no timeout is configured.
+        """
+        if self.timeout_ms is None:
+            return
+
+        timeout_seconds = self.timeout_ms / 1000.0
+
+        def on_timeout() -> None:
+            if self._current_logger:
+                self._current_logger.stop()
+            self.output.print_warning(f"Timeout of {self.timeout_ms}ms exceeded, killing all processes")
+            self._request_kill()
+
+        self._timeout_timer = threading.Timer(timeout_seconds, on_timeout)
+        self._timeout_timer.daemon = True
+        self._timeout_timer.start()
+
+    def _cancel_timeout_timer(self) -> None:
+        """Cancel the timeout timer if it is running."""
+        if self._timeout_timer is not None:
+            self._timeout_timer.cancel()
+            self._timeout_timer = None
 
     def _kill_process_tree(self, process: subprocess.Popen) -> None:
         """Kill a process and all its children.
@@ -487,6 +516,7 @@ class ExecutionEngine:
         logger = self._create_action_logger(execution_order)
         self._current_logger = logger  # Keep for subprocess access
 
+        self._start_timeout_timer()
         try:
             action_outputs: dict[ActionKey, dict[str, Any]] = {}
             action_results: dict[ActionKey, ActionResult] = {}
@@ -525,6 +555,7 @@ class ExecutionEngine:
                 action_outputs[action_key] = result.outputs
 
         finally:
+            self._cancel_timeout_timer()
             if not self.keep_running:
                 logger.stop()
 
@@ -572,6 +603,7 @@ class ExecutionEngine:
             future = executor.submit(self._execute_action, action_key, snapshot_outputs)
             running[future] = action_key
 
+        self._start_timeout_timer()
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 self._current_executor = executor
@@ -658,6 +690,7 @@ class ExecutionEngine:
                 run_directory=self.run_directory,
             )
         finally:
+            self._cancel_timeout_timer()
             self._current_executor = None
             if not self.keep_running:
                 logger.stop()

@@ -58,6 +58,12 @@ class OutputFormatter:
             force_terminal=None,
             highlight=False,
         )
+        self._stderr_console = Console(
+            no_color=no_color,
+            force_terminal=None,
+            highlight=False,
+            stderr=True,
+        )
 
         # Create all sub-formatters - symbols first as others depend on it
         self._symbols = SymbolsFormatter(no_color=no_color)
@@ -151,4 +157,4 @@ class OutputFormatter:
         line.append(f"{self._symbols.Warning} ", style="yellow")
         line.append("Warning: ", style="bold yellow")
         line.append(message)
-        self._console.print(line, highlight=False, stderr=True)
+        self._stderr_console.print(line, highlight=False)

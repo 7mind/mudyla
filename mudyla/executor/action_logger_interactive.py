@@ -1034,16 +1034,18 @@ class ActionLoggerInteractive(ActionLogger):
                 else:
                     self._handle_key_scroll(key)
 
-                if self.live:
-                    self.live.update(self._build_renderable(), refresh=True)
+                live = self.live
+                if live:
+                    live.update(self._build_renderable(), refresh=True)
                 last_update = time.time()
                 continue
 
             now = time.time()
             if now - last_update >= update_interval:
                 last_update = now
-                if self.live:
-                    self.live.update(self._build_renderable(), refresh=True)
+                live = self.live
+                if live:
+                    live.update(self._build_renderable(), refresh=True)
 
             time.sleep(0.01)
 
@@ -1072,7 +1074,12 @@ class ActionLoggerInteractive(ActionLogger):
         self._main_thread.start()
 
     def stop(self) -> None:
-        """Stop the interactive display."""
+        """Stop the interactive display.
+
+        Thread-safe and idempotent: may be called multiple times from
+        different threads (e.g. timeout timer thread and main execution
+        thread). Only the first call performs the actual shutdown.
+        """
         self.stop_flag = True
 
         if hasattr(self, '_main_thread') and self._main_thread.is_alive():
@@ -1080,14 +1087,16 @@ class ActionLoggerInteractive(ActionLogger):
 
         self._restore_terminal()
 
-        if self.live:
-            # In non-interactive mode, always show final table view on exit
-            if not self.keep_running:
-                with self.lock:
-                    self.state = ViewState.TABLE
-            self.live.update(self._build_renderable(), refresh=True)
-            self.live.stop()
+        # Atomically claim the Live instance so only one thread performs shutdown
+        with self.lock:
+            live = self.live
             self.live = None
+            if not self.keep_running:
+                self.state = ViewState.TABLE
+
+        if live:
+            live.update(self._build_renderable(), refresh=True)
+            live.stop()
 
     def wait_for_quit(self) -> None:
         """Wait for user to quit (call after execution completes with --it)."""

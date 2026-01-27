@@ -197,6 +197,7 @@ class CLI:
                 parallel_execution=parallel_execution,
                 use_short_context_ids=use_short_ids,
                 keep_running=keep_running,
+                timeout_ms=args.timeout_ms,
             )
 
             # Print run ID

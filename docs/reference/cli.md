@@ -15,6 +15,7 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--without-nix`: Run without Nix isolation (default on Windows).
 *   `--force-nix`: Force Nix integration even if it would normally be skipped (e.g., on Windows).
 *   `--it`: Enable interactive mode with live log viewer during execution.
+*   `--timeout <ms>`: SIGKILL all running processes and their process trees when the specified number of milliseconds has elapsed.
 
 ## Arguments & Flags
 
