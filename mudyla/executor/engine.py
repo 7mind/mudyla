@@ -928,6 +928,10 @@ class ExecutionEngine:
             try:
                 size_lock = threading.Lock()
 
+                if self.github_actions or self.verbose:
+                    self._configure_console_stream(sys.stdout)
+                    self._configure_console_stream(sys.stderr)
+
                 def stream_output(
                     pipe: Any,
                     console_stream: Any,
@@ -995,6 +999,16 @@ class ExecutionEngine:
             stdout_size=stdout_size,
             stderr_size=stderr_size,
         )
+
+    @staticmethod
+    def _configure_console_stream(stream: Any) -> None:
+        if not stream:
+            raise RuntimeError("Console stream is required to configure encoding errors.")
+        if not hasattr(stream, "reconfigure"):
+            raise RuntimeError(
+                "Console stream does not support reconfigure; cannot set encoding errors."
+            )
+        stream.reconfigure(errors="replace")
 
     def _create_action_result(
         self,
