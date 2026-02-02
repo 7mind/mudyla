@@ -78,7 +78,7 @@ class CLI:
             parsed_inputs = parse_custom_inputs([], unknown)
         except CLIParseError as e:
             sym = output.symbols
-            output.print(f"{sym.Cross} [bold red]Error:[/bold red] {e}")
+            output.print(f"{sym.Cross} [bold red]Error:[/bold red] {output.escape(str(e))}")
             return 1
 
         sym = output.symbols
@@ -110,7 +110,7 @@ class CLI:
             )
 
             for warning in setup.parsed_inputs.goal_warnings:
-                output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] {warning}")
+                output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] {output.escape(warning)}")
 
             # Use the new compiler for multi-context support
             planning_start = time.perf_counter()
@@ -233,25 +233,25 @@ class CLI:
             return 0
 
         except ValueError as err:
-            output.print(f"{sym.Cross} [bold red]Error:[/bold red] {err}")
+            output.print(f"{sym.Cross} [bold red]Error:[/bold red] {output.escape(str(err))}")
             if "No goals specified" in str(err):
                 self.parser.print_help()
             return 1
         except ValidationError as validation_err:
             try:
-                output.print(f"\n{sym.Cross} [bold red]Validation error:[/bold red]\n{validation_err}")
+                output.print(f"\n{sym.Cross} [bold red]Validation error:[/bold red]\n{output.escape(str(validation_err))}")
             except (NameError, UnicodeEncodeError):
                 print(f"\n[!] Validation error:\n{validation_err}")
             return 1
         except CompilationError as comp_err:
             try:
-                output.print(f"\n{sym.Cross} [bold red]Compilation error:[/bold red]\n{comp_err}")
+                output.print(f"\n{sym.Cross} [bold red]Compilation error:[/bold red]\n{output.escape(str(comp_err))}")
             except (NameError, UnicodeEncodeError):
                 print(f"\n[!] Compilation error:\n{comp_err}")
             return 1
         except Exception as gen_err:
             try:
-                output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {gen_err}")
+                output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {output.escape(str(gen_err))}")
             except (NameError, UnicodeEncodeError):
                 print(f"\n[!] Error: {gen_err}")
             import traceback
@@ -347,13 +347,13 @@ class CLI:
             # Verbose mode: detailed output with stdout
             output.print(f"\n{sym.Refresh} [bold]Retainers:[/bold]")
             for ret_result in retainer_results:
-                retainer_label = output.action.format_label_plain(ret_result.retainer_key, use_short_ids)
+                retainer_label = output.escape(output.action.format_label_plain(ret_result.retainer_key, use_short_ids))
                 time_str = f"{ret_result.execution_time_ms:.0f}ms"
 
                 if ret_result.retained:
                     unique_targets = list(dict.fromkeys(ret_result.soft_dep_targets))
                     targets_str = ", ".join(
-                        f"[bold cyan]{output.action.format_label_plain(t, use_short_ids)}[/bold cyan]"
+                        f"[bold cyan]{output.escape(output.action.format_label_plain(t, use_short_ids))}[/bold cyan]"
                         for t in unique_targets
                     )
                     output.print(
@@ -368,7 +368,7 @@ class CLI:
 
                 if ret_result.stdout:
                     for stdout_line in ret_result.stdout.rstrip().split("\n"):
-                        output.print(f"    [dim]stdout:[/dim] {stdout_line}")
+                        output.print(f"    [dim]stdout:[/dim] {output.escape(stdout_line)}")
         else:
             # Non-verbose mode: compact Rich table (same styling as execution plan)
             from rich.table import Table
@@ -396,8 +396,8 @@ class CLI:
                 # Context column - use formatter with symbol (same as execution plan)
                 context_text = ctx_fmt.format_id_with_symbol(retainer_key.context_id, use_short_ids)
 
-                # Retainer column - just the action name
-                retainer_name = retainer_key.id.name
+                # Retainer column - just the action name (escaped for safety)
+                retainer_name = output.escape(retainer_key.id.name)
 
                 # Time column
                 time_str = f"{ret_result.execution_time_ms:.0f}ms"
@@ -405,7 +405,7 @@ class CLI:
                 # Retained and Result columns
                 if ret_result.retained:
                     unique_targets = list(dict.fromkeys(ret_result.soft_dep_targets))
-                    retained_str = ", ".join(t.id.name for t in unique_targets)
+                    retained_str = ", ".join(output.escape(t.id.name) for t in unique_targets)
                     result_str = f"[green]{sym.Check}[/green]"
                 else:
                     retained_str = "-"
@@ -479,7 +479,7 @@ class CLI:
         if out_path:
             path = Path(out_path)
             path.write_text(output_json, encoding="utf-8")
-            output.print(f"\n{sym.Save} [dim]Outputs saved to:[/dim] [bold cyan]{path}[/bold cyan]")
+            output.print(f"\n{sym.Save} [dim]Outputs saved to:[/dim] [bold cyan]{output.escape(str(path))}[/bold cyan]")
 
     def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
         """Apply platform specific defaults."""
@@ -583,7 +583,7 @@ class CLI:
     ) -> ExecutionSetup:
         """Load markdown definitions and merge CLI inputs with defaults."""
         project_root = find_project_root()
-        output.print(f"[dim]Project root:[/dim] [bold cyan]{project_root}[/bold cyan]")
+        output.print(f"[dim]Project root:[/dim] [bold cyan]{output.escape(str(project_root))}[/bold cyan]")
 
         md_files = self._discover_markdown_files(args.defs, project_root)
         if not md_files:
@@ -646,8 +646,8 @@ class CLI:
             if default_value:
                 axis_values[axis_name] = default_value
                 output.print(
-                    f"[dim]Using default axis value:[/dim] [magenta]{axis_name}[/magenta]"
-                    f"[dim]:[/dim][yellow]{default_value}[/yellow]"
+                    f"[dim]Using default axis value:[/dim] [magenta]{output.escape(axis_name)}[/magenta]"
+                    f"[dim]:[/dim][yellow]{output.escape(default_value)}[/yellow]"
                 )
 
     def _resolve_argument_aliases(
@@ -864,8 +864,8 @@ class CLI:
             # Context column - use formatter for colored output
             context_text = ctx_fmt.format_id_with_symbol(action_key.context_id, use_short_ids)
 
-            # Action column
-            action_str = action_key.id.name
+            # Action column - escape to prevent markup injection
+            action_str = output.escape(action_key.id.name)
 
             # Goal column
             goal_str = sym.Target if is_goal else ""
@@ -911,11 +911,12 @@ class CLI:
                 axis_def = document.axis[axis_name]
                 values_parts = []
                 for axis_val in axis_def.values:
+                    escaped_val = output.escape(axis_val.value)
                     if axis_val.is_default:
-                        values_parts.append(f"[bold green]{axis_val.value}[/bold green]*")
+                        values_parts.append(f"[bold green]{escaped_val}[/bold green]*")
                     else:
-                        values_parts.append(axis_val.value)
-                output.print(f"  [bold cyan]{axis_name}[/bold cyan]: {', '.join(values_parts)}")
+                        values_parts.append(escaped_val)
+                output.print(f"  [bold cyan]{output.escape(axis_name)}[/bold cyan]: {', '.join(values_parts)}")
             output.print("")
 
         output.print("[blue]Available actions:[/blue]\n")
@@ -934,54 +935,62 @@ class CLI:
             is_root = len(typed_deps) == 0
 
             # Format action name
+            escaped_action_name = output.escape(action_name)
             if is_root:
-                output.print(f"{sym.Target} [bold cyan]{action_name}[/bold cyan]")
+                output.print(f"{sym.Target} [bold cyan]{escaped_action_name}[/bold cyan]")
             else:
-                output.print(f"  [bold cyan]{action_name}[/bold cyan]")
+                output.print(f"  [bold cyan]{escaped_action_name}[/bold cyan]")
 
             if action.description:
                 for desc_line in action.description.splitlines():
                     stripped_line = desc_line.strip()
                     if stripped_line:
-                        output.print(f"    [dim]{stripped_line}[/dim]")
+                        output.print(f"    [dim]{output.escape(stripped_line)}[/dim]")
 
             if typed_deps:
                 dep_strs = []
                 for dep_name in sorted(typed_deps.keys()):
+                    escaped_dep = output.escape(dep_name)
                     dep_type = typed_deps[dep_name]
                     if dep_type == "weak":
-                        dep_strs.append(f"~{dep_name}")
+                        dep_strs.append(f"~{escaped_dep}")
                     elif dep_type == "soft":
-                        dep_strs.append(f"?{dep_name}")
+                        dep_strs.append(f"?{escaped_dep}")
                     else:
-                        dep_strs.append(dep_name)
+                        dep_strs.append(escaped_dep)
                 output.print(f"    [dim]Dependencies:[/dim] {', '.join(dep_strs)}")
 
             args_used = info["args_used"]
             if args_used:
-                output.print(f"    [dim]Arguments:[/dim] [bold yellow]{', '.join(sorted(args_used))}[/bold yellow]")
+                escaped_args = ', '.join(output.escape(a) for a in sorted(args_used))
+                output.print(f"    [dim]Arguments:[/dim] [bold yellow]{escaped_args}[/bold yellow]")
 
             flags_used = info["flags_used"]
             if flags_used:
-                output.print(f"    [dim]Flags:[/dim] [bold yellow]{', '.join(sorted(flags_used))}[/bold yellow]")
+                escaped_flags = ', '.join(output.escape(f) for f in sorted(flags_used))
+                output.print(f"    [dim]Flags:[/dim] [bold yellow]{escaped_flags}[/bold yellow]")
 
             all_env_vars = info["env_vars"]
             if all_env_vars:
-                output.print(f"    [dim]Env vars:[/dim] {', '.join(sorted(all_env_vars))}")
+                escaped_env = ', '.join(output.escape(e) for e in sorted(all_env_vars))
+                output.print(f"    [dim]Env vars:[/dim] {escaped_env}")
 
             inputs_map = info["inputs"]
             if inputs_map:
                 input_parts = []
                 for act_name in sorted(inputs_map.keys()):
-                    vars_str = ', '.join(sorted(inputs_map[act_name]))
-                    input_parts.append(f"{act_name}.{{{vars_str}}}")
+                    escaped_act = output.escape(act_name)
+                    vars_str = ', '.join(output.escape(v) for v in sorted(inputs_map[act_name]))
+                    input_parts.append(f"{escaped_act}.{{{vars_str}}}")
                 output.print(f"    [dim]Inputs:[/dim] {', '.join(input_parts)}")
 
             all_returns = info["returns"]
             if all_returns:
                 returns_parts = []
                 for r in all_returns:
-                    returns_parts.append(f"[bold green]{r.name}[/bold green][dim]:{r.return_type.value}[/dim]")
+                    escaped_name = output.escape(r.name)
+                    escaped_type = output.escape(r.return_type.value)
+                    returns_parts.append(f"[bold green]{escaped_name}[/bold green][dim]:{escaped_type}[/dim]")
                 output.print(f"    [dim]Returns:[/dim] {', '.join(returns_parts)}")
 
             # Show versions if action has multiple versions
@@ -992,9 +1001,12 @@ class CLI:
                     cond_parts = []
                     for cond in version.conditions:
                         if isinstance(cond, AxisCondition):
-                            cond_parts.append(f"{cond.axis_name}: {cond.axis_value}")
+                            escaped_axis = output.escape(cond.axis_name)
+                            escaped_val = output.escape(cond.axis_value)
+                            cond_parts.append(f"{escaped_axis}: {escaped_val}")
                         elif isinstance(cond, PlatformCondition):
-                            cond_parts.append(f"platform: {cond.platform_value}")
+                            escaped_plat = output.escape(cond.platform_value)
+                            cond_parts.append(f"platform: {escaped_plat}")
 
                     if cond_parts:
                         version_strs.append(f"{ver_i} ({', '.join(cond_parts)})")

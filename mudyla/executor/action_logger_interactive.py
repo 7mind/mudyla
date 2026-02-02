@@ -625,7 +625,7 @@ class ActionLoggerInteractive(ActionLogger):
                 stdout_str = self._format_size(task.stdout_size)
                 stderr_str = self._format_size(task.stderr_size)
 
-                action_name = action_key.id.name
+                action_name = self._output.escape(action_key.id.name)
 
                 if has_context:
                     context_formatted = self._context_formatter.format_id_with_symbol(

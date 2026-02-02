@@ -114,6 +114,10 @@ class OutputFormatter:
     def no_color(self) -> bool:
         """Check if colors are disabled."""
         return self._no_color
+    
+    def escape(self, message: str) -> str:
+        from rich.markup import escape
+        return escape(message)
 
     def print(self, message: Union[str, Text]) -> None:
         """Print message using Rich console.

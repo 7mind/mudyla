@@ -473,22 +473,22 @@ class ExecutionEngine:
         suppress_outputs = self.no_output_on_fail and not (self.github_actions or self.verbose)
         sym = self.output.symbols
 
-        self.output.print(f"\n{sym.Cross} [bold red]Action '{result.action_name}' failed![/bold red]")
+        self.output.print(f"\n{sym.Cross} [bold red]Action '{self.output.escape(result.action_name)}' failed![/bold red]")
         self.output.print(f"{sym.Folder} [dim]Run directory:[/dim] [bold cyan]{self.run_directory}[/bold cyan]")
 
         self.output.print(f"\n{sym.File} [dim]Stdout:[/dim] [blue]{result.stdout_path}[/blue]")
         if result.stdout_path.exists() and not suppress_outputs:
-            self.output.print(result.stdout_path.read_text(encoding="utf-8"))
+            self.output.print_raw(result.stdout_path.read_text(encoding="utf-8"))
 
         self.output.print(f"\n{sym.File} [dim]Stderr:[/dim] [blue]{result.stderr_path}[/blue]")
         if result.stderr_path.exists() and not suppress_outputs:
-            self.output.print(result.stderr_path.read_text(encoding="utf-8"))
+            self.output.print_raw(result.stderr_path.read_text(encoding="utf-8"))
 
         if suppress_outputs:
             self.output.print("[dim]Output suppressed; re-run with --verbose or inspect log files for details.[/dim]")
 
         if result.error_message:
-            self.output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {result.error_message}")
+            self.output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {self.output.escape(result.error_message)}")
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -1270,14 +1270,14 @@ class ExecutionEngine:
         sym = self.output.symbols
 
         if restored_actions and not self.github_actions:
-            restored_list = ", ".join(str(key) for key in restored_actions)
+            restored_list = ", ".join(self.output.escape(str(key)) for key in restored_actions)
             self.output.print(f"\n{sym.Recycle} [dim]restored from previous run:[/dim] [bold cyan]{restored_list}[/bold cyan]")
 
         if not self.keep_run_dir:
             try:
                 shutil.rmtree(self.run_directory)
             except Exception as e:
-                self.output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] Failed to clean up run directory: {e}")
+                self.output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] Failed to clean up run directory: {self.output.escape(str(e))}")
 
         if not self.github_actions:
             self.output.print(f"\n[dim]Total wall time:[/dim] [bold cyan]{graph_duration:.1f}s[/bold cyan]")

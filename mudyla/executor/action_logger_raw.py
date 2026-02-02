@@ -59,20 +59,20 @@ class ActionLoggerRaw(ActionLogger):
             return  # GitHub Actions uses ::group:: markers instead
 
         sym = self._output.symbols
-        label = self._format_action_label(action_key)
+        label = self._output.escape(self._format_action_label(action_key))
         self._output.print(f"{sym.Play} [dim]start:[/dim] [bold cyan]{label}[/bold cyan]")
 
     def mark_done(self, action_key: ActionKey, duration: float) -> None:
         """Mark an action as done."""
         sym = self._output.symbols
-        label = self._format_action_label(action_key)
+        label = self._output.escape(self._format_action_label(action_key))
         duration_str = self._format_duration(duration)
         self._output.print(f"{sym.Check} [dim]done:[/dim] [bold cyan]{label}[/bold cyan] [dim]({duration_str})[/dim]")
 
     def mark_failed(self, action_key: ActionKey, duration: float) -> None:
         """Mark an action as failed."""
         sym = self._output.symbols
-        label = self._format_action_label(action_key)
+        label = self._output.escape(self._format_action_label(action_key))
         duration_str = self._format_duration(duration)
         self._output.print(f"{sym.Cross} [bold red]failed:[/bold red] [bold cyan]{label}[/bold cyan] [dim]({duration_str})[/dim]")
 
@@ -81,7 +81,7 @@ class ActionLoggerRaw(ActionLogger):
     ) -> None:
         """Mark an action as restored from previous run."""
         sym = self._output.symbols
-        label = self._format_action_label(action_key)
+        label = self._output.escape(self._format_action_label(action_key))
         duration_str = self._format_duration(duration)
         self._output.print(f"{sym.Recycle} [dim]done:[/dim] [bold cyan]{label}[/bold cyan] [dim]({duration_str}) (restored)[/dim]")
 
