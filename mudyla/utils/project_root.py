@@ -23,7 +23,7 @@ def find_project_root(start_path: Optional[Path] = None) -> Path:
 
     while True:
         git_dir = current / ".git"
-        if git_dir.exists() and git_dir.is_dir():
+        if git_dir.exists():
             return current
 
         parent = current.parent
