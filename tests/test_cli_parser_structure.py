@@ -106,7 +106,7 @@ class TestSimpleLogAutoDetection:
     def test_simple_log_enabled_when_stdout_is_not_a_tty(self):
         """When stdout is not a TTY (e.g. piped or run by an agent), simple_log must be True."""
         cli = CLI()
-        args = self._make_args(simple_log=False)
+        args = self._make_args(simple_log=None)
         with patch("sys.stdout", new_callable=StringIO):
             cli._apply_platform_defaults(args, quiet_mode=True)
         assert args.simple_log is True
@@ -114,7 +114,7 @@ class TestSimpleLogAutoDetection:
     def test_simple_log_unchanged_when_stdout_is_a_tty(self):
         """When stdout IS a TTY, simple_log stays at its CLI-provided value (False)."""
         cli = CLI()
-        args = self._make_args(simple_log=False)
+        args = self._make_args(simple_log=None)
         with patch("sys.stdout.isatty", return_value=True):
             cli._apply_platform_defaults(args, quiet_mode=True)
         assert args.simple_log is False
@@ -134,3 +134,11 @@ class TestSimpleLogAutoDetection:
         with patch("sys.stdout", new_callable=StringIO):
             cli._apply_platform_defaults(args, quiet_mode=True)
         assert args.simple_log is True
+
+    def test_force_interactive_overrides_non_tty(self):
+        """When the user passes --force-interactive in a non-TTY, simple_log is False."""
+        cli = CLI()
+        args = self._make_args(force_interactive=True)
+        with patch("sys.stdout", new_callable=StringIO):
+            cli._apply_platform_defaults(args, quiet_mode=True)
+        assert args.simple_log is False

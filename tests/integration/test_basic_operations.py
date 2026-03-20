@@ -116,7 +116,7 @@ class TestBasicOperations:
 
     def test_rich_table_display(self, mdl: MudylaRunner, clean_test_output):
         """Test that rich table is displayed during execution."""
-        result = mdl.run_success([":write-message"])
+        result = mdl.run_success(["--force-interactive", ":write-message"])
 
         # Verify table headers
         mdl.assert_in_output(result, "Context")

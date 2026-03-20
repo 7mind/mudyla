@@ -109,7 +109,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--simple-log",
         dest="simple_log",
         action="store_true",
-        help="Use simple text logging instead of dynamic rich table",
+        default=None,
+        help="Use simple text logging instead of dynamic rich table (auto-detected from TTY)",
+    )
+
+    parser.add_argument(
+        "--force-interactive",
+        dest="force_interactive",
+        action="store_true",
+        help="Force rich table display even when stdout is not a TTY",
     )
 
     parser.add_argument(

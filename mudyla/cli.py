@@ -522,8 +522,10 @@ class CLI:
 
         # Auto-enable simple_log when stdout is not a TTY (e.g. piped, redirected,
         # or launched by another process like a Claude Code agent)
-        if not args.simple_log and not sys.stdout.isatty():
-            args.simple_log = True
+        if args.force_interactive:
+            args.simple_log = False
+        elif args.simple_log is None:
+            args.simple_log = not sys.stdout.isatty()
 
 
     def _handle_autocomplete(self, args: argparse.Namespace) -> int:
