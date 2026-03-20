@@ -1,3 +1,6 @@
+from io import StringIO
+from unittest.mock import patch
+
 from mudyla.cli import CLI
 from mudyla.cli_builder import build_arg_parser
 from mudyla.parser.markdown_parser import MarkdownParser
@@ -88,3 +91,46 @@ def test_autocomplete_axis_values_returns_values_for_axis():
     assert "dev" in env_values
     assert "prod" in env_values
     assert unknown_values == []
+
+
+class TestSimpleLogAutoDetection:
+    """Regression tests: simple_log must be auto-enabled in non-interactive shells."""
+
+    def _make_args(self, **overrides):
+        parser = build_arg_parser()
+        args = parser.parse_args([])
+        for k, v in overrides.items():
+            setattr(args, k, v)
+        return args
+
+    def test_simple_log_enabled_when_stdout_is_not_a_tty(self):
+        """When stdout is not a TTY (e.g. piped or run by an agent), simple_log must be True."""
+        cli = CLI()
+        args = self._make_args(simple_log=False)
+        with patch("sys.stdout", new_callable=StringIO):
+            cli._apply_platform_defaults(args, quiet_mode=True)
+        assert args.simple_log is True
+
+    def test_simple_log_unchanged_when_stdout_is_a_tty(self):
+        """When stdout IS a TTY, simple_log stays at its CLI-provided value (False)."""
+        cli = CLI()
+        args = self._make_args(simple_log=False)
+        with patch("sys.stdout.isatty", return_value=True):
+            cli._apply_platform_defaults(args, quiet_mode=True)
+        assert args.simple_log is False
+
+    def test_explicit_simple_log_preserved_in_tty(self):
+        """When the user explicitly passes --simple-log in a TTY, it stays True."""
+        cli = CLI()
+        args = self._make_args(simple_log=True)
+        with patch("sys.stdout.isatty", return_value=True):
+            cli._apply_platform_defaults(args, quiet_mode=True)
+        assert args.simple_log is True
+
+    def test_explicit_simple_log_preserved_in_non_tty(self):
+        """When the user explicitly passes --simple-log in a non-TTY, it stays True."""
+        cli = CLI()
+        args = self._make_args(simple_log=True)
+        with patch("sys.stdout", new_callable=StringIO):
+            cli._apply_platform_defaults(args, quiet_mode=True)
+        assert args.simple_log is True

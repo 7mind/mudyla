@@ -520,6 +520,11 @@ class CLI:
         if args.github_actions and system == "Windows" and not args.no_color:
             args.no_color = True
 
+        # Auto-enable simple_log when stdout is not a TTY (e.g. piped, redirected,
+        # or launched by another process like a Claude Code agent)
+        if not args.simple_log and not sys.stdout.isatty():
+            args.simple_log = True
+
 
     def _handle_autocomplete(self, args: argparse.Namespace) -> int:
         """Handle autocomplete mode without noisy output."""
