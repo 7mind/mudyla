@@ -1,6 +1,7 @@
 """Python language runtime implementation."""
 
 import json
+import sys
 from importlib import resources
 from pathlib import Path
 
@@ -74,3 +75,9 @@ from mudyla.runtime import mdl
         Get the Python execution command.
         """
         return ["python3", str(script_path)]
+
+    def get_direct_execution_command(self, script_path: Path) -> list[str]:
+        """Windows installers need not provide a python3 executable alias."""
+        if sys.platform == "win32":
+            return [sys.executable, str(script_path)]
+        return self.get_execution_command(script_path)

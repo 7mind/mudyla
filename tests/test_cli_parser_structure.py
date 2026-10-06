@@ -93,8 +93,8 @@ def test_autocomplete_axis_values_returns_values_for_axis():
     assert unknown_values == []
 
 
-class TestSimpleLogAutoDetection:
-    """Regression tests: simple_log must be auto-enabled in non-interactive shells."""
+class TestLoggerTerminalDetection:
+    """Terminal detection must not override the selected logger."""
 
     def _make_args(self, **overrides):
         parser = build_arg_parser()
@@ -103,21 +103,21 @@ class TestSimpleLogAutoDetection:
             setattr(args, k, v)
         return args
 
-    def test_simple_log_enabled_when_stdout_is_not_a_tty(self):
-        """When stdout is not a TTY (e.g. piped or run by an agent), simple_log must be True."""
+    def test_pure_remains_default_when_stdout_is_not_a_tty(self):
+        """Redirected execution keeps the default pure streaming fallback."""
         cli = CLI()
         args = self._make_args(simple_log=None)
         with patch("sys.stdout", new_callable=StringIO):
             cli._apply_platform_defaults(args, quiet_mode=True)
-        assert args.simple_log is True
+        assert args.logger == "pure"
 
-    def test_simple_log_unchanged_when_stdout_is_a_tty(self):
-        """When stdout IS a TTY, simple_log stays at its CLI-provided value (False)."""
+    def test_pure_remains_default_when_stdout_is_a_tty(self):
+        """A terminal keeps the same default mode."""
         cli = CLI()
         args = self._make_args(simple_log=None)
         with patch("sys.stdout.isatty", return_value=True):
             cli._apply_platform_defaults(args, quiet_mode=True)
-        assert args.simple_log is False
+        assert args.logger == "pure"
 
     def test_explicit_simple_log_preserved_in_tty(self):
         """When the user explicitly passes --simple-log in a TTY, it stays True."""
@@ -125,7 +125,7 @@ class TestSimpleLogAutoDetection:
         args = self._make_args(simple_log=True)
         with patch("sys.stdout.isatty", return_value=True):
             cli._apply_platform_defaults(args, quiet_mode=True)
-        assert args.simple_log is True
+        assert args.logger == "simple"
 
     def test_explicit_simple_log_preserved_in_non_tty(self):
         """When the user explicitly passes --simple-log in a non-TTY, it stays True."""
@@ -133,12 +133,12 @@ class TestSimpleLogAutoDetection:
         args = self._make_args(simple_log=True)
         with patch("sys.stdout", new_callable=StringIO):
             cli._apply_platform_defaults(args, quiet_mode=True)
-        assert args.simple_log is True
+        assert args.logger == "simple"
 
     def test_force_interactive_overrides_non_tty(self):
-        """When the user passes --force-interactive in a non-TTY, simple_log is False."""
+        """Forcing rendering keeps the default pure mode."""
         cli = CLI()
         args = self._make_args(force_interactive=True)
         with patch("sys.stdout", new_callable=StringIO):
             cli._apply_platform_defaults(args, quiet_mode=True)
-        assert args.simple_log is False
+        assert args.logger == "pure"

@@ -9,15 +9,18 @@ import time
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
+from rich.console import Group, RenderableType
 from rich.text import Text
 
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.compiler import DAGCompiler, CompilationError
-from .dag.graph import ActionKey
+from .dag.graph import ActionGraph, ActionKey
+from .dag.context import ContextId
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
-from .executor.retainer_executor import RetainerExecutor
+from .logging.action_logger import LoggerMode, resolve_logger_mode
+from .executor.retainer_executor import RetainerExecutor, RetainerResult
 from .parser.markdown_parser import MarkdownParser
 from .cli_args import (
     AXIS_OPTIONS,
@@ -30,7 +33,10 @@ from .cli_args import (
 from .cli_builder import build_arg_parser
 from .axis_wildcards import expand_all_wildcards
 from .utils.project_root import find_project_root
-from .formatters import OutputFormatter
+from .logging.formatters import OutputFormatter
+from .logging.formatters.details import JsonValue, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
+from .logging.formatters.plan import execution_tree, sharing_counts, tree_section
+from .logging.formatters.sections import section
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
 
@@ -65,12 +71,18 @@ class CLI:
         """
         args, unknown = self.parser.parse_known_args(argv)
         quiet_mode = args.autocomplete is not None
-        self._apply_platform_defaults(args, quiet_mode)
+        nix_message = self._apply_platform_defaults(args, quiet_mode)
 
         if args.autocomplete:
             return self._handle_autocomplete(args)
 
-        output = self._build_formatters(args.no_color)
+        output = (OutputFormatter(no_color=args.no_color, plain=True, compact=True, teamcity=True)
+                  if args.logger == "teamcity" else
+                  self._build_formatters(args.no_color, args.logger == "github", LoggerMode(args.logger).compact))
+        if output.compact:
+            output.start_recording(defer=True)
+        if nix_message is not None:
+            output.print_run_field("Using Nix", nix_message, f"Using Nix: {nix_message.plain}")
 
         try:
             # All arguments (goals, axes, args, flags) are in 'unknown' since we don't
@@ -79,6 +91,7 @@ class CLI:
         except CLIParseError as e:
             sym = output.symbols
             output.print(f"{sym.Cross} [bold red]Error:[/bold red] {output.escape(str(e))}")
+            output.flush_recording()
             return 1
 
         sym = output.symbols
@@ -94,23 +107,25 @@ class CLI:
             project_root = setup.project_root
 
             if args.list_actions:
-                self._list_actions(document, args.no_color)
+                self._list_actions(document, output)
                 return 0
 
             parallel_execution = args.parallel or (
                 not args.sequential
-                and not args.verbose
-                and not args.github_actions
+                and args.logger not in {"verbose", "github", "teamcity"}
                 and not document.properties.sequential_execution_default
             )
 
-            output.print(
+            output.print_run_field("Definitions", Text.assemble(
+                (str(len(setup.markdown_files)), "cyan not dim not bold"), " definition file(s) with ",
+                (str(len(document.actions)), "cyan not dim not bold"), " actions"),
                 f"{sym.Book} [dim]Found[/dim] [bold]{len(setup.markdown_files)}[/bold] "
                 f"[dim]definition file(s) with[/dim] [bold]{len(document.actions)}[/bold] [dim]actions[/dim]"
             )
 
             for warning in setup.parsed_inputs.goal_warnings:
-                output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] {output.escape(warning)}")
+                output.print_run_field("Warning", literal_text(warning, "yellow not dim"),
+                                       f"{sym.Warning} [bold yellow]Warning:[/bold yellow] {output.escape(warning)}")
 
             # Use the new compiler for multi-context support
             planning_start = time.perf_counter()
@@ -151,31 +166,37 @@ class CLI:
             # Show execution mode
             if not quiet_mode:
                 mode_label = "dry-run" if args.dry_run else ("parallel" if parallel_execution else "sequential")
-                output.print(f"\n{sym.Gear} [dim]Execution mode:[/dim] [bold cyan]{mode_label}[/bold cyan]")
+                output.print_run_field("Execution mode", Text(mode_label, style="cyan"),
+                                       f"\n{sym.Gear} [dim]Execution mode:[/dim] [bold cyan]{mode_label}[/bold cyan]")
 
             validator = DAGValidator(document, pruned_graph)
             validator.validate_all(custom_args, all_flags, axis_values)
             if not quiet_mode:
-                output.print(
+                output.print_run_field("Built plan graph", Text.assemble(
+                    (str(len(pruned_graph.nodes)), "cyan not dim not bold"), " required action(s) (planning took ",
+                    (f"{planning_elapsed_ms:.0f}ms", "cyan not dim not bold"), ")"),
                     f"{sym.Check} [dim]Built plan graph with[/dim] [bold]{len(pruned_graph.nodes)}[/bold] "
                     f"[dim]required action(s) (planning took {planning_elapsed_ms:.0f}ms)[/dim]"
                 )
 
             execution_order = pruned_graph.get_execution_order()
+            static_plan = None
             if not quiet_mode:
-                output.print(f"\n{sym.Clipboard} [bold]Execution plan:[/bold]")
-                self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids)
+                if not output.compact:
+                    output.print(f"\n{sym.Clipboard} [bold]Execution plan:[/bold]")
+                static_plan = self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids)
 
             if args.dry_run:
-                output.print(f"\n{sym.Info} [blue]Dry run - not executing[/blue]")
+                output.print_run_field("Execution", Text("Dry run - not executing"),
+                                       f"\n{sym.Info} [blue]Dry run - not executing[/blue]")
                 return 0
 
             previous_run_dir = self._get_previous_run_dir(project_root, output) if args.continue_run else None
             keep_running = (
                 args.interactive
-                and not args.verbose
-                and not args.github_actions
-                and sys.stdout.isatty()
+                and args.logger in {"pure", "table"}
+                and sys.stdin.isatty()
+                and (args.force_interactive or (sys.stdout.isatty() and os.environ.get("TERM") not in {"dumb", "unknown"}))
             )
 
             engine = ExecutionEngine(
@@ -186,28 +207,44 @@ class CLI:
                 environment_vars=document.environment_vars,
                 passthrough_env_vars=document.passthrough_env_vars,
                 previous_run_directory=previous_run_dir,
-                github_actions=args.github_actions,
                 without_nix=args.without_nix,
-                verbose=args.verbose,
                 no_output_on_fail=args.no_out_on_fail,
                 keep_run_dir=args.keep_run_dir or keep_running,
                 no_color=args.no_color,
-                simple_log=args.simple_log,
+                logger_mode=LoggerMode(args.logger),
+                force_interactive=args.force_interactive,
                 show_dirs=args.show_dirs,
                 parallel_execution=parallel_execution,
                 use_short_context_ids=use_short_ids,
                 keep_running=keep_running,
                 timeout_ms=args.timeout_ms,
+                output=output,
             )
 
             # Print run ID
             run_id = engine.run_directory.name
-            output.print(f"\n{sym.Id} [dim]Run ID:[/dim] [bold cyan]{run_id}[/bold cyan]")
+            output.print_run_field("Run ID", Text(run_id, style="cyan"),
+                                   f"\n{sym.Id} [dim]Run ID:[/dim] [bold cyan]{run_id}[/bold cyan]")
+            if output.compact:
+                engine.run_info = output.stop_recording(exclude=static_plan if args.logger == "pure" else None)
 
             result = engine.execute_all()
 
+            if output.compact:
+                fields = [summary_field("Outcome", Text("Execution completed successfully!" if result.success else "Execution failed!",
+                                                        style="green" if result.success else "red"))]
+                if result.duration_seconds is not None:
+                    fields.append(summary_field("Total wall time", Text(duration_text(result.duration_seconds), style="cyan not dim not bold")))
+                restored = [action_label(key, output.context, use_short_ids, True) for key, value in result.action_results.items() if value.restored]
+                if restored:
+                    fields.append(summary_field("Restored", Text(", ").join(restored)))
+                logs = str(result.run_directory) if args.keep_run_dir or not result.success else "use --keep-run-dir to retain artifacts"
+                fields.append(summary_field("Logs", literal_text(logs)))
+                output.print(Group(Text(""), section("Result:", KeyValueView(fields), None, None), Text("")))
+
             if not result.success:
-                output.print(f"\n{sym.Cross} [bold red]Execution failed![/bold red]")
+                if not output.compact:
+                    output.print(f"\n{sym.Cross} [bold red]Execution failed![/bold red]")
                 return 1
 
             # Get outputs using ActionKeys (with context) instead of just action names
@@ -216,10 +253,27 @@ class CLI:
             else:
                 outputs_to_report = result.get_goal_outputs(graph.goals)
 
-            output.print(f"\n{sym.Check} [bold green]Execution completed successfully![/bold green]")
-            self._print_outputs(outputs_to_report, output, args.no_color, args.out)
+            if not output.compact:
+                output.print(f"\n{sym.Check} [bold green]Execution completed successfully![/bold green]")
+            presented_outputs = None
+            if output.compact:
+                selected = pruned_graph.nodes.keys() if args.full_output else graph.goals
+                groups: list[RenderableType] = []
+                for key in sorted(selected, key=str):
+                    action_result = result.action_results.get(key)
+                    if action_result is None:
+                        continue
+                    records: dict[str, JsonValue] = {}
+                    for name, value in action_result.outputs.items():
+                        records[name] = ({"type": action_result.output_types[name], "value": cast(JsonValue, value)}
+                                         if name in action_result.output_types else cast(JsonValue, value))
+                    if groups:
+                        groups.append(Text(""))
+                    groups.append(section(action_label(key, output.context, use_short_ids, True), output_view(records), None, None))
+                presented_outputs = Group(*groups)
+            self._print_outputs(outputs_to_report, output, args.no_color, args.out, presented_outputs)
 
-            if args.keep_run_dir:
+            if args.keep_run_dir and not output.compact:
                 output.print(f"\n{sym.Folder} [dim]Run directory:[/dim] [bold cyan]{result.run_directory}[/bold cyan]")
 
             # Clean up run directory after --it mode (unless --keep-run-dir)
@@ -258,6 +312,8 @@ class CLI:
 
             traceback.print_exc()
             return 1
+        finally:
+            output.flush_recording()
 
     def _validate_required_env(self, document: ParsedDocument) -> None:
         """Validate that all required environment variables are set."""
@@ -267,7 +323,7 @@ class CLI:
 
     def _print_contexts(
         self,
-        contexts: list,
+        contexts: list[ContextId],
         output: OutputFormatter,
         use_short_ids: bool,
     ) -> None:
@@ -282,6 +338,11 @@ class CLI:
             return
 
         sym = output.symbols
+        if output.compact:
+            output.print("")
+            output.print(section("Contexts:", contexts_view(contexts, output.context, use_short_ids), None, None))
+            output.print("")
+            return
         output.print(f"\n{sym.Link} [bold]Contexts:[/bold]")
 
         formatted_ids = [
@@ -315,6 +376,10 @@ class CLI:
             return
 
         sym = output.symbols
+        if output.compact:
+            output.print(section("Goals:", Group(*(action_label(key, output.context, use_short_ids, True) for key in goal_keys)), None, None))
+            output.print("")
+            return
         output.print(f"\n{sym.Target} [bold]Goals:[/bold]")
 
         # Format each goal using format_label (context#action format)
@@ -325,7 +390,7 @@ class CLI:
 
     def _print_retainer_results(
         self,
-        retainer_results: list,
+        retainer_results: list[RetainerResult],
         output: OutputFormatter,
         use_short_ids: bool,
         verbose: bool,
@@ -342,6 +407,16 @@ class CLI:
             return
 
         sym = output.symbols
+
+        if output.compact:
+            output.print(self._build_retainer_results(retainer_results, output, use_short_ids))
+            if verbose:
+                for result in retainer_results:
+                    if result.stdout:
+                        output.print(section(action_label(result.retainer_key, output.context, use_short_ids, True),
+                                             literal_text(result.stdout.rstrip()), None, None))
+                        output.print("")
+            return
 
         if verbose:
             # Verbose mode: detailed output with stdout
@@ -416,6 +491,17 @@ class CLI:
             output.console.print(table)
             output.print("")
 
+    def _build_retainer_results(self, results: list[RetainerResult], output: OutputFormatter,
+                                    use_short_ids: bool) -> Group:
+        rows = []
+        for result in results:
+            row = Text(f"  {output.symbols.Check if result.retained else output.symbols.Cross} ")
+            row.append_text(action_label(result.retainer_key, output.context, use_short_ids, True))
+            row.append(f" {result.execution_time_ms:.0f}ms: ", style="dim")
+            row.append(", ".join(key.id.name for key in dict.fromkeys(result.soft_dep_targets)) if result.retained else "-")
+            rows.append(row)
+        return Group(section("Retainers:", Group(*rows), None, None), Text("")) if results else Group()
+
     def _get_previous_run_dir(
         self,
         project_root: Path,
@@ -434,16 +520,18 @@ class CLI:
         runs_dir = project_root / ".mdl" / "runs"
 
         if not runs_dir.exists():
-            output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No runs directory found, starting fresh")
+            output.print_run_field("Warning", Text("No runs directory found, starting fresh", style="yellow not dim"),
+                                   f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No runs directory found, starting fresh")
             return None
 
         run_dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
         if not run_dirs:
-            output.print(f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No previous runs found, starting fresh")
+            output.print_run_field("Warning", Text("No previous runs found, starting fresh", style="yellow not dim"),
+                                   f"\n{sym.Warning} [bold yellow]Warning:[/bold yellow] No previous runs found, starting fresh")
             return None
 
         previous_run_dir = run_dirs[-1]
-        output.print(
+        output.print_run_field("Continuing from previous run", Text(previous_run_dir.name, style="cyan"),
             f"\n{sym.Refresh} [blue]Continuing from previous run:[/blue] "
             f"[bold cyan]{previous_run_dir.name}[/bold cyan]"
         )
@@ -455,34 +543,50 @@ class CLI:
         output: OutputFormatter,
         no_color: bool,
         out_path: Optional[str],
+        presented_outputs: Optional[Group] = None,
     ) -> None:
-        """Print execution outputs as JSON.
+        """Print pure output rows or the existing JSON presentation.
 
         Args:
             outputs_to_report: Dictionary of outputs to report
             output: Output formatter
             no_color: Whether colors are disabled
             out_path: Optional file path to save outputs
+            presented_outputs: Typed pure rows; the saved JSON remains unchanged
         """
         sym = output.symbols
         output_json = json.dumps(outputs_to_report, indent=2)
-        output.print(f"\n{sym.Chart} [bold]Outputs:[/bold]")
-
-        if not no_color:
-            from rich.console import Console
-            from rich.json import JSON
-            console = Console()
-            console.print(JSON(output_json))
+        if presented_outputs is not None:
+            output.print(section("Outputs:", presented_outputs, None, None))
+            output.print("")
         else:
-            output.print(output_json)
+            output.print(f"\n{sym.Chart} [bold]Outputs:[/bold]")
+            if not no_color:
+                from rich.console import Console
+                from rich.json import JSON
+                console = Console()
+                console.print(JSON(output_json))
+            else:
+                output.print(output_json)
 
         if out_path:
             path = Path(out_path)
             path.write_text(output_json, encoding="utf-8")
             output.print(f"\n{sym.Save} [dim]Outputs saved to:[/dim] [bold cyan]{output.escape(str(path))}[/bold cyan]")
 
-    def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> None:
+    def _apply_platform_defaults(self, args: argparse.Namespace, quiet_mode: bool) -> Optional[Text]:
         """Apply platform specific defaults."""
+        args.no_color = args.no_color or bool(os.environ.get("NO_COLOR"))
+        try:
+            mode = resolve_logger_mode(args.logger, args.simple_log is True, args.verbose, args.github_actions, args.teamcity)
+        except ValueError as error:
+            self.parser.error(str(error))
+        args.logger = mode.value
+        args.verbose = mode == LoggerMode.VERBOSE or (mode == LoggerMode.GITHUB and args.verbose)
+        args.github_actions = mode == LoggerMode.GITHUB
+        usable_terminal = sys.stdout.isatty() and sys.stdin.isatty() and os.environ.get("TERM") not in {"dumb", "unknown"}
+        if mode == LoggerMode.TABLE and not usable_terminal and not args.force_interactive:
+            self.parser.error("--logger table requires an interactive terminal; use pure/simple or --force-interactive")
         system = platform.system()
         
         # Determine Nix usage
@@ -513,19 +617,11 @@ class CLI:
         # Update args
         args.without_nix = not using_nix
         
-        if not quiet_mode:
-            state = "Yes" if using_nix else "No"
-            print(f"Using Nix: {state} ({reason})")
-
         if args.github_actions and system == "Windows" and not args.no_color:
             args.no_color = True
 
-        # Auto-enable simple_log when stdout is not a TTY (e.g. piped, redirected,
-        # or launched by another process like a Claude Code agent)
-        if args.force_interactive:
-            args.simple_log = False
-        elif args.simple_log is None:
-            args.simple_log = not sys.stdout.isatty()
+        state = "Yes" if using_nix else "No"
+        return None if quiet_mode else Text(f"{state} ({reason})")
 
 
     def _handle_autocomplete(self, args: argparse.Namespace) -> int:
@@ -571,7 +667,7 @@ class CLI:
         axis_def = document.axis[axis_name]
         return [av.value for av in axis_def.values]
 
-    def _build_formatters(self, no_color: bool) -> OutputFormatter:
+    def _build_formatters(self, no_color: bool, plain: bool, compact: bool) -> OutputFormatter:
         """Build the output formatter with all sub-formatters.
 
         Args:
@@ -580,7 +676,7 @@ class CLI:
         Returns:
             OutputFormatter instance (access action via output.action)
         """
-        return OutputFormatter(no_color=no_color)
+        return OutputFormatter(no_color=no_color, plain=plain, compact=compact)
 
     def _prepare_execution_setup(
         self,
@@ -590,7 +686,8 @@ class CLI:
     ) -> ExecutionSetup:
         """Load markdown definitions and merge CLI inputs with defaults."""
         project_root = find_project_root()
-        output.print(f"[dim]Project root:[/dim] [bold cyan]{output.escape(str(project_root))}[/bold cyan]")
+        output.print_run_field("Project root", literal_text(str(project_root), "cyan"),
+                               f"[dim]Project root:[/dim] [bold cyan]{output.escape(str(project_root))}[/bold cyan]")
 
         md_files = self._discover_markdown_files(args.defs, project_root)
         if not md_files:
@@ -646,16 +743,22 @@ class CLI:
         axis_values: dict[str, str],
         output: OutputFormatter,
     ) -> None:
+        default_axes: list[Text] = []
         for axis_name, axis_def in document.axis.items():
             if axis_name in axis_values:
                 continue
             default_value = axis_def.get_default_value()
             if default_value:
                 axis_values[axis_name] = default_value
-                output.print(
-                    f"[dim]Using default axis value:[/dim] [magenta]{output.escape(axis_name)}[/magenta]"
-                    f"[dim]:[/dim][yellow]{output.escape(default_value)}[/yellow]"
-                )
+                if output.compact:
+                    default_axes.append(axis_field(axis_name, default_value))
+                else:
+                    output.print(
+                        f"[dim]Using default axis value:[/dim] [magenta]{output.escape(axis_name)}[/magenta]"
+                        f"[dim]:[/dim][yellow]{output.escape(default_value)}[/yellow]"
+                    )
+        if default_axes:
+            output.print_run_field("Using default axes", Text(", ").join(default_axes), "")
 
     def _resolve_argument_aliases(
         self,
@@ -771,54 +874,9 @@ class CLI:
                         f"if you want to specify multiple values."
                     )
 
-    def _compute_sharing_counts(
-        self,
-        graph,
-        execution_order,
-        goals: list[str],
-    ) -> dict:
-        """Compute how many unique goal contexts use each action.
-
-        An action is "shared" if multiple goal contexts depend on it (directly or
-        transitively). This helps visualize context reduction benefits.
-
-        Args:
-            graph: The execution graph
-            execution_order: List of action keys in execution order
-            goals: List of goal action names
-
-        Returns:
-            Dictionary mapping ActionKey to count of goal contexts that use it
-        """
-        # For each action, collect which goal contexts reach it
-        action_to_goal_contexts: dict[ActionKey, set[str]] = {}
-
-        def collect_reachable_goals(action_key: ActionKey, visited: set[ActionKey]) -> set[str]:
-            """Recursively find all goal contexts that depend on this action."""
-            if action_key in visited:
-                return set()
-            visited.add(action_key)
-
-            contexts: set[str] = set()
-
-            # If this is a goal, add its context
-            if action_key.id.name in goals:
-                contexts.add(str(action_key.context_id))
-
-            # Check all dependents (actions that depend on this one)
-            node = graph.get_node(action_key)
-            for dep in node.dependents:
-                contexts.update(collect_reachable_goals(dep.action, visited))
-
-            return contexts
-
-        # Compute for each action
-        for action_key in execution_order:
-            contexts = collect_reachable_goals(action_key, set())
-            action_to_goal_contexts[action_key] = contexts
-
-        # Convert to counts
-        return {ak: len(contexts) for ak, contexts in action_to_goal_contexts.items()}
+    def _compute_sharing_counts(self, graph: ActionGraph, execution_order: list[ActionKey],
+                                goals: list[str]) -> dict[ActionKey, int]:
+        return sharing_counts(graph, execution_order, goals)
 
     def _visualize_execution_plan(
         self,
@@ -827,7 +885,7 @@ class CLI:
         goals: list[str],
         output: OutputFormatter,
         use_short_ids: bool,
-    ) -> None:
+    ) -> Optional[Group]:
         """Visualize execution plan as a rich table.
 
         Args:
@@ -844,6 +902,9 @@ class CLI:
 
         # Compute sharing counts: how many unique goal contexts use each action
         sharing_counts = self._compute_sharing_counts(graph, execution_order, goals)
+
+        if output.compact:
+            return self._print_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts)
 
         # Styles conditional on no_color
         header_style = "" if no_color else "bold"
@@ -905,9 +966,26 @@ class CLI:
         output.console.print(table)
         output.print("")  # Empty line after plan
 
-    def _list_actions(self, document: ParsedDocument, no_color: bool = False) -> None:
+        return None
+
+    def _print_execution_tree(self, graph: ActionGraph, execution_order: list[ActionKey], output: OutputFormatter,
+                              use_short_ids: bool, sharing_counts: dict[ActionKey, int]) -> Group:
+        plan = Group(tree_section(self._build_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts),
+                                  output.console.options.ascii_only), Text(""))
+        output.print(plan)
+        return plan
+
+    def _build_execution_tree(self, graph: ActionGraph, execution_order: list[ActionKey], output: OutputFormatter,
+                              use_short_ids: bool, sharing_counts: dict[ActionKey, int]) -> Group:
+        def initial_status(key: ActionKey) -> Text:
+            ready = not graph.get_node(key).dependencies
+            glyphs = (">", "o") if output.console.options.ascii_only else ("◇", "○")
+            return Text(glyphs[0 if ready else 1] + " ", style="cyan" if ready else "dim")
+
+        return execution_tree(graph, execution_order, output.context, use_short_ids, sharing_counts, initial_status)
+
+    def _list_actions(self, document: ParsedDocument, output: OutputFormatter) -> None:
         """List all available actions."""
-        output = OutputFormatter(no_color=no_color)
         sym = output.symbols
 
         # Show available axes first
@@ -1101,7 +1179,10 @@ class CLI:
 def main() -> int:
     """Main entry point."""
     cli = CLI()
-    return cli.run()
+    try:
+        return cli.run()
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

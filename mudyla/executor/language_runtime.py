@@ -73,3 +73,7 @@ class LanguageRuntime(ABC):
             Command as list of strings
         """
         pass
+
+    def get_direct_execution_command(self, script_path: Path) -> list[str]:
+        """Return the command for execution outside a Nix environment."""
+        return self.get_execution_command(script_path)

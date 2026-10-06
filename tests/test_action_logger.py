@@ -1,4 +1,4 @@
-"""Tests for ActionLoggerInteractive."""
+"""Tests for ActionLoggerTable."""
 
 import pytest
 import time
@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 from mudyla.dag.context import ContextId
 from mudyla.dag.graph import ActionKey, ActionId
-from mudyla.executor.action_logger_interactive import (
-    ActionLoggerInteractive,
+from mudyla.logging.action_logger_table import (
+    ActionLoggerTable,
     TaskStatus,
     ViewState,
     ScrollState,
@@ -44,13 +44,13 @@ def make_action_keys(names: list[str]) -> list[ActionKey]:
     return keys
 
 
-class TestActionLoggerInteractiveInit:
-    """Tests for ActionLoggerInteractive initialization."""
+class TestActionLoggerTableInit:
+    """Tests for ActionLoggerTable initialization."""
 
     def test_init_with_task_names(self):
         """Test initialization with action keys."""
         action_keys = make_action_keys(["task1", "task2", "task3"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
 
         assert len(mgr.tasks) == 3
         assert len(mgr.action_keys) == 3
@@ -61,7 +61,7 @@ class TestActionLoggerInteractiveInit:
 
     def test_init_with_empty_task_names(self):
         """Test initialization with empty task list."""
-        mgr = ActionLoggerInteractive(make_action_keys([]))
+        mgr = ActionLoggerTable(make_action_keys([]))
         assert mgr.action_keys == []
         assert len(mgr.tasks) == 0
 
@@ -70,7 +70,7 @@ class TestActionLoggerInteractiveInit:
         action_keys = make_action_keys(["task1"])
         run_dir = Path("/tmp/test-run")
 
-        mgr = ActionLoggerInteractive(
+        mgr = ActionLoggerTable(
             action_keys,
             no_color=True,
             show_dirs=True,
@@ -117,7 +117,7 @@ class TestTaskStatusUpdates:
     def test_mark_running(self):
         """Test marking a task as running."""
         action_keys = make_action_keys(["task1", "task2"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         action_dir = Path("/tmp/action1")
 
@@ -130,7 +130,7 @@ class TestTaskStatusUpdates:
     def test_mark_running_without_action_dir(self):
         """Test marking a task as running without action directory."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
 
         mgr.mark_running(action_key)
@@ -142,7 +142,7 @@ class TestTaskStatusUpdates:
     def test_mark_done(self):
         """Test marking a task as done."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.mark_running(action_key)
 
@@ -154,7 +154,7 @@ class TestTaskStatusUpdates:
     def test_mark_failed(self):
         """Test marking a task as failed."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.mark_running(action_key)
 
@@ -166,7 +166,7 @@ class TestTaskStatusUpdates:
     def test_mark_restored(self):
         """Test marking a task as restored."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         action_dir = Path("/tmp/action1")
 
@@ -178,7 +178,7 @@ class TestTaskStatusUpdates:
 
     def test_mark_execution_complete(self):
         """Test marking execution as complete."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr.execution_complete is False
         mgr.mark_execution_complete()
@@ -187,7 +187,7 @@ class TestTaskStatusUpdates:
     def test_update_output_sizes(self):
         """Test updating output sizes."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
 
         mgr.update_output_sizes(action_key, 1024, 512)
@@ -201,7 +201,7 @@ class TestTableNavigation:
 
     def test_navigate_down(self):
         """Test navigating down in the table."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2", "task3"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2", "task3"]))
 
         assert mgr.selected_index == 0
 
@@ -213,7 +213,7 @@ class TestTableNavigation:
 
     def test_navigate_down_at_bottom(self):
         """Test navigating down when at bottom stays at bottom."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2"]))
         mgr.selected_index = 1
 
         mgr._handle_key_table("down")
@@ -221,7 +221,7 @@ class TestTableNavigation:
 
     def test_navigate_up(self):
         """Test navigating up in the table."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2", "task3"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2", "task3"]))
         mgr.selected_index = 2
 
         mgr._handle_key_table("up")
@@ -232,7 +232,7 @@ class TestTableNavigation:
 
     def test_navigate_up_at_top(self):
         """Test navigating up when at top stays at top."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2"]))
         mgr.selected_index = 0
 
         mgr._handle_key_table("up")
@@ -241,7 +241,7 @@ class TestTableNavigation:
     def test_selection_preserved_through_status_updates(self):
         """Test that selection is preserved when task statuses change."""
         action_keys = make_action_keys(["task1", "task2", "task3"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         mgr.selected_index = 1
         key1 = mgr.action_keys[0]
         key2 = mgr.action_keys[1]
@@ -265,7 +265,7 @@ class TestViewStateTransitions:
 
     def test_enter_meta_view(self):
         """Test entering meta view."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         mgr._handle_key_table("m")
 
@@ -273,7 +273,7 @@ class TestViewStateTransitions:
 
     def test_enter_stdout_logs_view(self):
         """Test entering stdout logs view."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         mgr._handle_key_table("l")
 
@@ -281,7 +281,7 @@ class TestViewStateTransitions:
 
     def test_enter_stderr_logs_view(self):
         """Test entering stderr logs view."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         mgr._handle_key_table("e")
 
@@ -289,7 +289,7 @@ class TestViewStateTransitions:
 
     def test_enter_output_view(self):
         """Test entering output view."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         mgr._handle_key_table("o")
 
@@ -297,7 +297,7 @@ class TestViewStateTransitions:
 
     def test_enter_source_view(self):
         """Test entering source view."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         mgr._handle_key_table("s")
 
@@ -305,7 +305,7 @@ class TestViewStateTransitions:
 
     def test_return_to_table_from_detail(self):
         """Test returning to table view from detail view."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         mgr.state = ViewState.META
 
         mgr._handle_key_scroll("q")
@@ -318,7 +318,7 @@ class TestQuitBehavior:
 
     def test_kill_from_table_view(self):
         """Test 'q' (kill) in table view signals exit."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         result = mgr._handle_key_table("q")
 
@@ -326,7 +326,7 @@ class TestQuitBehavior:
 
     def test_quit_from_detail_view(self):
         """Test quit from detail view returns to table."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         mgr.state = ViewState.META
 
         mgr._handle_key_scroll("q")
@@ -335,7 +335,7 @@ class TestQuitBehavior:
 
     def test_table_navigation_does_not_exit(self):
         """Test that navigation keys don't signal exit."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2"]))
 
         # Navigation keys should not exit
         assert mgr._handle_key_table("up") is False
@@ -344,7 +344,7 @@ class TestQuitBehavior:
 
     def test_detail_view_quit_returns_to_table(self):
         """Test 'q' in detail views returns to table."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         mgr.state = ViewState.LOGS_STDOUT
 
         mgr._handle_key_scroll("q")
@@ -354,7 +354,7 @@ class TestQuitBehavior:
     def test_scroll_to_top(self):
         """Test 'g' jumps to top of scroll view."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.state = ViewState.LOGS_STDOUT
         scroll_state = mgr._get_scroll_state(action_key, ViewState.LOGS_STDOUT)
@@ -369,7 +369,7 @@ class TestQuitBehavior:
     def test_scroll_to_bottom(self):
         """Test 'G' jumps to bottom of scroll view."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.state = ViewState.LOGS_STDOUT
         scroll_state = mgr._get_scroll_state(action_key, ViewState.LOGS_STDOUT)
@@ -387,7 +387,7 @@ class TestScrollStateManagement:
     def test_get_scroll_state_creates_new(self):
         """Test that get_scroll_state creates new state if not exists."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
 
         state = mgr._get_scroll_state(action_key, ViewState.LOGS_STDOUT)
@@ -398,7 +398,7 @@ class TestScrollStateManagement:
     def test_scroll_state_per_task(self):
         """Test that scroll state is tracked per task."""
         action_keys = make_action_keys(["task1", "task2"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         key1 = mgr.action_keys[0]
         key2 = mgr.action_keys[1]
 
@@ -413,7 +413,7 @@ class TestScrollStateManagement:
     def test_scroll_state_per_view(self):
         """Test that scroll state is tracked per view."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
 
         state1 = mgr._get_scroll_state(action_key, ViewState.LOGS_STDOUT)
@@ -427,7 +427,7 @@ class TestScrollStateManagement:
     def test_update_scroll_state_auto_scroll(self):
         """Test auto-scroll behavior when at end."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
 
         # First update - at end
@@ -443,7 +443,7 @@ class TestScrollStateManagement:
     def test_update_scroll_state_no_auto_scroll_when_scrolled_up(self):
         """Test no auto-scroll when user has scrolled up."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
 
         state = mgr._get_scroll_state(action_key, ViewState.LOGS_STDOUT)
@@ -463,7 +463,7 @@ class TestScrollNavigation:
     def test_scroll_up(self):
         """Test scrolling up in a detail view."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.state = ViewState.LOGS_STDOUT
 
@@ -479,7 +479,7 @@ class TestScrollNavigation:
     def test_scroll_down(self):
         """Test scrolling down in a detail view."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.state = ViewState.LOGS_STDOUT
 
@@ -494,7 +494,7 @@ class TestScrollNavigation:
     def test_scroll_up_at_top(self):
         """Test scrolling up when at top."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.state = ViewState.LOGS_STDOUT
 
@@ -512,7 +512,7 @@ class TestTableBuilding:
 
     def test_build_table(self):
         """Test building table."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2"]))
 
         table = mgr._build_table()
         header = mgr._build_header()
@@ -523,7 +523,7 @@ class TestTableBuilding:
 
     def test_build_table_with_context(self):
         """Test building table with context in task names."""
-        mgr = ActionLoggerInteractive(make_action_keys(["platform:jvm#task1", "platform:jvm#task2"]))
+        mgr = ActionLoggerTable(make_action_keys(["platform:jvm#task1", "platform:jvm#task2"]))
 
         table = mgr._build_table()
 
@@ -531,7 +531,7 @@ class TestTableBuilding:
 
     def test_build_table_shows_selection(self):
         """Test that table shows selection indicator."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2", "task3"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2", "task3"]))
         mgr.selected_index = 1
 
         table = mgr._build_table()
@@ -541,13 +541,13 @@ class TestTableBuilding:
     def test_build_table_with_running_task(self):
         """Test building table with a running task shows status in legend."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.mark_running(action_key)
         time.sleep(0.1)
 
         table = mgr._build_table()
-        legend = mgr._build_legend()
+        legend = mgr._build_text_status_header()
 
         assert table is not None
         assert "running" in legend.plain.lower()
@@ -555,47 +555,46 @@ class TestTableBuilding:
     def test_build_table_with_completed_task(self):
         """Test building table with a completed task shows status in legend."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.mark_running(action_key)
         mgr.mark_done(action_key, 2.5)
 
         table = mgr._build_table()
-        legend = mgr._build_legend()
+        legend = mgr._build_text_status_header()
 
         assert table is not None
         assert "done" in legend.plain.lower()
 
 
-class TestProgressBarHeader:
-    """Tests for progress bar and caption functionality."""
+class TestStatusHeader:
+    """Tests for the compact action status summary."""
 
-    def test_progress_caption_empty_tasks(self):
-        """Test progress caption with no tasks."""
-        mgr = ActionLoggerInteractive(make_action_keys([]))
-        caption = mgr._build_progress_caption()
-        # Returns a Table
-        assert caption is not None
+    def test_status_header_empty_tasks(self):
+        """Test status summary with no tasks."""
+        mgr = ActionLoggerTable(make_action_keys([]))
+        header = mgr._build_text_status_header()
+        assert header.plain == "No tasks"
 
     def test_progress_caption_all_pending(self):
         """Test progress caption shows pending tasks in legend."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1", "task2", "task3"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1", "task2", "task3"]))
         # Test via legend which is still accessible
-        legend = mgr._build_legend()
+        legend = mgr._build_text_status_header()
         assert "pending" in legend.plain.lower()
         assert "3" in legend.plain
 
     def test_progress_caption_mixed_statuses(self):
         """Test progress caption with mixed statuses."""
         action_keys = make_action_keys(["task1", "task2", "task3", "task4"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         key1, key2, key3, key4 = mgr.action_keys
         mgr.mark_running(key1)
         mgr.mark_done(key2, 1.0)
         mgr.mark_failed(key3, 0.5)
         # key4 remains TBD
         # Test via legend
-        legend = mgr._build_legend()
+        legend = mgr._build_text_status_header()
         plain = legend.plain.lower()
         assert "running" in plain
         assert "done" in plain
@@ -605,13 +604,13 @@ class TestProgressBarHeader:
     def test_legend_shows_counts(self):
         """Test legend displays correct counts for each status."""
         action_keys = make_action_keys(["task1", "task2", "task3", "task4"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         key1, key2, key3, key4 = mgr.action_keys
         mgr.mark_running(key1)
         mgr.mark_done(key2, 1.0)
         # key3 and key4 remain TBD
 
-        legend = mgr._build_legend()
+        legend = mgr._build_text_status_header()
         plain = legend.plain.lower()
 
         assert "running" in plain
@@ -624,11 +623,11 @@ class TestProgressBarHeader:
     def test_legend_excludes_zero_count_statuses(self):
         """Test legend excludes statuses with zero count."""
         action_keys = make_action_keys(["task1"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         mgr.mark_done(action_key, 1.0)
 
-        legend = mgr._build_legend()
+        legend = mgr._build_text_status_header()
         plain = legend.plain.lower()
 
         assert "done" in plain
@@ -639,7 +638,7 @@ class TestProgressBarHeader:
     def test_text_status_header_no_color_mode(self):
         """Test text status header in no_color mode shows counts."""
         action_keys = make_action_keys(["task1", "task2", "task3"])
-        mgr = ActionLoggerInteractive(action_keys, no_color=True)
+        mgr = ActionLoggerTable(action_keys, no_color=True)
         key1, key2, key3 = mgr.action_keys
         mgr.mark_done(key1, 1.0)
         mgr.mark_running(key2)
@@ -659,7 +658,7 @@ class TestFormatting:
 
     def test_format_duration_seconds(self):
         """Test formatting duration in seconds."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_duration(5.5) == "5.5s"
         assert mgr._format_duration(0.1) == "0.1s"
@@ -667,7 +666,7 @@ class TestFormatting:
 
     def test_format_duration_minutes(self):
         """Test formatting duration in minutes."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_duration(60.0) == "1m 0s"
         assert mgr._format_duration(90.0) == "1m 30s"
@@ -675,20 +674,20 @@ class TestFormatting:
 
     def test_format_size_zero(self):
         """Test formatting zero size."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_size(0) == "-"
 
     def test_format_size_bytes(self):
         """Test formatting size in bytes."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_size(100) == "100B"
         assert mgr._format_size(1023) == "1023B"
 
     def test_format_size_kilobytes(self):
         """Test formatting size in kilobytes."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_size(1024) == "1.0K"
         assert mgr._format_size(2048) == "2.0K"
@@ -696,14 +695,14 @@ class TestFormatting:
 
     def test_format_size_megabytes(self):
         """Test formatting size in megabytes."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_size(1024 * 1024) == "1.0M"
         assert mgr._format_size(2 * 1024 * 1024) == "2.0M"
 
     def test_format_size_gigabytes(self):
         """Test formatting size in gigabytes."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         assert mgr._format_size(1024 * 1024 * 1024) == "1.0G"
 
@@ -713,32 +712,32 @@ class TestStatusStyles:
 
     def test_status_style_tbd(self):
         """Test style for TBD status."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         assert mgr._get_status_style(TaskStatus.TBD) == "dim"
 
     def test_status_style_running(self):
         """Test style for RUNNING status."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         assert mgr._get_status_style(TaskStatus.RUNNING) == "cyan"
 
     def test_status_style_done(self):
         """Test style for DONE status."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         assert mgr._get_status_style(TaskStatus.DONE) == "green"
 
     def test_status_style_failed(self):
         """Test style for FAILED status."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         assert mgr._get_status_style(TaskStatus.FAILED) == "red"
 
     def test_status_style_restored(self):
         """Test style for RESTORED status."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
         assert mgr._get_status_style(TaskStatus.RESTORED) == "green"
 
     def test_status_style_no_color(self):
         """Test style when no_color is True."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]), no_color=True)
+        mgr = ActionLoggerTable(make_action_keys(["task1"]), no_color=True)
         assert mgr._get_status_style(TaskStatus.DONE) == ""
         assert mgr._get_status_style(TaskStatus.FAILED) == ""
 
@@ -749,21 +748,21 @@ class TestSelectedTask:
     def test_get_selected_action_key(self):
         """Test getting selected action key."""
         action_keys = make_action_keys(["task1", "task2", "task3"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         mgr.selected_index = 1
 
         assert mgr._get_selected_action_key() == mgr.action_keys[1]
 
     def test_get_selected_action_key_empty(self):
         """Test getting selected action key with empty list."""
-        mgr = ActionLoggerInteractive(make_action_keys([]))
+        mgr = ActionLoggerTable(make_action_keys([]))
 
         assert mgr._get_selected_action_key() is None
 
     def test_get_selected_task(self):
         """Test getting selected task."""
         action_keys = make_action_keys(["task1", "task2"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         mgr.selected_index = 0
 
         task = mgr._get_selected_task()
@@ -773,7 +772,7 @@ class TestSelectedTask:
     def test_get_selected_task_with_action_dir(self):
         """Test getting selected task with action directory."""
         action_keys = make_action_keys(["task1", "task2"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         action_key = mgr.action_keys[0]
         action_dir = Path("/tmp/action1")
         mgr.tasks[action_key].action_dir = action_dir
@@ -791,7 +790,7 @@ class TestThreadSafety:
         import threading
 
         action_keys = make_action_keys([f"task{i}" for i in range(10)])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         keys = mgr.action_keys
 
         def update_task(action_key):
@@ -817,7 +816,7 @@ class TestThreadSafety:
         import threading
 
         action_keys = make_action_keys(["task1", "task2", "task3"])
-        mgr = ActionLoggerInteractive(action_keys)
+        mgr = ActionLoggerTable(action_keys)
         keys = mgr.action_keys
         results = []
 
@@ -851,7 +850,7 @@ class TestContentHeight:
 
     def test_get_content_height_minimum(self):
         """Test that content height has a minimum."""
-        mgr = ActionLoggerInteractive(make_action_keys(["task1"]))
+        mgr = ActionLoggerTable(make_action_keys(["task1"]))
 
         height = mgr._get_content_height()
 
@@ -863,131 +862,132 @@ class TestKeyBindings:
 
     def test_table_keys_defined(self):
         """Test that TABLE_KEYS is defined."""
-        assert "navigate" in ActionLoggerInteractive.TABLE_KEYS
-        assert "kill" in ActionLoggerInteractive.TABLE_KEYS
+        assert "navigate" in ActionLoggerTable.TABLE_KEYS
+        assert "kill" in ActionLoggerTable.TABLE_KEYS
 
     def test_scroll_keys_defined(self):
         """Test that SCROLL_KEYS is defined."""
-        assert "j/k" in ActionLoggerInteractive.SCROLL_KEYS
-        assert "back" in ActionLoggerInteractive.SCROLL_KEYS
+        assert "j/k" in ActionLoggerTable.SCROLL_KEYS
+        assert "back" in ActionLoggerTable.SCROLL_KEYS
 
     def test_log_keys_defined(self):
         """Test that LOG_KEYS is defined."""
-        assert "j/k" in ActionLoggerInteractive.LOG_KEYS
-        assert "refresh" in ActionLoggerInteractive.LOG_KEYS
+        assert "j/k" in ActionLoggerTable.LOG_KEYS
+        assert "refresh" in ActionLoggerTable.LOG_KEYS
 
 
 # ============================================================================
-# ActionLoggerRaw Tests
+# ActionLoggerSimple Tests
 # ============================================================================
 
-from mudyla.executor.action_logger_raw import ActionLoggerRaw
-from mudyla.formatters import OutputFormatter
+from mudyla.logging.action_logger_simple import ActionLoggerSimple
+from mudyla.logging.action_logger_github import ActionLoggerGitHub
+from mudyla.logging.formatters.details import duration_text
+from mudyla.logging.formatters import OutputFormatter
 
 
-class TestActionLoggerRawInit:
-    """Tests for ActionLoggerRaw initialization."""
+class TestActionLoggerSimpleInit:
+    """Tests for ActionLoggerSimple initialization."""
 
     def test_init_with_action_keys(self):
         """Test initialization with action keys."""
         action_keys = make_action_keys(["task1", "task2"])
         output = OutputFormatter(no_color=False)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         assert logger._action_keys == action_keys
         assert logger._output == output
         assert logger._use_short_ids is True
-        assert logger._github_actions is False
 
     def test_init_with_options(self):
         """Test initialization with custom options."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(
+        logger = ActionLoggerSimple(
             action_keys,
             output,
             use_short_ids=False,
-            github_actions=True,
         )
 
         assert logger._use_short_ids is False
-        assert logger._github_actions is True
 
 
-class TestActionLoggerRawStatusMethods:
-    """Tests for ActionLoggerRaw status methods."""
+class TestActionLoggerSimpleStatusMethods:
+    """Tests for ActionLoggerSimple status methods."""
 
     def test_mark_running(self, capsys):
         """Test mark_running prints message."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         logger.mark_running(action_keys[0])
+        assert capsys.readouterr().out == ""
+        logger.begin_action(action_keys[0], ["python3", "script.py"])
 
         captured = capsys.readouterr()
-        assert "start:" in captured.out
+        assert captured.out.count("Running command") == 1
         assert "task1" in captured.out
 
     def test_mark_running_github_actions_silent(self, capsys):
         """Test mark_running is silent in github_actions mode."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output, github_actions=True)
+        logger = ActionLoggerGitHub(action_keys, output)
 
         logger.mark_running(action_keys[0])
 
         captured = capsys.readouterr()
-        assert "start:" not in captured.out
+        assert "RUN" not in captured.out
 
     def test_mark_done(self, capsys):
         """Test mark_done prints message with duration."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         logger.mark_done(action_keys[0], 2.5)
 
         captured = capsys.readouterr()
-        assert "done:" in captured.out
+        assert "Finished" in captured.out
         assert "task1" in captured.out
-        assert "2.5s" in captured.out
+        assert "2.5 s" in captured.out
 
     def test_mark_failed(self, capsys):
         """Test mark_failed prints message with duration."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         logger.mark_failed(action_keys[0], 1.5)
 
         captured = capsys.readouterr()
-        assert "failed:" in captured.out
+        assert "Failed" in captured.out
         assert "task1" in captured.out
-        assert "1.5s" in captured.out
+        assert "1.5 s" in captured.out
 
     def test_mark_restored(self, capsys):
         """Test mark_restored prints message with duration."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         logger.mark_restored(action_keys[0], 0.5)
 
         captured = capsys.readouterr()
-        assert "done:" in captured.out
+        assert "Restored" in captured.out
         assert "task1" in captured.out
         assert "restored" in captured.out.lower()
 
 
-class TestActionLoggerRawNoOps:
-    """Tests for ActionLoggerRaw no-op methods."""
+class TestActionLoggerSimpleNoOps:
+    """Tests for ActionLoggerSimple no-op methods."""
 
     def test_update_output_sizes_is_noop(self):
         """Test update_output_sizes does nothing."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         # Should not raise any errors
         logger.update_output_sizes(action_keys[0], 1024, 512)
@@ -996,7 +996,7 @@ class TestActionLoggerRawNoOps:
         """Test start does nothing."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         # Should not raise any errors
         logger.start()
@@ -1005,7 +1005,7 @@ class TestActionLoggerRawNoOps:
         """Test stop does nothing."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         # Should not raise any errors
         logger.stop()
@@ -1014,20 +1014,20 @@ class TestActionLoggerRawNoOps:
         """Test wait_for_quit does nothing."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         # Should not raise any errors
         logger.wait_for_quit()
 
 
-class TestActionLoggerRawKillCallback:
-    """Tests for ActionLoggerRaw kill callback."""
+class TestActionLoggerSimpleKillCallback:
+    """Tests for ActionLoggerSimple kill callback."""
 
     def test_set_kill_callback(self):
         """Test setting kill callback."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         callback_called = []
 
@@ -1041,30 +1041,22 @@ class TestActionLoggerRawKillCallback:
         """Test is_kill_requested is initially False."""
         action_keys = make_action_keys(["task1"])
         output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
+        logger = ActionLoggerSimple(action_keys, output)
 
         assert logger.is_kill_requested() is False
 
 
-class TestActionLoggerRawDurationFormatting:
-    """Tests for ActionLoggerRaw duration formatting."""
+class TestSharedDurationFormatting:
+    """Tests for ActionLoggerSimple duration formatting."""
 
     def test_format_duration_seconds(self):
         """Test formatting duration in seconds."""
-        action_keys = make_action_keys(["task1"])
-        output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
-
-        assert logger._format_duration(5.5) == "5.5s"
-        assert logger._format_duration(0.1) == "0.1s"
-        assert logger._format_duration(59.9) == "59.9s"
+        assert duration_text(5.5) == "5.5 s"
+        assert duration_text(0.1) == "100 ms"
+        assert duration_text(59.9) == "59.9 s"
 
     def test_format_duration_minutes(self):
         """Test formatting duration in minutes."""
-        action_keys = make_action_keys(["task1"])
-        output = OutputFormatter(no_color=True)
-        logger = ActionLoggerRaw(action_keys, output)
-
-        assert logger._format_duration(60.0) == "1m 0s"
-        assert logger._format_duration(90.0) == "1m 30s"
-        assert logger._format_duration(125.5) == "2m 6s"
+        assert duration_text(60.0) == "1 min 0 s"
+        assert duration_text(90.0) == "1 min 30 s"
+        assert duration_text(125.5) == "2 min 6 s"

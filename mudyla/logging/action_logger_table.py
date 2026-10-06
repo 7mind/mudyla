@@ -11,25 +11,35 @@ State machine with views:
 All views share a common layout: Header | Content | Footer
 """
 
+import codecs
 import json
 import os
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from bisect import bisect_right
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from rich.console import Console, Group
+from rich import box
+from rich.cells import cell_len
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
 from ..dag.graph import ActionKey
-from ..formatters import OutputFormatter
+from .formatters import OutputFormatter
 from .action_logger import ActionLogger
+from .formatters.failure import legacy_failure
+
+if TYPE_CHECKING:
+    from ..executor.engine import ActionResult
+from .windows_mouse import WindowsMouseInput
 
 # Cross-platform terminal handling
 IS_WINDOWS = sys.platform == "win32"
@@ -40,7 +50,6 @@ SELECTION_INDICATOR = ">" if IS_WINDOWS else "▶"
 if IS_WINDOWS:
     import msvcrt
 else:
-    import fcntl
     import select
     import termios
     import tty
@@ -53,6 +62,8 @@ class TaskStatus(Enum):
     DONE = "done"
     RESTORED = "restored"
     FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 class ViewState(Enum):
@@ -71,6 +82,8 @@ class ScrollState:
     offset: int = 0
     total_lines: int = 0
     at_end: bool = True  # Auto-scroll when at end
+    line_anchors: list[tuple[int, int]] = field(default_factory=list)
+    anchor: Optional[tuple[int, int]] = None
 
 
 @dataclass
@@ -83,9 +96,11 @@ class TaskState:
     stdout_size: int = 0
     stderr_size: int = 0
     action_dir: Optional[Path] = None
+    latest: str = ""
+    stream: str = "stdout"
 
 
-class ActionLoggerInteractive(ActionLogger):
+class ActionLoggerTable(ActionLogger):
     """State machine-based task table with interactive navigation.
 
     Implements ActionLogger interface for interactive Rich table display.
@@ -99,6 +114,13 @@ class ActionLoggerInteractive(ActionLogger):
     TABLE_KEYS = "j/k/Arrows navigate | Enter/l stdout | e stderr | m meta | o output | s source | q kill"
     SCROLL_KEYS = "j/k/Arrows scroll | d/u half | PgUp/PgDn/f/b page | gg/Home top | G/End bottom | q back"
     LOG_KEYS = "j/k/Arrows | d/u half | PgUp/PgDn page | gg/G top/bottom | r refresh | q back"
+    FRAME_ROWS = 6
+    CONTENT_HORIZONTAL_PADDING = 4
+    WRAP_HIGHLIGHTED_CONTENT = False
+    ESCAPE_WAIT_SECONDS = 0.02
+    MAX_ESCAPE_BYTES = 32
+    MOUSE_WHEEL_ROWS = 3
+    MAX_INPUT_CHARS = 4096
 
     def __init__(
         self,
@@ -126,7 +148,10 @@ class ActionLoggerInteractive(ActionLogger):
         self.action_keys: list[ActionKey] = list(action_keys)
 
         # Console for rendering - respect no_color setting
-        self.console = Console(force_terminal=True, no_color=no_color)
+        terminal_env = dict(os.environ)
+        if terminal_env.get("TERM") in {"dumb", "unknown"}:
+            terminal_env["TERM"] = "xterm-256color"
+        self.console = Console(force_terminal=True, force_interactive=True, no_color=no_color, _environ=terminal_env)
 
         # Shared state - keyed by ActionKey, formatting done at display time
         self.tasks: dict[ActionKey, TaskState] = {
@@ -146,6 +171,18 @@ class ActionLoggerInteractive(ActionLogger):
 
         # Terminal state
         self._old_terminal_settings: Optional[list[Any]] = None
+        self._terminal_active = False
+        self._mouse_enabled = False
+        self._windows_mouse: Optional[WindowsMouseInput] = None
+        self._input_enabled = sys.stdin.isatty()
+        self._input_action: Optional[ActionKey] = None
+        self._input_text = ""
+        self._input_cursor = 0
+        self._input_message = ""
+        self._input_callback: Optional[Callable[[ActionKey, Optional[str]], Optional[str]]] = None
+        self._input_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._pending_input = b""
+        self._windows_input_decoder = codecs.getincrementaldecoder("utf-16-le")(errors="replace")
 
         # Threading and Live display
         self.lock = threading.RLock()
@@ -195,6 +232,58 @@ class ActionLoggerInteractive(ActionLogger):
         """Mark execution as complete."""
         with self.lock:
             self.execution_complete = True
+            if self._input_action is not None:
+                self._input_message = self._input_message or "Action finished"
+            self._input_action = None
+            for task in self.tasks.values():
+                if task.status == TaskStatus.TBD:
+                    task.status = TaskStatus.SKIPPED
+                elif task.status == TaskStatus.RUNNING:
+                    task.status = TaskStatus.CANCELLED
+
+    def uses_terminal_input(self) -> bool:
+        return self._input_enabled
+
+    def set_input_callback(self, callback: Callable[[ActionKey, Optional[str]], Optional[str]]) -> None:
+        self._input_callback = callback
+
+    def report_input_error(self, action_key: ActionKey, message: str) -> None:
+        with self.lock:
+            label = self._action_formatter.format_label_plain(action_key, self.use_short_ids)
+            self._input_message = f"{label}: {message}"
+
+    def _handle_input_key(self, key: str) -> None:
+        with self.lock:
+            action_key = self._input_action
+            if action_key is None:
+                return
+            if key == "escape":
+                self._input_action = None
+                self._input_message = ""
+            elif key in ("enter", "eof"):
+                if self._input_callback is None:
+                    raise RuntimeError("Action input callback is not installed")
+                error = self._input_callback(action_key, None if key == "eof" else self._input_text + "\n")
+                self._input_message = error or ""
+                if error is None:
+                    self._input_text = ""
+                    self._input_cursor = 0
+                    if key == "eof":
+                        self._input_action = None
+            elif key == "backspace" and self._input_cursor:
+                self._input_text = self._input_text[:self._input_cursor - 1] + self._input_text[self._input_cursor:]
+                self._input_cursor -= 1
+            elif key == "left":
+                self._input_cursor = max(0, self._input_cursor - 1)
+            elif key == "right":
+                self._input_cursor = min(len(self._input_text), self._input_cursor + 1)
+            elif len(key) == 1 and key.isprintable():
+                if len(self._input_text) < self.MAX_INPUT_CHARS:
+                    self._input_text = self._input_text[:self._input_cursor] + key + self._input_text[self._input_cursor:]
+                    self._input_cursor += 1
+                    self._input_message = ""
+                else:
+                    self._input_message = "Input line is full"
 
     def update_output_sizes(self, action_key: ActionKey, stdout_size: int, stderr_size: int) -> None:
         """Update stdout and stderr sizes for a task."""
@@ -235,20 +324,16 @@ class ActionLoggerInteractive(ActionLogger):
     ) -> ScrollState:
         """Update scroll state with new content info, handling auto-scroll."""
         state = self._get_scroll_state(action_key, view)
-        prev_total = state.total_lines
         state.total_lines = total_lines
 
         max_offset = max(0, total_lines - visible_height)
 
-        # Auto-scroll if at end and new content added
-        if state.at_end and total_lines > prev_total:
+        # Follow the end across both content and viewport changes.
+        if state.at_end:
             state.offset = max_offset
 
         # Clamp offset
         state.offset = max(0, min(state.offset, max_offset))
-
-        # Update at_end flag
-        state.at_end = state.offset >= max_offset
 
         return state
 
@@ -258,22 +343,43 @@ class ActionLoggerInteractive(ActionLogger):
 
     def _setup_terminal(self) -> None:
         """Set up terminal for raw input (cross-platform)."""
-        if IS_WINDOWS:
+        if not self._input_enabled:
+            return
+        if sys.platform == "win32":
             self._old_terminal_settings = None
+            self._windows_mouse = WindowsMouseInput(msvcrt.get_osfhandle(sys.stdin.fileno()))
         else:
             try:
                 self._old_terminal_settings = termios.tcgetattr(sys.stdin)
-                tty.setcbreak(sys.stdin.fileno())
+                settings = termios.tcgetattr(sys.stdin)
+                tty.cfmakecbreak(settings)
+                settings[3] |= termios.NOFLSH
+                termios.tcsetattr(sys.stdin, termios.TCSANOW, settings)
+                self._terminal_active = True
             except (termios.error, AttributeError, ValueError):
                 self._old_terminal_settings = None
 
     def _restore_terminal(self) -> None:
         """Restore terminal settings (cross-platform)."""
-        if not IS_WINDOWS and self._old_terminal_settings:
+        if self._windows_mouse is not None:
+            self._windows_mouse.set_capture(False)
+        if sys.platform != "win32" and self._terminal_active and self._old_terminal_settings:
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_terminal_settings)
+                self._terminal_active = False
             except (termios.error, ValueError):
                 pass
+
+    def _set_mouse_capture(self, enabled: bool) -> None:
+        enabled = enabled and self.uses_terminal_input()
+        if self._mouse_enabled == enabled:
+            return
+        if self._windows_mouse is not None:
+            self._windows_mouse.set_capture(enabled)
+        self._mouse_enabled = enabled
+        controls = "\x1b[?1000h\x1b[?1006h" if enabled else "\x1b[?1006l\x1b[?1000l"
+        self.console.file.write(controls)
+        self.console.file.flush()
 
     def _get_terminal_size(self) -> tuple[int, int]:
         """Get terminal width and height."""
@@ -286,7 +392,7 @@ class ActionLoggerInteractive(ActionLogger):
     def _get_content_height(self) -> int:
         """Get height available for content (minus header/footer)."""
         _, height = self._get_terminal_size()
-        return max(5, height - 6)
+        return max(1, height - self.FRAME_ROWS)
 
     # =========================================================================
     # Key Input (Cross-platform)
@@ -294,36 +400,47 @@ class ActionLoggerInteractive(ActionLogger):
 
     def _read_key_windows(self) -> str:
         """Read a single key press on Windows (non-blocking)."""
+        if sys.platform != "win32":
+            raise RuntimeError("Windows terminal input requires Windows")
+        if self._windows_mouse is not None:
+            mouse_key = self._windows_mouse.read()
+            if mouse_key is not None:
+                return mouse_key
         if not msvcrt.kbhit():
             return ""
 
-        ch = msvcrt.getch()
+        ch = msvcrt.getwch()
 
-        if ch in (b'\x00', b'\xe0'):
+        if ch in ('\x00', '\xe0'):
             if msvcrt.kbhit():
-                ch2 = msvcrt.getch()
-                if ch2 == b'H':
+                ch2 = msvcrt.getwch()
+                if ch2 == 'H':
                     return "up"
-                elif ch2 == b'P':
+                elif ch2 == 'P':
                     return "down"
-                elif ch2 == b'I':
+                elif ch2 == 'I':
                     return "page_up"
-                elif ch2 == b'Q':
+                elif ch2 == 'Q':
                     return "page_down"
-                elif ch2 == b'G':
+                elif ch2 == 'G':
                     return "top"
-                elif ch2 == b'O':
+                elif ch2 == 'O':
                     return "bottom"
-                elif ch2 == b'\x8d':
+                elif ch2 == '\x8d':
                     return "top"
-                elif ch2 == b'\x91':
+                elif ch2 == '\x91':
                     return "bottom"
+                elif ch2 == 'K':
+                    return "left"
+                elif ch2 == 'M':
+                    return "right"
             return ""
 
-        try:
-            char = ch.decode('utf-8', errors='ignore')
-        except Exception:
+        char = self._windows_input_decoder.decode(ch.encode("utf-16-le", errors="surrogatepass"))
+        if not char:
             return ""
+        if self._input_action is not None:
+            return {"\r": "enter", "\n": "enter", "\x1b": "escape", "\b": "backspace", "\x04": "eof"}.get(char, char)
 
         key_map = {
             "\r": "enter", "\n": "enter",
@@ -334,6 +451,8 @@ class ActionLoggerInteractive(ActionLogger):
             "o": "o", "O": "o",
             "s": "s", "S": "s",
             "r": "r", "R": "r",
+            "i": "i", "I": "i",
+            "v": "v", "V": "v",
             "j": "down", "J": "down",
             "k": "up", "K": "up",
             "g": "g",
@@ -348,57 +467,56 @@ class ActionLoggerInteractive(ActionLogger):
     def _read_key_unix(self) -> str:
         """Read a single key press on Unix (non-blocking with short timeout)."""
         try:
-            ready, _, _ = select.select([sys.stdin], [], [], 0.02)
-            if not ready:
-                return ""
-
             fd = sys.stdin.fileno()
-            ch = os.read(fd, 1).decode('utf-8', errors='ignore')
+            if self._pending_input:
+                raw = self._pending_input
+                self._pending_input = b""
+            else:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.02)
+                if not ready:
+                    return ""
+                raw = os.read(fd, 1)
+            if not raw:
+                return "terminal_eof"
+            ch = self._input_decoder.decode(raw)
             if not ch:
                 return ""
 
             if ch == "\x1b":
-                old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
+                seq = bytearray()
+                while len(seq) < self.MAX_ESCAPE_BYTES:
+                    ready, _, _ = select.select([fd], [], [], self.ESCAPE_WAIT_SECONDS)
+                    if not ready:
+                        break
+                    part = os.read(fd, 1)
+                    if not part:
+                        break
+                    seq.extend(part)
+                    if len(seq) == 1:
+                        if part not in (b"[", b"O"):
+                            self._pending_input = part
+                            break
+                    elif b"@" <= part <= b"~":
+                        break
+                sequence = seq.decode("ascii", errors="ignore")
+                if sequence.startswith("[<") and sequence.endswith(("M", "m")):
+                    fields = sequence[2:-1].split(";")
+                    if sequence.endswith("M") and len(fields) == 3 and all(field.isdigit() for field in fields):
+                        button = int(fields[0])
+                        if button & 64 and button & 3 in (0, 1):
+                            return "wheel_down" if button & 1 else "wheel_up"
+                    return ""
+                return {
+                    "[1;2A": "top", "[1;2B": "bottom",
+                    "[A": "up", "OA": "up", "[B": "down", "OB": "down",
+                    "[C": "right", "OC": "right", "[D": "left", "OD": "left",
+                    "[5~": "page_up", "[6~": "page_down",
+                    "[H": "top", "[1~": "top", "OH": "top",
+                    "[F": "bottom", "[4~": "bottom", "OF": "bottom",
+                }.get(sequence, "escape")
 
-                try:
-                    time.sleep(0.02)
-                    seq = b""
-                    try:
-                        seq = os.read(fd, 5)
-                    except (OSError, BlockingIOError):
-                        pass
-
-                    seq_str = seq.decode('utf-8', errors='ignore')
-
-                    if seq_str.startswith("[1;2A"):
-                        return "top"
-                    elif seq_str.startswith("[1;2B"):
-                        return "bottom"
-                    elif seq_str.startswith("[A") or seq_str == "OA":
-                        return "up"
-                    elif seq_str.startswith("[B") or seq_str == "OB":
-                        return "down"
-                    elif seq_str.startswith("[C") or seq_str == "OC":
-                        return "right"
-                    elif seq_str.startswith("[D") or seq_str == "OD":
-                        return "left"
-                    elif seq_str.startswith("[5~"):
-                        return "page_up"
-                    elif seq_str.startswith("[6~"):
-                        return "page_down"
-                    elif seq_str.startswith("[H") or seq_str.startswith("[1~") or seq_str == "OH":
-                        return "top"
-                    elif seq_str.startswith("[F") or seq_str.startswith("[4~") or seq_str == "OF":
-                        return "bottom"
-                    elif "A" in seq_str and "[" in seq_str:
-                        return "up"
-                    elif "B" in seq_str and "[" in seq_str:
-                        return "down"
-                finally:
-                    fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
-
-                return ""
+            if self._input_action is not None:
+                return {"\r": "enter", "\n": "enter", "\x7f": "backspace", "\b": "backspace", "\x04": "eof"}.get(ch, ch)
 
             key_map = {
                 "\r": "enter", "\n": "enter",
@@ -409,6 +527,8 @@ class ActionLoggerInteractive(ActionLogger):
                 "o": "o", "O": "o",
                 "s": "s", "S": "s",
                 "r": "r", "R": "r",
+                "i": "i", "I": "i",
+                "v": "v", "V": "v",
                 "j": "down", "J": "down",
                 "k": "up", "K": "up",
                 "g": "g",
@@ -419,11 +539,13 @@ class ActionLoggerInteractive(ActionLogger):
                 "b": "page_up", "\x02": "page_up",
             }
             return key_map.get(ch, "")
-        except Exception:
-            return ""
+        except (OSError, ValueError):
+            return "terminal_eof"
 
     def _read_key(self) -> str:
         """Read a single key press (cross-platform, non-blocking)."""
+        if not self._input_enabled:
+            return ""
         if IS_WINDOWS:
             return self._read_key_windows()
         else:
@@ -440,14 +562,30 @@ class ActionLoggerInteractive(ActionLogger):
                 self.selected_index = max(0, self.selected_index - 1)
             elif key == "down":
                 self.selected_index = min(len(self.action_keys) - 1, self.selected_index + 1)
+            elif key in {"page_up", "wheel_up", "page_down", "wheel_down"}:
+                amount = self.MOUSE_WHEEL_ROWS if key.startswith("wheel") else self._get_content_height()
+                if key in {"page_up", "wheel_up"}:
+                    amount = -amount
+                self.selected_index = max(0, min(len(self.action_keys) - 1, self.selected_index + amount))
+            elif key == "top":
+                self.selected_index = 0
+            elif key == "bottom":
+                self.selected_index = max(0, len(self.action_keys) - 1)
             elif key == "q":
-                self.kill_requested = True
-                if self._kill_callback:
+                self.kill_requested = not self.execution_complete
+                if self.kill_requested and self._kill_callback:
                     try:
                         self._kill_callback()
                     except Exception:
                         pass
                 return True
+            elif key == "i":
+                action_key = self._get_input_target()
+                if action_key is not None:
+                    self._input_action = action_key
+                    self._input_text = ""
+                    self._input_cursor = 0
+                    self._input_message = ""
             elif key == "m":
                 self.state = ViewState.META
             elif key in ("l", "enter"):
@@ -474,6 +612,7 @@ class ActionLoggerInteractive(ActionLogger):
                 return
 
             scroll_state = self._get_scroll_state(action_key, self.state)
+            scroll_state.anchor = None
             visible_height = self._get_content_height()
             max_offset = max(0, scroll_state.total_lines - visible_height)
             half_page = max(1, visible_height // 2)
@@ -489,7 +628,13 @@ class ActionLoggerInteractive(ActionLogger):
             else:
                 self._pending_g = False
 
-            if key == "up":
+            if key == "wheel_up":
+                scroll_state.offset = max(0, scroll_state.offset - self.MOUSE_WHEEL_ROWS)
+                scroll_state.at_end = False
+            elif key == "wheel_down":
+                scroll_state.offset = min(max_offset, scroll_state.offset + self.MOUSE_WHEEL_ROWS)
+                scroll_state.at_end = scroll_state.offset >= max_offset
+            elif key == "up":
                 scroll_state.offset = max(0, scroll_state.offset - 1)
                 scroll_state.at_end = False
             elif key == "down":
@@ -517,6 +662,9 @@ class ActionLoggerInteractive(ActionLogger):
     # =========================================================================
     # Formatting Helpers
     # =========================================================================
+
+    def _display_text(self, value: str) -> str:
+        return value.encode(self.console.encoding, errors="replace").decode(self.console.encoding)
 
     def _format_duration(self, seconds: float) -> str:
         """Format duration for display."""
@@ -548,6 +696,8 @@ class ActionLoggerInteractive(ActionLogger):
             TaskStatus.DONE: "green",
             TaskStatus.RESTORED: "green",
             TaskStatus.FAILED: "red",
+            TaskStatus.SKIPPED: "dim",
+            TaskStatus.CANCELLED: "yellow",
         }[status]
 
     def _get_selected_action_key(self) -> Optional[ActionKey]:
@@ -564,6 +714,12 @@ class ActionLoggerInteractive(ActionLogger):
             return None
         return self.tasks.get(action_key)
 
+    def _get_input_target(self) -> Optional[ActionKey]:
+        if self.state not in {ViewState.TABLE, ViewState.LOGS_STDOUT}:
+            return None
+        task = self._get_selected_task()
+        return task.action_key if task is not None and task.status == TaskStatus.RUNNING else None
+
     # =========================================================================
     # View Renderers
     # =========================================================================
@@ -575,158 +731,56 @@ class ActionLoggerInteractive(ActionLogger):
         TaskStatus.DONE: ("#", "█", "green", "done"),
         TaskStatus.RESTORED: ("+", "▓", "blue", "restored"),
         TaskStatus.FAILED: ("!", "█", "red", "failed"),
+        TaskStatus.SKIPPED: ("-", "-", "dim", "skipped"),
+        TaskStatus.CANCELLED: ("!", "!", "yellow", "cancelled"),
     }
 
-    def _build_table(self, include_progress: bool = False) -> Table:
-        """Build the task table."""
+    def _table_window(self) -> tuple[int, int]:
+        visible = self._get_content_height()
+        start = max(0, min(self.selected_index - visible // 2, len(self.action_keys) - visible))
+        return start, min(len(self.action_keys), start + visible)
+
+    def _build_table(self) -> Table:
+        """Render only the visible actions, preserving the selected row."""
         with self.lock:
-            has_context = any(str(key.context_id) != "default" for key in self.action_keys)
-
-            caption = None
-            if include_progress and not self.no_color:
-                caption = self._build_progress_caption()
-
-            header_style = "" if self.no_color else "bold"
-            action_style = "" if self.no_color else "cyan bold"
-            dim_style = "" if self.no_color else "dim"
-
-            table = Table(show_header=True, header_style=header_style, caption=caption, caption_justify="left")
-
+            width, _ = self._get_terminal_size()
+            detailed = width >= 76
+            table = Table(box=None, expand=True, padding=(0, 1), pad_edge=False,
+                          header_style="" if self.no_color else "dim", highlight=False)
             table.add_column("", width=1, no_wrap=True)
+            table.add_column("Action", ratio=1, no_wrap=True, overflow="crop")
+            table.add_column("Status", width=8, no_wrap=True)
+            if width >= 40:
+                table.add_column("Time", width=7, justify="right", no_wrap=True)
+            if detailed:
+                table.add_column("Stdout", width=7, justify="right", no_wrap=True)
+                table.add_column("Stderr", width=7, justify="right", no_wrap=True)
+            if self.show_dirs and width >= 100:
+                table.add_column("Directory", ratio=1, no_wrap=True, overflow="crop")
 
-            if has_context:
-                table.add_column("Context", no_wrap=True)
-                table.add_column("Action", style=action_style, no_wrap=True)
-            else:
-                table.add_column("Task", style=action_style, no_wrap=True)
-
-            if self.show_dirs:
-                table.add_column("Dir", style=dim_style, no_wrap=True)
-            table.add_column("Time", justify="right", no_wrap=True)
-            table.add_column("Stdout", justify="right", no_wrap=True)
-            table.add_column("Stderr", justify="right", no_wrap=True)
-            table.add_column("Status", justify="center", no_wrap=True)
-
-            for idx, action_key in enumerate(self.action_keys):
+            start, end = self._table_window()
+            for index in range(start, end):
+                action_key = self.action_keys[index]
                 task = self.tasks[action_key]
-                status = task.status
-                style = self._get_status_style(status)
-                is_selected = idx == self.selected_index
-
-                sel_indicator = SELECTION_INDICATOR if is_selected else " "
-
-                if status == TaskStatus.RUNNING and task.start_time:
-                    time_str = self._format_duration(time.time() - task.start_time)
-                elif task.duration is not None:
-                    time_str = self._format_duration(task.duration)
+                style = self._get_status_style(task.status)
+                selected = index == self.selected_index
+                full_label = self._action_formatter.format_label_plain(action_key, self.use_short_ids)
+                label = action_key.id.name if str(action_key.context_id) == "default" else full_label
+                if task.status == TaskStatus.RUNNING and task.start_time is not None:
+                    duration = self._format_duration(time.time() - task.start_time)
                 else:
-                    time_str = "-"
-
-                stdout_str = self._format_size(task.stdout_size)
-                stderr_str = self._format_size(task.stderr_size)
-
-                action_name = self._output.escape(action_key.id.name)
-
-                if has_context:
-                    context_formatted = self._context_formatter.format_id_with_symbol(
-                        action_key.context_id, self.use_short_ids
-                    )
-                    row_data = [
-                        sel_indicator,
-                        context_formatted,
-                        f"[{style}]{action_name}[/{style}]" if style else action_name,
-                    ]
-                else:
-                    row_data = [
-                        sel_indicator,
-                        f"[{style}]{action_name}[/{style}]" if style else action_name,
-                    ]
-
-                if self.show_dirs:
-                    action_key_str = self._action_formatter.format_label_plain(action_key, self.use_short_ids)
-                    row_data.append(self.action_dirs_map.get(action_key_str, "-"))
-
-                row_data.extend([
-                    f"[{style}]{time_str}[/{style}]" if style else time_str,
-                    f"[{style}]{stdout_str}[/{style}]" if style else stdout_str,
-                    f"[{style}]{stderr_str}[/{style}]" if style else stderr_str,
-                    f"[{style}]{status.value}[/{style}]" if style else status.value,
-                ])
-
-                table.add_row(*row_data)
-
+                    duration = self._format_duration(task.duration) if task.duration is not None else "-"
+                marker = ">" if self.console.options.ascii_only else SELECTION_INDICATOR
+                cells = [Text(marker if selected else " "), Text(self._display_text(label)),
+                         Text(self.STATUS_DISPLAY[task.status][3], style=style)]
+                if width >= 40:
+                    cells.append(Text(duration))
+                if detailed:
+                    cells.extend([Text(self._format_size(task.stdout_size)), Text(self._format_size(task.stderr_size))])
+                if self.show_dirs and width >= 100:
+                    cells.append(Text(self._display_text(self.action_dirs_map.get(full_label, "-"))))
+                table.add_row(*cells, style="reverse" if selected and not self.no_color else "")
             return table
-
-    def _build_progress_caption(self) -> Table:
-        """Build progress bar and legend as table caption."""
-        with self.lock:
-            counts: dict[TaskStatus, int] = {}
-            for task in self.tasks.values():
-                counts[task.status] = counts.get(task.status, 0) + 1
-
-            total = len(self.tasks)
-
-            caption_table = Table(
-                show_header=False,
-                show_edge=False,
-                box=None,
-                padding=0,
-                expand=True,
-            )
-            caption_table.add_column(ratio=1)
-
-            if total == 0:
-                caption_table.add_row(Text("No tasks", style="dim"))
-                return caption_table
-
-            status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
-
-            bar_table = Table(
-                show_header=False,
-                show_edge=False,
-                box=None,
-                padding=0,
-                expand=True,
-            )
-
-            for status in status_order:
-                count = counts.get(status, 0)
-                if count > 0:
-                    bar_table.add_column(ratio=count, no_wrap=True, overflow="crop")
-
-            row_data = []
-            for status in status_order:
-                count = counts.get(status, 0)
-                if count > 0:
-                    ascii_sym, unicode_sym, color, _ = self.STATUS_DISPLAY[status]
-                    symbol = ascii_sym if IS_WINDOWS else unicode_sym
-                    row_data.append(Text(symbol * 500, style=color))
-
-            if row_data:
-                bar_table.add_row(*row_data)
-
-            legend = Text()
-            first = True
-            for status in status_order:
-                count = counts.get(status, 0)
-                if count == 0:
-                    continue
-
-                ascii_sym, unicode_sym, color, label = self.STATUS_DISPLAY[status]
-                symbol = ascii_sym if IS_WINDOWS else unicode_sym
-
-                if not first:
-                    legend.append("  ")
-                first = False
-
-                legend.append(symbol, style=color)
-                legend.append(f" {label}: ", style="dim")
-                legend.append(str(count), style=color)
-
-            caption_table.add_row(bar_table)
-            caption_table.add_row(legend)
-
-            return caption_table
 
     def _build_text_status_header(self) -> Text:
         """Build text-based status header with counts (for no-color mode)."""
@@ -746,42 +800,12 @@ class ActionLoggerInteractive(ActionLogger):
                 parts.append(f"{counts[TaskStatus.FAILED]} failed")
             if counts.get(TaskStatus.TBD, 0) > 0:
                 parts.append(f"{counts[TaskStatus.TBD]} pending")
+            if counts.get(TaskStatus.SKIPPED, 0) > 0:
+                parts.append(f"{counts[TaskStatus.SKIPPED]} skipped")
+            if counts.get(TaskStatus.CANCELLED, 0) > 0:
+                parts.append(f"{counts[TaskStatus.CANCELLED]} cancelled")
 
             return Text(" | ".join(parts) if parts else "No tasks")
-
-    def _build_legend(self) -> Text:
-        """Build legend showing status symbols, colors, and counts."""
-        with self.lock:
-            counts: dict[TaskStatus, int] = {}
-            for task in self.tasks.values():
-                counts[task.status] = counts.get(task.status, 0) + 1
-
-            legend = Text()
-            status_order = [TaskStatus.DONE, TaskStatus.RESTORED, TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.TBD]
-
-            dim_style = "" if self.no_color else "dim"
-
-            first = True
-            for status in status_order:
-                count = counts.get(status, 0)
-                if count == 0:
-                    continue
-
-                ascii_sym, unicode_sym, color, label = self.STATUS_DISPLAY[status]
-                symbol = ascii_sym if IS_WINDOWS or self.no_color else unicode_sym
-
-                if not first:
-                    legend.append("  ", style=dim_style)
-                first = False
-
-                if self.no_color:
-                    legend.append(f"{symbol} {label}: {count}")
-                else:
-                    legend.append(symbol, style=color)
-                    legend.append(f" {label}: ", style=dim_style)
-                    legend.append(str(count), style=color)
-
-            return legend
 
     def _build_header(self) -> str:
         """Build header text for detail views."""
@@ -801,54 +825,65 @@ class ActionLoggerInteractive(ActionLogger):
                 return f"{view_names.get(self.state, 'View')} - {task_label}"
 
     def _build_footer(self) -> Text:
-        """Build footer with key bindings, line counter, and progress bar."""
-        dim_style = "" if self.no_color else "dim"
-        cyan_style = "" if self.no_color else "cyan"
-        cyan_dim_style = "" if self.no_color else "cyan dim"
-
+        """Keep the exit/back key visible even when other hints do not fit."""
+        width, _ = self._get_terminal_size()
+        if self._input_action is not None:
+            available = max(1, width - 1)
+            prefix = Text(self._display_text(f"{self._input_action.id.name} > "))
+            prefix.truncate(available // 3, overflow="crop")
+            before = self._display_text(self._input_text[:self._input_cursor])
+            after = self._display_text(self._input_text[self._input_cursor:])
+            room = max(0, available - prefix.cell_len - 1)
+            start = len(before)
+            occupied = 0
+            while start and occupied + cell_len(before[start - 1]) <= room:
+                start -= 1
+                occupied += cell_len(before[start])
+            tail = Text(after)
+            tail.truncate(room - occupied, overflow="crop")
+            line = prefix + Text(before[start:] + "|", no_wrap=True) + tail
+            hint = self._input_message or "Enter send / Esc back / Ctrl+D EOF"
+            if line.cell_len + cell_len(hint) + 2 <= available:
+                line.append("  " + self._display_text(hint))
+            line.no_wrap = True
+            line.overflow = "crop"
+            return line
+        input_hint = "  i input" if self._get_input_target() is not None else ""
         if self.state == ViewState.TABLE:
-            return Text(self.TABLE_KEYS, style=dim_style)
-
-        task = self._get_selected_task()
-        if not task:
-            keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
-            return Text(keys, style=dim_style)
-
-        scroll_state = self._get_scroll_state(task.action_key, self.state)
-        visible_height = self._get_content_height()
-        total = scroll_state.total_lines
-
-        if total == 0:
-            line_info = "0 lines"
-            progress_pct = 100
+            ending = "q close" if self.execution_complete else "q kill"
+            hints = [f"{ending}  j/k select  Enter stdout  e stderr  m meta  o output  s source{input_hint}  Wheel/PgUp/PgDn scroll  Home/End",
+                     f"{ending}  j/k select  Enter logs  e/m/o/s views{input_hint}  PgUp/PgDn scroll",
+                     f"{ending}  j/k  Enter logs{input_hint}  Wheel scroll", f"{ending}  j/k  Enter logs{input_hint}", ending]
         else:
-            start_line = scroll_state.offset + 1
-            end_line = min(scroll_state.offset + visible_height, total)
-            line_info = f"{start_line}-{end_line}/{total}"
-            progress_pct = min(100, int((end_line / total) * 100)) if total > 0 else 100
+            task = self._get_selected_task()
+            position = ""
+            if task is not None:
+                scroll = self._get_scroll_state(task.action_key, self.state)
+                last = min(scroll.offset + self._get_content_height(), scroll.total_lines)
+                first = scroll.offset + 1 if scroll.total_lines else 0
+                position = f"  {first}-{last}/{scroll.total_lines}"
+                if scroll.at_end and self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR):
+                    position += " live"
+            hints = ["q back  j/k scroll  d/u half  PgUp/PgDn page  gg/G top/end  r refresh" + input_hint + position,
+                     "q back  j/k scroll  PgUp/PgDn  gg/G" + input_hint + position,
+                     "q back  j/k" + position, "q back"]
+        return self._footer_with_feedback(hints)
 
-        bar_width = 10
-        filled = int(bar_width * progress_pct / 100)
-        if IS_WINDOWS or self.no_color:
-            bar = "#" * filled + "-" * (bar_width - filled)
+    def _footer_with_feedback(self, hints: list[str]) -> Text:
+        width, _ = self._get_terminal_size()
+        if self._input_message:
+            feedback = " / " + self._display_text(self._input_message)
+            label = next((hint + feedback for hint in hints[:-1] if cell_len(hint + feedback) <= width), None)
+            if label is None:
+                navigation = next((hint for hint in reversed(hints[:-1]) if cell_len(hint) <= width), hints[-1])
+                label = navigation + feedback
         else:
-            bar = "█" * filled + "░" * (bar_width - filled)
-
-        keys = self.LOG_KEYS if self.state in (ViewState.LOGS_STDOUT, ViewState.LOGS_STDERR) else self.SCROLL_KEYS
-
-        separator = " | " if IS_WINDOWS or self.no_color else " │ "
-
-        footer = Text()
-        footer.append(keys, style=dim_style)
-        footer.append(separator, style=dim_style)
-        footer.append(line_info, style=cyan_style)
-        footer.append(" ", style=dim_style)
-        footer.append(bar, style=cyan_dim_style)
-        footer.append(f" {progress_pct}%", style=cyan_style)
-
+            label = next((hint for hint in hints if cell_len(hint) <= width), hints[-1])
+        footer = Text(label, style="" if self.no_color else "dim", no_wrap=True, overflow="crop")
+        footer.truncate(width, overflow="crop")
         return footer
 
-    def _build_detail_content(self):
+    def _build_detail_content(self) -> RenderableType:
         """Build content for detail views with syntax highlighting."""
         task = self._get_selected_task()
         if not task or not task.action_dir:
@@ -915,11 +950,15 @@ class ActionLoggerInteractive(ActionLogger):
         if not content:
             content = "(empty)"
 
+        content = self._display_text(content)
         lines = content.splitlines()
         total_lines = len(lines)
 
         # Use Syntax for highlighted content (json, python, bash) - scroll by logical lines
         if lexer and not self.no_color:
+            if self.WRAP_HIGHLIGHTED_CONTENT:
+                text = Syntax(content, lexer, background_color="default").highlight(content)
+                return self._render_text_lines(task, list(text.split("\n")), True)
             scroll_state = self._update_scroll_state(task.action_key, self.state, total_lines, visible_height)
             start = scroll_state.offset
             end = start + visible_height
@@ -928,39 +967,53 @@ class ActionLoggerInteractive(ActionLogger):
                 lexer,
                 line_numbers=True,
                 line_range=(start + 1, end),
-                start_line=start + 1,
+                start_line=1,
                 word_wrap=False,
                 background_color="default",
             )
 
-        # Build Text output for logs (with ANSI preservation) and plain text
-        # Wrap lines and scroll by visual lines while showing logical line numbers
-        term_width, _ = self._get_terminal_size()
-        line_num_width = max(4, len(str(total_lines)))
-        prefix_width = line_num_width + 3  # " | "
-        content_width = max(20, term_width - prefix_width)
+        text_lines = [Text.from_ansi(line) for line in lines]
+        if self.no_color or not preserve_ansi:
+            text_lines = [Text(line.plain) for line in text_lines]
+        return self._render_text_lines(task, text_lines, True)
 
-        sep = "|" if IS_WINDOWS or self.no_color else "│"
-        dim_style = "" if self.no_color else "dim"
-        wrap_marker = ":" if IS_WINDOWS or self.no_color else "┆"
+    def _render_text_lines(self, task: TaskState, lines: list[Text], show_line_numbers: bool) -> Text:
+        """Wrap styled text using the same source anchors as live logs."""
+        term_width, _ = self._get_terminal_size()
+        line_num_width = max(4, len(str(len(lines))))
+        prefix_width = line_num_width + 3 if show_line_numbers else 0
+        content_width = max(1, term_width - self.CONTENT_HORIZONTAL_PADDING - prefix_width)
 
         # Build visual lines: list of (logical_line_num or None for continuation, text_content)
         visual_lines: list[tuple[Optional[int], Text]] = []
-        for logical_idx, line in enumerate(lines):
-            if preserve_ansi and not self.no_color:
-                line_text = Text.from_ansi(line)
-            else:
-                line_text = Text(line)
-
+        line_anchors: list[tuple[int, int]] = []
+        for logical_idx, line_text in enumerate(lines):
             # Wrap the line to content width
             wrapped = line_text.wrap(self.console, content_width) if line_text.plain else [Text("")]
+            char_offset = 0
             for wrap_idx, wrapped_part in enumerate(wrapped):
                 line_num = (logical_idx + 1) if wrap_idx == 0 else None
                 visual_lines.append((line_num, wrapped_part))
+                line_anchors.append((logical_idx, char_offset))
+                char_offset += len(wrapped_part.plain)
+        return self._render_visual_lines(task, visual_lines, line_anchors, line_num_width, show_line_numbers)
 
-        # Update scroll state with visual line count
+    def _render_visual_lines(self, task: TaskState, visual_lines: list[tuple[Optional[int], Text]],
+                             line_anchors: list[tuple[int, int]], line_num_width: int,
+                             show_line_numbers: bool) -> Text:
+        """Apply the common anchored viewport to wrapped content."""
+        visible_height = self._get_content_height()
+        sep = "|" if IS_WINDOWS or self.no_color or self.console.options.ascii_only else "│"
+        dim_style = "" if self.no_color else "dim"
+        wrap_marker = ":" if IS_WINDOWS or self.no_color or self.console.options.ascii_only else "┆"
         total_visual = len(visual_lines)
+        scroll_state = self._get_scroll_state(task.action_key, self.state)
+        if not scroll_state.at_end and scroll_state.line_anchors:
+            if scroll_state.anchor is None:
+                scroll_state.anchor = scroll_state.line_anchors[min(scroll_state.offset, len(scroll_state.line_anchors) - 1)]
+            scroll_state.offset = max(0, bisect_right(line_anchors, scroll_state.anchor) - 1)
         scroll_state = self._update_scroll_state(task.action_key, self.state, total_visual, visible_height)
+        scroll_state.line_anchors = line_anchors
 
         start = scroll_state.offset
         end = start + visible_height
@@ -971,6 +1024,9 @@ class ActionLoggerInteractive(ActionLogger):
             if i > 0:
                 result.append("\n")
 
+            if not show_line_numbers:
+                result.append_text(line_content)
+                continue
             if line_num is not None:
                 result.append(f"{line_num:{line_num_width}} ", style=dim_style)
                 result.append(f"{sep} ", style=dim_style)
@@ -983,38 +1039,44 @@ class ActionLoggerInteractive(ActionLogger):
         return result
 
     def _build_renderable(self) -> Group:
-        """Build the complete renderable for the current state."""
-        footer = self._build_footer()
-
-        if self.state == ViewState.TABLE:
-            if self.no_color:
-                header = self._build_text_status_header()
-                content = self._build_table(include_progress=False)
-                return Group(
-                    header,
-                    content,
-                    Text(""),
-                    footer,
-                )
+        """Compose the existing views inside one terminal-sized frame."""
+        with self.lock:
+            width, height = self._get_terminal_size()
+            if height < self.FRAME_ROWS or width < 24:
+                task = self._get_selected_task()
+                label = task.action_key.id.name if task is not None else "No actions"
+                lines = [self._build_footer()]
+                if height > 1:
+                    lines.insert(0, Text(self._display_text(label), no_wrap=True, overflow="crop"))
+                return Group(*lines)
+            if self.state == ViewState.TABLE:
+                summary = self._build_text_status_header()
+                start, end = self._table_window()
+                if len(self.action_keys) > end - start:
+                    summary.append(f"  |  {start + 1}-{end}/{len(self.action_keys)}")
+                title = "mudyla / Actions"
+                content: RenderableType = self._build_table()
             else:
-                content = self._build_table(include_progress=True)
-                return Group(
-                    content,
-                    Text(""),
-                    footer,
-                )
-        else:
-            header = self._build_header()
-            content = self._build_detail_content()
-            header_style = "" if self.no_color else "bold reverse"
-            header_text = Text(f" {header} ", style=header_style)
-
-            return Group(
-                header_text,
-                content,
-                Text(""),
-                footer,
-            )
+                title = "mudyla / " + self._build_header()
+                task = self._get_selected_task()
+                summary = Text("No action selected")
+                if task is not None:
+                    summary = Text(self.STATUS_DISPLAY[task.status][3], style=self._get_status_style(task.status))
+                    summary.append(f"  stdout {self._format_size(task.stdout_size)}  stderr {self._format_size(task.stderr_size)}")
+                content = self._build_detail_content()
+            summary.no_wrap = True
+            summary.overflow = "crop"
+            directory = Text("")
+            if self.show_dirs and self.state == ViewState.TABLE and width < 100:
+                task = self._get_selected_task()
+                if task is not None:
+                    label = self._action_formatter.format_label_plain(task.action_key, self.use_short_ids)
+                    directory = Text(self._display_text(self.action_dirs_map.get(label, "-")), no_wrap=True, overflow="crop")
+            panel = Panel(Group(summary, directory, content), title=Text(self._display_text(title)[:width - 8]), title_align="left",
+                          border_style="" if self.no_color else "dim", padding=(0, 1),
+                          width=width, height=height - 1, safe_box=True,
+                          box=box.ASCII if IS_WINDOWS or self.console.options.ascii_only else box.ROUNDED)
+            return Group(panel, self._build_footer())
 
     # =========================================================================
     # Main Loop
@@ -1026,26 +1088,39 @@ class ActionLoggerInteractive(ActionLogger):
         update_interval = 1.0 / 24.0
 
         while not self.stop_flag:
+            with self.lock:
+                if self._input_action is not None and self.tasks[self._input_action].status != TaskStatus.RUNNING:
+                    self._input_action = None
+                    self._input_message = self._input_message or "Action finished"
             key = self._read_key()
             if key:
-                if self.state == ViewState.TABLE:
+                if key == "terminal_eof":
+                    self._input_enabled = False
+                    self._handle_key_table("q")
+                    break
+                if key in {"wheel_up", "wheel_down"}:
+                    if self.state == ViewState.TABLE:
+                        self._handle_key_table(key)
+                    else:
+                        self._handle_key_scroll(key)
+                elif self._input_action is not None:
+                    self._handle_input_key(key)
+                elif key == "i":
+                    self._handle_key_table(key)
+                elif self.state == ViewState.TABLE:
                     if self._handle_key_table(key):
                         break
                 else:
                     self._handle_key_scroll(key)
 
-                live = self.live
-                if live:
-                    live.update(self._build_renderable(), refresh=True)
+                self._refresh_display()
                 last_update = time.time()
                 continue
 
             now = time.time()
             if now - last_update >= update_interval:
                 last_update = now
-                live = self.live
-                if live:
-                    live.update(self._build_renderable(), refresh=True)
+                self._refresh_display()
 
             time.sleep(0.01)
 
@@ -1053,25 +1128,41 @@ class ActionLoggerInteractive(ActionLogger):
     # Lifecycle
     # =========================================================================
 
+    def show_failure(self, action_key: ActionKey, result: "ActionResult", run_directory: Path, suppress_output: bool) -> None:
+        legacy_failure(self._output, result, run_directory, suppress_output, False)
+
     def start(self) -> None:
         """Start the interactive display."""
         self.stop_flag = False
-
-        self.live = Live(
-            self._build_renderable(),
-            console=self.console,
-            refresh_per_second=24,
-            transient=False,
-            auto_refresh=False,
-            vertical_overflow="visible",
-        )
-        self.live.start()
-        self.live.refresh()
-
         self._setup_terminal()
+        try:
+            self._refresh_display()
+        except BaseException:
+            self.stop_flag = True
+            live, self.live = self.live, None
+            try:
+                # Discard a failed encoded frame before emitting restoration controls.
+                with self.console.capture():
+                    pass
+                self._set_mouse_capture(False)
+                if live is not None:
+                    live.stop()
+            finally:
+                self._restore_terminal()
+            raise
 
         self._main_thread = threading.Thread(target=self._main_loop, daemon=True)
         self._main_thread.start()
+
+    def _refresh_display(self) -> None:
+        with self.lock:
+            if self.live is None:
+                self.live = Live(self._build_renderable(), console=self.console, screen=True,
+                                 refresh_per_second=24, transient=False, auto_refresh=False,
+                                 vertical_overflow="crop")
+                self.live.start()
+            self._set_mouse_capture(True)
+            self.live.update(self._build_renderable(), refresh=True)
 
     def stop(self) -> None:
         """Stop the interactive display.
@@ -1082,31 +1173,39 @@ class ActionLoggerInteractive(ActionLogger):
         """
         self.stop_flag = True
 
-        if hasattr(self, '_main_thread') and self._main_thread.is_alive():
+        if self._main_thread is not None and self._main_thread.is_alive():
             self._main_thread.join(timeout=1.0)
 
+        self._set_mouse_capture(False)
         self._restore_terminal()
 
         # Atomically claim the Live instance so only one thread performs shutdown
         with self.lock:
+            self.mark_execution_complete()
+            self.state = ViewState.TABLE
             live = self.live
             self.live = None
-            if not self.keep_running:
-                self.state = ViewState.TABLE
 
         if live:
-            live.update(self._build_renderable(), refresh=True)
-            live.stop()
+            try:
+                live.update(self._build_renderable(), refresh=True)
+            except BaseException:
+                with self.console.capture():
+                    pass
+                raise
+            finally:
+                live.stop()
+            self.console.print(self._build_renderable())
 
     def wait_for_quit(self) -> None:
         """Wait for user to quit (call after execution completes with --it)."""
-        if not self.keep_running:
+        if not self.keep_running or not self.uses_terminal_input():
             return
 
-        with self.lock:
-            self.execution_complete = True
+        self.mark_execution_complete()
 
-        if hasattr(self, '_main_thread'):
-            self._main_thread.join()
-
-        self.stop()
+        try:
+            if self._main_thread is not None:
+                self._main_thread.join()
+        finally:
+            self.stop()

@@ -1,6 +1,7 @@
 """Execution engine for running actions."""
 
 import json
+import codecs
 import os
 import concurrent.futures
 import shutil
@@ -10,21 +11,25 @@ import time
 import threading
 import sys
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from rich.console import RenderableType
 
 from ..ast.types import ReturnType
 from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph, ActionKey
-from ..formatters import OutputFormatter
-from ..formatters.action import truncate_dirname
+from ..logging.formatters import OutputFormatter
+from ..logging.formatters.action import truncate_dirname
 from .runtime_registry import RuntimeRegistry
 from .runtime_bash import BashRuntime
 from .runtime_python import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
-from .action_logger import ActionLogger
+from ..logging.action_logger import ActionLogger, LoggerMode
+
+OUTPUT_CHUNK_BYTES = 4096
+INPUT_RETRY_SECONDS = 0.01
 
 
 @dataclass
@@ -45,6 +50,7 @@ class ActionResult:
     restored: bool = False
     stdout_size: int = 0
     stderr_size: int = 0
+    output_types: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -57,12 +63,20 @@ class SubprocessResult:
 
 
 @dataclass
+class RunningAction:
+    process: subprocess.Popen[str]
+    input_thread: Optional[threading.Thread] = None
+    stop_input: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass
 class ExecutionResult:
     """Result of executing all actions."""
 
     success: bool
     action_results: dict[ActionKey, ActionResult]
     run_directory: Path
+    duration_seconds: Optional[float] = None
 
     def get_goal_outputs(self, goal_keys: list[ActionKey]) -> dict[str, dict[str, Any]]:
         """Get outputs for goal actions.
@@ -173,18 +187,20 @@ class ExecutionEngine:
         passthrough_env_vars: list[str],
         run_directory: Optional[Path] = None,
         previous_run_directory: Optional[Path] = None,
-        github_actions: bool = False,
         without_nix: bool = False,
-        verbose: bool = False,
         no_output_on_fail: bool = False,
         keep_run_dir: bool = False,
         no_color: bool = False,
-        simple_log: bool = False,
         show_dirs: bool = False,
         parallel_execution: bool = True,
         use_short_context_ids: bool = False,
         keep_running: bool = False,
         timeout_ms: Optional[int] = None,
+        *,
+        logger_mode: LoggerMode,
+        force_interactive: bool,
+        run_info: Optional[RenderableType] = None,
+        output: Optional[OutputFormatter] = None,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -193,13 +209,13 @@ class ExecutionEngine:
         self.environment_vars = environment_vars
         self.passthrough_env_vars = passthrough_env_vars
         self.previous_run_directory = previous_run_directory
-        self.github_actions = github_actions
         self.without_nix = without_nix
-        self.verbose = verbose
         self.no_output_on_fail = no_output_on_fail
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
-        self.simple_log = simple_log
+        self.logger_mode = logger_mode
+        self.force_interactive = force_interactive
+        self.run_info = run_info
         self.show_dirs = show_dirs
         self.parallel_execution = parallel_execution
         self.use_short_context_ids = use_short_context_ids
@@ -207,7 +223,9 @@ class ExecutionEngine:
         self.timeout_ms = timeout_ms
 
         # Create output formatter (includes all sub-formatters)
-        self.output = OutputFormatter(no_color=no_color)
+        self.output = output if output is not None else OutputFormatter(
+            no_color=no_color, plain=logger_mode in {LoggerMode.GITHUB, LoggerMode.TEAMCITY},
+            compact=logger_mode.compact, teamcity=logger_mode == LoggerMode.TEAMCITY)
 
         # Register built-in runtimes once.
         for runtime_cls in (BashRuntime, PythonRuntime):
@@ -230,7 +248,7 @@ class ExecutionEngine:
         self._kill_event = threading.Event()
         self._current_logger: Optional["ActionLogger"] = None
         self._current_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        self._running_processes: set[subprocess.Popen] = set()
+        self._running_processes: dict[ActionKey, RunningAction] = {}
         self._processes_lock = threading.Lock()
         self._timeout_timer: Optional[threading.Timer] = None
 
@@ -269,13 +287,11 @@ class ExecutionEngine:
         Args:
             process: The subprocess to kill
         """
-        # Check if process is still running
-        if process.poll() is not None:
-            return
-
         pid = process.pid
 
         if sys.platform == "win32":
+            if process.poll() is not None:
+                return
             # Windows: taskkill /T kills the process tree, /F forces termination
             try:
                 subprocess.run(
@@ -294,8 +310,8 @@ class ExecutionEngine:
             # This is necessary because nix develop spawns child processes that
             # don't receive signals when we only terminate the parent
             try:
-                pgid = os.getpgid(pid)
-                os.killpg(pgid, signal.SIGKILL)
+                # start_new_session makes the group ID independent of the leader's lifetime.
+                os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
                 # Process or group already terminated
                 pass
@@ -317,8 +333,9 @@ class ExecutionEngine:
 
         # Kill all running subprocesses and their process trees
         with self._processes_lock:
-            for process in list(self._running_processes):
-                self._kill_process_tree(process)
+            for running in self._running_processes.values():
+                running.stop_input.set()
+                self._kill_process_tree(running.process)
 
         # If we have an executor, try to shutdown
         if self._current_executor:
@@ -337,6 +354,44 @@ class ExecutionEngine:
             Formatted string (short ID with symbol/emoji or full context)
         """
         return self.output.action.format_label_plain(action_key, self.use_short_context_ids)
+
+    def _send_action_input(self, action_key: ActionKey, text: Optional[str]) -> Optional[str]:
+        with self._processes_lock:
+            running = self._running_processes.get(action_key)
+            if running is None:
+                return "Action is not ready for input or has finished"
+            stream = running.process.stdin
+            if stream is None or stream.closed or running.process.poll() is not None:
+                return "Action input is closed"
+            if running.input_thread is not None and running.input_thread.is_alive():
+                return "Previous input is still being written"
+
+            def write_input() -> None:
+                try:
+                    if text is None:
+                        stream.close()
+                    else:
+                        descriptor = stream.fileno()
+                        os.set_blocking(descriptor, False)
+                        pending = memoryview(text.encode("utf-8"))
+                        while pending:
+                            if running.stop_input.is_set() or running.process.poll() is not None:
+                                raise BrokenPipeError("Action ended before input delivery")
+                            try:
+                                written = os.write(descriptor, pending)
+                            except BlockingIOError:
+                                written = 0
+                            pending = pending[written:]
+                            if not written:
+                                running.stop_input.wait(INPUT_RETRY_SECONDS)
+                except (OSError, ValueError):
+                    logger = self._current_logger
+                    if logger is not None:
+                        logger.report_input_error(action_key, "Action input closed before delivery")
+
+            running.input_thread = threading.Thread(target=write_input, daemon=True)
+            running.input_thread.start()
+        return None
 
     def _get_action_dirname(self, action_key: ActionKey) -> str:
         """Get the directory name for an action.
@@ -388,31 +443,27 @@ class ExecutionEngine:
         return result
 
     def _create_action_logger(self, execution_order: list[ActionKey]) -> ActionLogger:
-        """Create and start an ActionLogger based on execution mode.
+        """Select the presentation backend; execution ownership remains in the engine."""
+        from ..logging.action_logger_simple import ActionLoggerSimple
+        from ..logging.action_logger_verbose import ActionLoggerVerbose
+        from ..logging.action_logger_github import ActionLoggerGitHub
+        from ..logging.action_logger_teamcity import ActionLoggerTeamCity
+        from ..logging.action_logger_table import ActionLoggerTable
+        from ..logging.action_logger_pure import ActionLoggerPure
 
-        Uses ActionLoggerRaw for simple_log/github_actions/verbose modes,
-        otherwise uses ActionLoggerInteractive.
-
-        Args:
-            execution_order: List of action keys in execution order
-
-        Returns:
-            ActionLogger instance (ActionLoggerRaw or ActionLoggerInteractive)
-        """
-        from .action_logger_raw import ActionLoggerRaw
-        from .action_logger_interactive import ActionLoggerInteractive
-
-        # Use raw logger for simple_log, github_actions or verbose modes
-        # Use interactive table for normal execution
-        if self.simple_log or self.github_actions or self.verbose:
-            logger = ActionLoggerRaw(
-                action_keys=execution_order,
-                output=self.output,
-                use_short_ids=self.use_short_context_ids,
-                github_actions=self.github_actions,
-            )
-        else:
-            logger = ActionLoggerInteractive(
+        logger: ActionLogger
+        if self.logger_mode == LoggerMode.SIMPLE:
+            logger = ActionLoggerSimple(execution_order, self.output, self.use_short_context_ids)
+        elif self.logger_mode == LoggerMode.VERBOSE:
+            logger = ActionLoggerVerbose(execution_order, self.output, self.use_short_context_ids,
+                                         parallel=self.parallel_execution)
+        elif self.logger_mode == LoggerMode.GITHUB:
+            logger = ActionLoggerGitHub(execution_order, self.output, self.use_short_context_ids)
+        elif self.logger_mode == LoggerMode.TEAMCITY:
+            logger = ActionLoggerTeamCity(execution_order, self.output, self.use_short_context_ids,
+                                          parallel=self.parallel_execution)
+        elif self.logger_mode == LoggerMode.TABLE:
+            logger = ActionLoggerTable(
                 execution_order,
                 no_color=self.no_color,
                 action_dirs=self._build_action_dir_mapping(execution_order),
@@ -421,9 +472,17 @@ class ExecutionEngine:
                 keep_running=self.keep_running,
                 use_short_ids=self.use_short_context_ids,
             )
+        else:
+            logger = ActionLoggerPure(execution_order, self.output, self.use_short_context_ids,
+                                      keep_running=self.keep_running, show_dirs=self.show_dirs,
+                                      action_dirs=self._build_action_dir_mapping(execution_order),
+                                      run_directory=self.run_directory, force_interactive=self.force_interactive,
+                                      run_info=self.run_info, graph=self.graph)
     
-        logger.start()
         logger.set_kill_callback(self._request_kill)
+        logger.set_input_callback(self._send_action_input)
+        self._current_logger = logger
+        logger.start()
         return logger
 
     def _notify_action_start(
@@ -456,39 +515,16 @@ class ExecutionEngine:
             action_dir: Action directory path
             result: Action execution result
         """
-        logger.update_output_sizes(action_key, result.stdout_size, result.stderr_size)
-        if result.restored:
-            logger.mark_restored(action_key, result.duration_seconds, action_dir)
-        elif result.success:
-            logger.mark_done(action_key, result.duration_seconds)
-        else:
-            logger.mark_failed(action_key, result.duration_seconds)
-
-    def _print_action_failure(self, result: ActionResult) -> None:
-        """Print diagnostic information for a failed action.
-
-        Args:
-            result: The failed action result
-        """
-        suppress_outputs = self.no_output_on_fail and not (self.github_actions or self.verbose)
-        sym = self.output.symbols
-
-        self.output.print(f"\n{sym.Cross} [bold red]Action '{self.output.escape(result.action_name)}' failed![/bold red]")
-        self.output.print(f"{sym.Folder} [dim]Run directory:[/dim] [bold cyan]{self.run_directory}[/bold cyan]")
-
-        self.output.print(f"\n{sym.File} [dim]Stdout:[/dim] [blue]{result.stdout_path}[/blue]")
-        if result.stdout_path.exists() and not suppress_outputs:
-            self.output.print_raw(result.stdout_path.read_text(encoding="utf-8"))
-
-        self.output.print(f"\n{sym.File} [dim]Stderr:[/dim] [blue]{result.stderr_path}[/blue]")
-        if result.stderr_path.exists() and not suppress_outputs:
-            self.output.print_raw(result.stderr_path.read_text(encoding="utf-8"))
-
-        if suppress_outputs:
-            self.output.print("[dim]Output suppressed; re-run with --verbose or inspect log files for details.[/dim]")
-
-        if result.error_message:
-            self.output.print(f"\n{sym.Cross} [bold red]Error:[/bold red] {self.output.escape(result.error_message)}")
+        try:
+            logger.update_output_sizes(action_key, result.stdout_size, result.stderr_size)
+            if result.restored:
+                logger.mark_restored(action_key, result.duration_seconds, action_dir)
+            elif result.success:
+                logger.mark_done(action_key, result.duration_seconds)
+            else:
+                logger.mark_failed(action_key, result.duration_seconds)
+        finally:
+            logger.end_action(action_key)
 
     def execute_all(self) -> ExecutionResult:
         """Execute all actions in the graph.
@@ -543,8 +579,11 @@ class ExecutionEngine:
                 self._notify_action_result(logger, action_key, action_dir, result)
 
                 if not result.success:
+                    self._cancel_timeout_timer()
+                    if self.keep_running and not self._kill_event.is_set():
+                        logger.wait_for_quit()
                     logger.stop()
-                    self._print_action_failure(result)
+                    logger.show_failure(action_key, result, self.run_directory, self.no_output_on_fail)
 
                     return ExecutionResult(
                         success=False,
@@ -554,10 +593,15 @@ class ExecutionEngine:
 
                 action_outputs[action_key] = result.outputs
 
+        except KeyboardInterrupt:
+            self._request_kill()
+            logger.stop()
+            raise
         finally:
             self._cancel_timeout_timer()
             if not self.keep_running:
                 logger.stop()
+            logger.finalize()
 
         # If --it flag, wait for user to quit BEFORE printing final messages
         if self.keep_running:
@@ -604,96 +648,99 @@ class ExecutionEngine:
             running[future] = action_key
 
         self._start_timeout_timer()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._current_executor = executor
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                self._current_executor = executor
-                for key in ready:
-                    submit_action(executor, key)
+            for key in ready:
+                submit_action(executor, key)
 
-                while running:
-                    if self._kill_event.is_set():
-                        executor.shutdown(wait=False, cancel_futures=True)
+            while running:
+                if self._kill_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    logger.stop()
+                    return ExecutionResult(
+                        success=False,
+                        action_results=action_results,
+                        run_directory=self.run_directory,
+                    )
+
+                done, _ = concurrent.futures.wait(
+                    running.keys(),
+                    timeout=0.1,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+
+                if not done:
+                    continue
+
+                for future in done:
+                    action_key = running.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        result = ActionResult(
+                            action_name=str(action_key),
+                            success=False,
+                            outputs={},
+                            stdout_path=Path("/dev/null"),
+                            stderr_path=Path("/dev/null"),
+                            script_path=Path("/dev/null"),
+                            start_time="",
+                            end_time="",
+                            duration_seconds=0.0,
+                            exit_code=-1,
+                            error_message=f"Execution error: {exc}",
+                        )
+
+                    action_results[action_key] = result
+
+                    if result.restored:
+                        with lock:
+                            restored_actions.append(action_key)
+
+                    action_dir = self._get_action_dir(action_key)
+                    self._notify_action_result(logger, action_key, action_dir, result)
+
+                    if not result.success:
+                        executor.shutdown(cancel_futures=True)
+                        for pending, pending_key in running.items():
+                            if not pending.cancelled():
+                                pending_result = pending.result()
+                                action_results[pending_key] = pending_result
+                                self._notify_action_result(logger, pending_key, self._get_action_dir(pending_key), pending_result)
+                        self._cancel_timeout_timer()
+                        if self.keep_running and not self._kill_event.is_set():
+                            logger.wait_for_quit()
                         logger.stop()
+                        logger.show_failure(action_key, result, self.run_directory, self.no_output_on_fail)
                         return ExecutionResult(
                             success=False,
                             action_results=action_results,
                             run_directory=self.run_directory,
                         )
 
-                    done, _ = concurrent.futures.wait(
-                        running.keys(),
-                        timeout=0.1,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
-                    )
+                    with lock:
+                        action_outputs[action_key] = result.outputs
+                        completed.add(action_key)
 
-                    if not done:
-                        continue
+                    for dependent_key in dependents.get(action_key, set()):
+                        if dependent_key in completed or dependent_key in scheduled:
+                            continue
+                        pending_deps[dependent_key].discard(action_key)
+                        if len(pending_deps[dependent_key]) == 0:
+                            submit_action(executor, dependent_key)
 
-                    for future in done:
-                        action_key = running.pop(future)
-                        try:
-                            result = future.result()
-                        except Exception as exc:  # pragma: no cover - defensive
-                            result = ActionResult(
-                                action_name=str(action_key),
-                                success=False,
-                                outputs={},
-                                stdout_path=Path("/dev/null"),
-                                stderr_path=Path("/dev/null"),
-                                script_path=Path("/dev/null"),
-                                start_time="",
-                                end_time="",
-                                duration_seconds=0.0,
-                                exit_code=-1,
-                                error_message=f"Execution error: {exc}",
-                            )
-
-                        action_results[action_key] = result
-
-                        if result.restored:
-                            with lock:
-                                restored_actions.append(action_key)
-
-                        action_dir = self._get_action_dir(action_key)
-                        self._notify_action_result(logger, action_key, action_dir, result)
-
-                        if not result.success:
-                            logger.stop()
-                            self._print_action_failure(result)
-
-                            executor.shutdown(cancel_futures=True)
-                            return ExecutionResult(
-                                success=False,
-                                action_results=action_results,
-                                run_directory=self.run_directory,
-                            )
-
-                        with lock:
-                            action_outputs[action_key] = result.outputs
-                            completed.add(action_key)
-
-                        for dependent_key in dependents.get(action_key, set()):
-                            if dependent_key in completed or dependent_key in scheduled:
-                                continue
-                            pending_deps[dependent_key].discard(action_key)
-                            if len(pending_deps[dependent_key]) == 0:
-                                submit_action(executor, dependent_key)
-
-        except KeyboardInterrupt:
-            for future in running:
-                future.cancel()
+        except BaseException:
+            self._request_kill()
             logger.stop()
-
-            return ExecutionResult(
-                success=False,
-                action_results=action_results,
-                run_directory=self.run_directory,
-            )
+            raise
         finally:
+            executor.shutdown(wait=True, cancel_futures=True)
             self._cancel_timeout_timer()
             self._current_executor = None
             if not self.keep_running:
                 logger.stop()
+            logger.finalize()
 
         # If --it flag, wait for user to quit BEFORE printing final messages
         if self.keep_running:
@@ -804,7 +851,8 @@ class ExecutionEngine:
         stdout_path = action_dir / "stdout.log"
         stderr_path = action_dir / "stderr.log"
 
-        base_exec_cmd = runtime.get_execution_command(script_path)
+        base_exec_cmd = (runtime.get_direct_execution_command(script_path) if self.without_nix
+                         else runtime.get_execution_command(script_path))
         exec_cmd = self._build_exec_command(action, base_exec_cmd)
 
         return PreparedAction(
@@ -912,6 +960,7 @@ class ExecutionEngine:
             process = subprocess.Popen(
                 prepared.exec_cmd,
                 cwd=str(self.project_root),
+                stdin=subprocess.PIPE if logger is not None and logger.uses_terminal_input() else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=os.environ.copy(),
@@ -922,19 +971,19 @@ class ExecutionEngine:
                 start_new_session=(sys.platform != "win32"),
             )
 
-            with self._processes_lock:
-                self._running_processes.add(process)
-
+            running_action = RunningAction(process)
             try:
+                with self._processes_lock:
+                    self._running_processes[prepared.action_key] = running_action
+                    cancel_before_start = self._kill_event.is_set()
+                if cancel_before_start:
+                    self._kill_process_tree(process)
                 size_lock = threading.Lock()
 
-                if self.github_actions or self.verbose:
-                    self._configure_console_stream(sys.stdout)
-                    self._configure_console_stream(sys.stderr)
+                output_errors: list[BaseException] = []
 
-                def stream_output(
+                def read_output(
                     pipe: Any,
-                    console_stream: Any,
                     file_stream: Any,
                     combined_file: Any,
                     is_stdout: bool,
@@ -942,13 +991,16 @@ class ExecutionEngine:
                     nonlocal stdout_size, stderr_size
                     if not pipe:
                         return
-                    for line in pipe:
-                        if self.github_actions or self.verbose:
-                            console_stream.write(line)
-                            console_stream.flush()
-
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    while True:
+                        chunk = pipe.buffer.read1(OUTPUT_CHUNK_BYTES)
+                        line = decoder.decode(chunk, final=not chunk)
+                        if not chunk and not line:
+                            break
                         file_stream.write(line)
                         file_stream.flush()
+                        if logger is not None and (not self.no_output_on_fail or logger.receives_suppressed_output):
+                            logger.write_output(prepared.action_key, line, "stdout" if is_stdout else "stderr")
 
                         if not is_stdout and combined_file:
                             combined_file.write(line)
@@ -967,23 +1019,49 @@ class ExecutionEngine:
                                     prepared.action_key, stdout_size, stderr_size
                                 )
 
+                def stream_output(pipe: Any, file_stream: Any, combined_file: Any, is_stdout: bool) -> None:
+                    try:
+                        read_output(pipe, file_stream, combined_file, is_stdout)
+                    except BaseException as error:
+                        # Rich raises SystemExit on a closed output pipe, including in reader threads.
+                        with size_lock:
+                            output_errors.append(error)
+                        self._kill_process_tree(process)
+
                 stdout_thread = threading.Thread(
                     target=stream_output,
-                    args=(process.stdout, sys.stdout, stdout_file, None, True),
+                    args=(process.stdout, stdout_file, None, True),
                 )
                 stderr_thread = threading.Thread(
                     target=stream_output,
-                    args=(process.stderr, sys.stderr, stderr_file, stdout_file, False),
+                    args=(process.stderr, stderr_file, stdout_file, False),
                 )
 
                 stdout_thread.start()
                 stderr_thread.start()
-                returncode = process.wait()
-                stdout_thread.join()
-                stderr_thread.join()
+                try:
+                    returncode = process.wait()
+                    stdout_thread.join()
+                    stderr_thread.join()
+                    if output_errors:
+                        raise output_errors[0]
+                except KeyboardInterrupt:
+                    self._kill_process_tree(process)
+                    process.wait()
+                    stdout_thread.join()
+                    stderr_thread.join()
+                    raise
             finally:
+                running_action.stop_input.set()
+                if process.poll() is None or running_action.input_thread is not None:
+                    self._kill_process_tree(process)
+                    process.wait()
+                if running_action.input_thread is not None:
+                    running_action.input_thread.join()
+                if process.stdin is not None:
+                    process.stdin.close()
                 with self._processes_lock:
-                    self._running_processes.discard(process)
+                    self._running_processes.pop(prepared.action_key, None)
 
         # Get final file sizes
         if prepared.stdout_path.exists():
@@ -1000,16 +1078,6 @@ class ExecutionEngine:
             stderr_size=stderr_size,
         )
 
-    @staticmethod
-    def _configure_console_stream(stream: Any) -> None:
-        if not stream:
-            raise RuntimeError("Console stream is required to configure encoding errors.")
-        if not hasattr(stream, "reconfigure"):
-            raise RuntimeError(
-                "Console stream does not support reconfigure; cannot set encoding errors."
-            )
-        stream.reconfigure(errors="replace")
-
     def _create_action_result(
         self,
         prepared: PreparedAction,
@@ -1022,6 +1090,7 @@ class ExecutionEngine:
         stdout_size: int,
         stderr_size: int,
         error_message: Optional[str] = None,
+        output_types: Optional[dict[str, str]] = None,
     ) -> ActionResult:
         """Create ActionResult with common parameters from PreparedAction.
 
@@ -1036,6 +1105,7 @@ class ExecutionEngine:
             stdout_size: Size of stdout in bytes
             stderr_size: Size of stderr in bytes
             error_message: Optional error message
+            output_types: Declared artifact types retained for human output presentation
 
         Returns:
             ActionResult with all fields populated
@@ -1066,6 +1136,7 @@ class ExecutionEngine:
             error_message=error_message,
             stdout_size=stdout_size,
             stderr_size=stderr_size,
+            output_types=output_types or {},
         )
 
     def _validate_file_outputs(
@@ -1114,26 +1185,16 @@ class ExecutionEngine:
         Returns:
             ActionResult with execution outcome
         """
-        action_name = prepared.action.name
         logger = self._current_logger
-
-        # Print GitHub Actions group start
-        if self.github_actions:
-            self.output.print_raw(f"::group::{action_name}")
-
-        # Print command if verbose
-        if self.github_actions or self.verbose:
-            self.output.print_command(' '.join(prepared.exec_cmd))
 
         start_time = datetime.now()
         start_time_iso = start_time.isoformat()
 
         try:
+            if logger is not None:
+                logger.begin_action(prepared.action_key, prepared.exec_cmd)
             # Execute subprocess with output streaming
             subprocess_result = self._execute_subprocess(prepared, logger)
-
-            if self.github_actions:
-                self.output.print_raw("::endgroup::")
 
             end_time = datetime.now()
             end_time_iso = end_time.isoformat()
@@ -1172,7 +1233,7 @@ class ExecutionEngine:
                 )
 
             # Parse outputs
-            outputs = self._parse_outputs(prepared.output_json_path)
+            outputs, output_types = self._parse_outputs(prepared.output_json_path)
             self._add_success_to_output_json(prepared.output_json_path, success=True)
 
             # Validate file/directory outputs
@@ -1191,6 +1252,7 @@ class ExecutionEngine:
                     stdout_size=subprocess_result.stdout_size,
                     stderr_size=subprocess_result.stderr_size,
                     error_message=validation_error,
+                    output_types=output_types,
                 )
 
             # Success
@@ -1204,6 +1266,7 @@ class ExecutionEngine:
                 exit_code=0,
                 stdout_size=subprocess_result.stdout_size,
                 stderr_size=subprocess_result.stderr_size,
+                output_types=output_types,
             )
 
         except Exception as e:
@@ -1269,7 +1332,7 @@ class ExecutionEngine:
         graph_duration = time.time() - graph_start_time
         sym = self.output.symbols
 
-        if restored_actions and not self.github_actions:
+        if restored_actions and self.logger_mode != LoggerMode.GITHUB and not self.output.compact:
             restored_list = ", ".join(self.output.escape(str(key)) for key in restored_actions)
             self.output.print(f"\n{sym.Recycle} [dim]restored from previous run:[/dim] [bold cyan]{restored_list}[/bold cyan]")
 
@@ -1279,13 +1342,14 @@ class ExecutionEngine:
             except Exception as e:
                 self.output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] Failed to clean up run directory: {self.output.escape(str(e))}")
 
-        if not self.github_actions:
+        if self.logger_mode != LoggerMode.GITHUB and not self.output.compact:
             self.output.print(f"\n[dim]Total wall time:[/dim] [bold cyan]{graph_duration:.1f}s[/bold cyan]")
 
         return ExecutionResult(
             success=True,
             action_results=action_results,
             run_directory=self.run_directory,
+            duration_seconds=graph_duration,
         )
 
     def _can_restore_from_previous(self, action_name: str) -> bool:
@@ -1343,9 +1407,10 @@ class ExecutionEngine:
                 version = node.selected_version
                 break
 
-        outputs = {}
+        outputs: dict[str, Any] = {}
+        output_types: dict[str, str] = {}
         if prev_output_path.exists() and version is not None:
-            outputs = self._parse_outputs(prev_output_path)
+            outputs, output_types = self._parse_outputs(prev_output_path)
 
         return ActionResult(
             action_name=action_key_str,  # Use full key string for result
@@ -1361,26 +1426,30 @@ class ExecutionEngine:
             restored=True,
             stdout_size=meta.get("stdout_size", 0),
             stderr_size=meta.get("stderr_size", 0),
+            output_types=output_types,
         )
 
-    def _parse_outputs(self, output_json_path: Path) -> dict[str, Any]:
+    def _parse_outputs(self, output_json_path: Path) -> tuple[dict[str, Any], dict[str, str]]:
         """Parse outputs from output.json.
 
         Args:
             output_json_path: Path to output.json
 
         Returns:
-            Dictionary of outputs
+            Output values and declared types, without changing artifact contents
         """
         try:
             data = json.loads(output_json_path.read_text(encoding="utf-8"))
 
             # Extract just the values
             outputs = {}
+            output_types = {}
             for name, info in data.items():
                 outputs[name] = info["value"]
+                if isinstance(info.get("type"), str):
+                    output_types[name] = info["type"]
 
-            return outputs
+            return outputs, output_types
         except Exception as e:
             raise ValueError(f"Failed to parse output.json: {e}")
 

@@ -18,7 +18,7 @@ from .names_generator import generate_name
 from .symbols import SymbolsFormatter
 
 if TYPE_CHECKING:
-    from ..dag.context import ContextId
+    from ...dag.context import ContextId
 
 
 CONTEXT_EMOJIS: tuple[str, ...] = (

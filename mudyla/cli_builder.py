@@ -56,6 +56,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Continue from last run (skip successful actions)",
     )
 
+    parser.add_argument("--teamcity", action="store_true", help="Use TeamCity service messages (sequential unless --par)")
     parser.add_argument(
         "--github-actions",
         dest="github_actions",
@@ -88,7 +89,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--no-out-on-fail",
         dest="no_out_on_fail",
         action="store_true",
-        help="Do not print stdout/stderr for failed actions (except in verbose or GitHub Actions modes)",
+        help="Do not print stdout/stderr for failed actions (except in verbose, GitHub Actions or TeamCity modes)",
     )
 
     parser.add_argument(
@@ -106,32 +107,38 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--logger",
+        choices=("pure", "table", "simple", "verbose", "github", "teamcity", "raw"),
+        help="Output interface: pure (default), table, simple, verbose, github, teamcity; raw aliases simple",
+    )
+
+    parser.add_argument(
         "--simple-log",
         dest="simple_log",
         action="store_true",
         default=None,
-        help="Use simple text logging instead of dynamic rich table (auto-detected from TTY)",
+        help="Use the simple logger (equivalent to --logger simple)",
     )
 
     parser.add_argument(
         "--force-interactive",
         dest="force_interactive",
         action="store_true",
-        help="Force rich table display even when stdout is not a TTY",
+        help="Force terminal rendering for the selected logger (pure by default)",
     )
 
     parser.add_argument(
         "--show-dirs",
         dest="show_dirs",
         action="store_true",
-        help="Show action directories in the rich table (off by default)",
+        help="Show action directories in the selected view (off by default)",
     )
 
     parser.add_argument(
-        "--it",
+        "--it", "--interactive",
         dest="interactive",
         action="store_true",
-        help="Enable interactive mode with live log viewer during execution",
+        help="Keep supported logger views open after execution for inspection",
     )
 
     execution_mode_group = parser.add_mutually_exclusive_group()

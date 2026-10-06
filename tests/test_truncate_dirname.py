@@ -2,7 +2,7 @@
 
 import hashlib
 
-from mudyla.formatters.action import (
+from mudyla.logging.formatters.action import (
     MAX_DIRNAME_LENGTH,
     TRUNCATED_HASH_LENGTH,
     truncate_dirname,

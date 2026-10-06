@@ -281,7 +281,7 @@ class RetainerExecutor:
         base_cmd = runtime.get_execution_command(script_path)
 
         if self.without_nix:
-            return base_cmd
+            return runtime.get_direct_execution_command(script_path)
 
         # Wrap with nix if available
         flake_path = self.project_root / "flake.nix"
@@ -293,7 +293,7 @@ class RetainerExecutor:
                 "-c",
             ] + base_cmd
 
-        return base_cmd
+        return runtime.get_direct_execution_command(script_path)
 
     def _build_environment(self, retain_signal_file: Path) -> dict[str, str]:
         """Build environment variables for retainer execution."""

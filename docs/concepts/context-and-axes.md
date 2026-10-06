@@ -49,4 +49,4 @@ When you run `mdl :test`, you are running it in a specific context.
 Mudyla optimizes the graph by reducing contexts. If an action `fetch-source` does not depend on the `python` axis, it will only run once per `os`, even if you are building for 5 Python versions.
 
 *   **Shared Execution**: Actions are unified if their effective contexts (relevant axes) are identical.
-*   **Visual Output**: The execution plan shows `(⏬ N ctx)` indicating an action is shared by N contexts.
+*   **Visual Output**: Pure's `Plan:` labels actions shared by multiple contexts and marks repeated references with their context identity. The table plan uses `(⏬ N ctx)` for actions shared by N contexts.

@@ -19,6 +19,50 @@ If you use Scala and SBT, Mudyla works well with [Squish](https://github.com/7mi
 
 An example of a real project using this gloomy tool: [Baboon](https://github.com/7mind/baboon/tree/main/.mdl/defs).
 
+
+## Terminal interfaces
+
+The default `pure` logger presents an aligned live checklist: action, context,
+elapsed time, and the latest log line. Scroll up for compact context summaries and the
+same run information printed before execution. The `Plan:` tree's status glyphs
+update above the interactive `Actions:` list, which keeps execution-plan order.
+Arrow keys
+select and reveal any action. Both pure and
+table support action selection, logs, metadata, outputs, source, and action input.
+Press `i` in the Actions list or stdout view to send input to a selected running action:
+
+```bash
+mdl :build
+mdl --logger table :build
+mdl --it :build                 # Keep the selected view open after completion
+mdl --logger simple :build      # Append-only progress and compact Plan
+mdl --logger verbose :build     # Commands and immediate action output
+mdl --logger github :build      # GitHub Actions groups and streaming
+mdl --logger teamcity :build    # TeamCity blocks; --par adds isolated action flows
+```
+
+`--simple-log`, `--verbose`, `--github-actions`, and `--teamcity` are aliases for those modes;
+`--logger raw` remains an alias for simple. Simple, verbose, GitHub and TeamCity share the compact
+Run info, Plan, Result and typed outputs, with plain redirected output.
+Verbose, GitHub and TeamCity execute sequentially by default; `--par` enables parallel execution.
+Parallel verbose logs carry `action@context:` prefixes; sequential verbose and
+GitHub preserve unprefixed child output. Capture files remain unchanged.
+
+The action definitions, arguments, and execution workflow stay the same in every
+view. See the [logger and keyboard guide](docs/reference/cli.md#terminal-loggers).
+
+Try the local 20-second demo in this repository:
+
+```bash
+.venv/bin/python -m mudyla --without-nix --par --it :demo-interactive
+```
+
+Use `j`/`k` to select an action, `Enter` for logs, `q` to return, and `q` again
+to stop execution or close the completed view. Mouse wheel and page keys scroll;
+`Home` shows the run information. Add `--logger table` to compare.
+Pure metadata and outputs use compact labelled fields; `v` toggles their original
+JSON. Contexts use the same `@name` throughout the plan, checklist and details.
+
 ## Documentation
 
 **[📚 Read the Full Documentation](docs/README.md)**

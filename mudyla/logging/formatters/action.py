@@ -16,7 +16,7 @@ from rich.text import Text
 from .context import ContextFormatter
 
 if TYPE_CHECKING:
-    from ..dag.graph import ActionKey
+    from ...dag.graph import ActionKey
 
 
 TRUNCATED_HASH_LENGTH = 7

@@ -2,6 +2,7 @@
 .bsp/
 .metals/
 target/
+/agents/
 
 *.whl
 task-*.txt

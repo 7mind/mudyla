@@ -10,14 +10,20 @@ Usage:
     output.print(output.action.format_label(action_key, use_short_ids=True))
 """
 
-from typing import Union
+from io import TextIOWrapper
+import sys
+from typing import Literal, Optional
 
-from rich.console import Console
+from rich.console import Console, Group, RenderableType
 from rich.text import Text
 
 from .symbols import SymbolsFormatter
 from .context import ContextFormatter
 from .action import ActionFormatter
+from .details import KeyValueRow, KeyValueView, summary_field
+from .sections import section
+from ..terminal_output import StreamState
+from ..teamcity import TeamCityWriter, standard_writer
 
 
 class OutputFormatter:
@@ -44,29 +50,44 @@ class OutputFormatter:
         output.print(output.action.format_label(key, use_short_ids=True))
     """
 
-    def __init__(self, no_color: bool):
+    def __init__(self, no_color: bool, *, plain: bool = False, compact: bool = False,
+                 teamcity: bool = False):
         """Initialize the output formatter with all sub-formatters.
 
         Args:
             no_color: If True, disable all colors and styling in output
         """
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, TextIOWrapper):
+                stream.reconfigure(errors="replace")
+
+        self.teamcity_writer: Optional[TeamCityWriter] = standard_writer() if teamcity else None
+        sink = self.teamcity_writer.sink(None) if self.teamcity_writer is not None else None
         self._no_color = no_color
+        self.compact = compact
+        self._recorded_renderables: Optional[list[RenderableType]] = None
+        self._defer_recording = False
+        self._run_fields: Optional[list[KeyValueRow]] = None
 
         # Create the Rich console with no_color support
         self._console = Console(
+            file=sink,
             no_color=no_color,
-            force_terminal=None,
+            color_system=None if plain else "auto",
+            force_terminal=None if sys.stdout.isatty() else False,
             highlight=False,
         )
         self._stderr_console = Console(
+            file=sink,
             no_color=no_color,
-            force_terminal=None,
+            color_system=None if plain else "auto",
+            force_terminal=None if sys.stderr.isatty() else False,
             highlight=False,
             stderr=True,
         )
 
         # Create all sub-formatters - symbols first as others depend on it
-        self._symbols = SymbolsFormatter(no_color=no_color)
+        self._symbols = SymbolsFormatter(no_color=no_color or compact)
         self._context = ContextFormatter(symbols=self._symbols)
         self._action = ActionFormatter(context_formatter=self._context)
 
@@ -74,6 +95,9 @@ class OutputFormatter:
     def console(self) -> Console:
         """Get the underlying Rich console."""
         return self._console
+
+    def console_for_stream(self, stream: Literal["stdout", "stderr"]) -> Console:
+        return self._console if stream == "stdout" else self._stderr_console
 
     @property
     def symbols(self) -> SymbolsFormatter:
@@ -119,7 +143,39 @@ class OutputFormatter:
         from rich.markup import escape
         return escape(message)
 
-    def print(self, message: Union[str, Text]) -> None:
+    def start_recording(self, *, defer: bool = False) -> None:
+        """Collect preparation renderables for the interactive run overview."""
+        assert self._recorded_renderables is None, "Output recording already started"
+        self._recorded_renderables = []
+        self._defer_recording = defer
+        if defer:
+            self._run_fields = []
+            self._recorded_renderables.append(section("Run info:", KeyValueView(self._run_fields), None, None))
+
+    def print_run_field(self, name: str, value: Text, legacy: str) -> None:
+        if self.compact:
+            assert self._run_fields is not None, "Run fields require preparation recording"
+            self._run_fields.append(summary_field(name, value))
+        else:
+            self.print(legacy)
+
+    def flush_recording(self, exclude: Optional[RenderableType] = None) -> None:
+        """Emit deferred preparation on success, early return, or failure exactly once."""
+        if self._defer_recording:
+            assert self._recorded_renderables is not None
+            self._defer_recording = False
+            self._console.print(Group(*(item for item in self._recorded_renderables if item is not exclude)), highlight=False)
+
+    def stop_recording(self, exclude: Optional[RenderableType] = None) -> Group:
+        """Freeze the preparation snapshot before action execution starts."""
+        assert self._recorded_renderables is not None, "Output recording was not started"
+        self.flush_recording(exclude=exclude)
+        snapshot = Group(*(item for item in self._recorded_renderables if item is not exclude))
+        self._recorded_renderables = None
+        self._run_fields = None
+        return snapshot
+
+    def print(self, message: RenderableType) -> None:
         """Print message using Rich console.
 
         The console handles no_color mode, so Rich Text objects with styling
@@ -128,7 +184,11 @@ class OutputFormatter:
         Args:
             message: Message to print (string or Rich Text)
         """
-        self._console.print(message, highlight=False)
+        if self._recorded_renderables is not None:
+            renderable = self._console.render_str(message, highlight=False) if isinstance(message, str) else message
+            self._recorded_renderables.append(renderable)
+        if not self._defer_recording:
+            self._console.print(message, highlight=False)
 
     def print_raw(self, message: str) -> None:
         """Print message without any Rich processing.
@@ -138,18 +198,15 @@ class OutputFormatter:
         Args:
             message: Raw message to print exactly as-is
         """
-        print(message)
-
-    def print_command(self, cmd: str) -> None:
-        """Print a command string with appropriate styling.
-
-        Args:
-            cmd: Command string to print
-        """
-        line = Text()
-        line.append("Command: ", style="dim")
-        line.append(cmd)
-        self._console.print(line, highlight=False)
+        if self.teamcity_writer is not None:
+            self.teamcity_writer.message(message + "\n", None)
+            return
+        state = StreamState()
+        for char in message:
+            state.consume(char)
+        sys.stdout.write(message)
+        state.finish_control(sys.stdout)
+        sys.stdout.write("\n")
 
     def print_warning(self, message: str) -> None:
         """Print a warning message.
