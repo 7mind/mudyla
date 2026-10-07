@@ -32,14 +32,15 @@ def test_inline_table_footer_advertises_keyboard_controls_only(monkeypatch, widt
         assert "PgUp/PgDn" in footer
 
 
-def test_pure_overview_footer_retains_mouse_wheel_hint():
+@pytest.mark.parametrize("keep_running", [False, True])
+def test_pure_overview_footer_matches_mouse_ownership(keep_running):
     from mudyla.logging.action_logger_pure import ActionLoggerPure
     from mudyla.logging.formatters import OutputFormatter
 
     output = OutputFormatter(no_color=True, compact=True)
     output._console = Console(file=StringIO(), width=160, height=24, force_terminal=True)
-    logger = ActionLoggerPure(action_keys(1), output, True)
-    assert "Wheel/PgUp/PgDn scroll" in logger._build_footer().plain
+    logger = ActionLoggerPure(action_keys(1), output, True, keep_running=keep_running)
+    assert ("Wheel/PgUp/PgDn scroll" in logger._build_footer().plain) == keep_running
 
 
 def rendered(logger: ActionLoggerTable, width: int, height: int) -> str:
@@ -229,10 +230,10 @@ def test_render_error_restores_screen_cursor_and_terminal(monkeypatch, stage, mo
             changed_flags = termios.ICANON | termios.ECHO | termios.ISIG | termios.NOFLSH
             assert termios.tcgetattr(terminal)[3] & changed_flags == original[3] & changed_flags
             output = stream.buffer.getvalue().decode("ascii")
-            assert output.count("\x1b[?1049h") == output.count("\x1b[?1049l") == int(mode == "pure")
+            assert output.count("\x1b[?1049h") == output.count("\x1b[?1049l") == 1
             assert output.count("\x1b[?25l") == output.count("\x1b[?25h") == 1
-            assert output.count("\x1b[?1000h") == output.count("\x1b[?1000l") == int(mode == "pure")
-            assert output.count("\x1b[?1006h") == output.count("\x1b[?1006l") == int(mode == "pure")
+            assert output.count("\x1b[?1000h") == output.count("\x1b[?1000l") == 1
+            assert output.count("\x1b[?1006h") == output.count("\x1b[?1006l") == 1
         finally:
             logger._restore_terminal()
             if logger.live is not None:

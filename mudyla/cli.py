@@ -35,7 +35,7 @@ from .axis_wildcards import expand_all_wildcards
 from .utils.project_root import find_project_root
 from .logging.formatters import OutputFormatter
 from .logging.formatters.details import JsonValue, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
-from .logging.formatters.plan import PlanStyle, execution_tree, sharing_counts, tree_section
+from .logging.formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
 from .logging.formatters.dag import dag_section, execution_dag
 from .logging.formatters.sections import section
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
@@ -80,7 +80,8 @@ class CLI:
         output = (OutputFormatter(no_color=args.no_color, plain=True, compact=True, teamcity=True)
                   if args.logger == "teamcity" else
                   self._build_formatters(args.no_color, args.logger == "github", LoggerMode(args.logger).compact))
-        if output.compact:
+        record_preparation = output.compact or args.logger == "table"
+        if record_preparation:
             output.start_recording(defer=True)
         if nix_message is not None:
             output.print_run_field("Using Nix", nix_message, f"Using Nix: {nix_message.plain}")
@@ -225,7 +226,7 @@ class CLI:
             run_id = engine.run_directory.name
             output.print_run_field("Run ID", Text(run_id, style="cyan"),
                                    f"\n{sym.Id} [dim]Run ID:[/dim] [bold cyan]{run_id}[/bold cyan]")
-            if output.compact:
+            if record_preparation:
                 engine.run_info = output.stop_recording(exclude=static_plan if args.logger == "pure" else None)
 
             result = engine.execute_all()
@@ -338,7 +339,7 @@ class CLI:
             return
 
         sym = output.symbols
-        if output.compact:
+        if output.compact or output.recording_preparation:
             output.print("")
             output.print(section("Contexts:", contexts_view(contexts, output.context, use_short_ids), None, None))
             output.print("")
@@ -376,7 +377,7 @@ class CLI:
             return
 
         sym = output.symbols
-        if output.compact:
+        if output.compact or output.recording_preparation:
             output.print(section("Goals:", Group(*(action_label(key, output.context, use_short_ids, True) for key in goal_keys)), None, None))
             output.print("")
             return
@@ -408,7 +409,7 @@ class CLI:
 
         sym = output.symbols
 
-        if output.compact:
+        if output.compact or output.recording_preparation:
             output.print(self._build_retainer_results(retainer_results, output, use_short_ids))
             if verbose:
                 for result in retainer_results:
@@ -583,6 +584,8 @@ class CLI:
         except ValueError as error:
             self.parser.error(str(error))
         args.logger = mode.value
+        if args.plan_style is None:
+            args.plan_style = "table" if mode == LoggerMode.TABLE else "dag"
         args.verbose = mode == LoggerMode.VERBOSE
         args.github_actions = mode == LoggerMode.GITHUB
         usable_terminal = sys.stdout.isatty() and sys.stdin.isatty() and os.environ.get("TERM") not in {"dumb", "unknown"}
@@ -751,7 +754,7 @@ class CLI:
             default_value = axis_def.get_default_value()
             if default_value:
                 axis_values[axis_name] = default_value
-                if output.compact:
+                if output.compact or output.recording_preparation:
                     default_axes.append(axis_field(axis_name, default_value))
                 else:
                     output.print(
@@ -888,7 +891,7 @@ class CLI:
         use_short_ids: bool,
         plan_style: PlanStyle = "dag",
     ) -> Group:
-        """Render the shared DAG or explicitly selected dependency tree.
+        """Render the selected static plan presentation.
 
         Args:
             graph: The execution graph
@@ -896,10 +899,16 @@ class CLI:
             goals: List of goal action names
             output: Output formatter
             use_short_ids: Whether to use short context IDs
-            plan_style: DAG by default, or the explicit tree alternative
+            plan_style: Table, connected DAG, or dependency tree
         """
         # Compute sharing counts: how many unique goal contexts use each action
         sharing_counts = self._compute_sharing_counts(graph, execution_order, goals)
+
+        if plan_style == "table":
+            plan = Group(section("Plan:", execution_table(graph, execution_order, output.context, use_short_ids,
+                                                          sharing_counts, output.console.options.ascii_only), None, None), Text(""))
+            output.print(plan)
+            return plan
 
         if plan_style == "dag":
             def initial_status(key: ActionKey) -> Text:

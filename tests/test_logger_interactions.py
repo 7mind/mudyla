@@ -322,14 +322,14 @@ def test_table_native_run_information_stays_in_normal_terminal_history(terminal_
                '# action: work\n```python\nmdl.use("args.flavor")\nmdl.dep("action.base")\n'
                'from pathlib import Path\nimport time\nprint("WORK_STDOUT", flush=True)\n'
                f'while not Path({str(release)!r}).exists(): time.sleep(.01)\n```\n')
-    child = terminal_project("table", actions, options=("--it", "--no-color"), dimensions=(60, 120))
+    child = terminal_project("table", actions, options=("--no-color",), dimensions=(60, 120))
     transcript = StringIO()
     child.logfile_read = transcript
     child.expect_exact("q kill")
     child.expect_exact("q kill")
     initial = transcript.getvalue()
     for field in ["Project root:", "Execution mode:", "Run ID:", "Contexts:", "Plan:"]:
-        assert field in initial
+        assert field in terminal_text(initial).plain
     assert "\x1b[?1049h" not in initial, "An alternate screen hides the printed run information"
     assert "\x1b[?1000h" not in initial and "\x1b[?1006h" not in initial
     child.send("jl")
@@ -338,14 +338,13 @@ def test_table_native_run_information_stays_in_normal_terminal_history(terminal_
     child.setwinsize(40, 100)
     child.expect_exact("q back")
     child.send("q")
+    child.expect_exact("q kill")
     release.touch()
-    child.expect_exact("q close")
-    child.send("q")
     child.expect(pexpect.EOF)
     child.close()
     assert child.exitstatus == 0
-    assert "\x1b[?1049h" not in transcript.getvalue()
-    assert "\x1b[?1000h" not in transcript.getvalue() and "\x1b[?1006h" not in transcript.getvalue()
+    for code in ["1049", "1000", "1006"]:
+        assert transcript.getvalue().count(f"\x1b[?{code}h") == transcript.getvalue().count(f"\x1b[?{code}l") == 1
 
 
 @pytest.mark.parametrize("execution", ["--seq", "--par"])
@@ -565,7 +564,7 @@ def test_detail_mouse_capture_restores_after_cancellation(terminal_project, mode
     child.expect(pexpect.EOF)
     child.close()
     assert child.exitstatus == (130 if ending == "interrupt" else 1)
-    expected = int(mode == "pure")
+    expected = 1
     assert recorded.getvalue().count("\x1b[?1000h") == recorded.getvalue().count("\x1b[?1000l") == expected
     assert recorded.getvalue().count("\x1b[?1006h") == recorded.getvalue().count("\x1b[?1006l") == expected
 

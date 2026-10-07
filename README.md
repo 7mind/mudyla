@@ -30,13 +30,21 @@ add a subtle selection background derived from their theme, preserving text colo
 Arrow keys
 select and reveal any action. Both pure and
 table support action selection, logs, metadata, outputs, source, and action input.
+Table uses a static plan table and content-sized live columns, with counts below
+the rows and the same subtle theme-aware selection.
+Pure and table display inline by default, leaving the mouse wheel to scroll terminal history.
+`--it` / `--interactive` opens fullscreen and keeps the completed view open.
+Opening details from an inline view temporarily enters fullscreen; returning restores
+the same action selection.
+`--plan-table`, `--plan-tree`, and `--plan-dag` select the plan layout explicitly in any logger.
 Press `i` in the Actions list or stdout view to send input to a selected running action:
 
 ```bash
 mdl :build
 mdl --logger table :build
 mdl --plan-tree :build          # Separate Plan tree and flat Actions list
-mdl --it :build                 # Keep the selected view open after completion
+mdl --plan-table :build         # Static Plan table and flat Actions list
+mdl --it :build                 # Fullscreen view; keep open after completion
 mdl --logger simple :build      # Append-only progress and compact Plan
 mdl --logger verbose :build     # Commands and immediate action output
 mdl --logger github :build      # GitHub Actions groups and streaming
@@ -65,31 +73,15 @@ to stop execution or close the completed view. Mouse wheel and page keys scroll;
 Pure metadata and outputs use compact labelled fields; `v` toggles their original
 JSON. Contexts use the same `@name` throughout the plan, checklist and details.
 
-Pure Actions with retainers and a theme-aware selected row:
-These screenshots show actual CLI sessions from a small example project, captured
-through a PTY and replayed in the xterm.js terminal emulator.
+**Views**
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/ui/pure-dag-dark.png">
-  <img alt="Pure Actions DAG with retainers and a selected action" src="docs/ui/pure-dag-light.png">
-</picture>
+Pure DAG ([light](docs/ui/pure-dag-light.png) / [dark](docs/ui/pure-dag-dark.png)) ·
+[Table](docs/ui/table-dark.png) · [Pure tree](docs/ui/pure-tree-dark.png) · [Simple](docs/ui/simple-dark.png)
 
-<details>
-<summary>Log and output views</summary>
+**Details**
 
-`Enter` opens the selected action's logs; `q` returns to Actions.
-
-![Pure action logs](docs/ui/logs-dark.png)
-
-`o` opens typed outputs; `v` switches to the original JSON.
-
-![Pure typed outputs](docs/ui/outputs-dark.png)
-
-`--plan-tree` keeps a separate Plan and a flat Actions list with the same selection style.
-
-![Pure flat Actions list](docs/ui/pure-tree-dark.png)
-
-</details>
+[Logs](docs/ui/logs-dark.png) · [Outputs](docs/ui/outputs-dark.png) ·
+[Metadata](docs/ui/metadata-dark.png) · [Source](docs/ui/source-dark.png)
 
 ## Documentation
 

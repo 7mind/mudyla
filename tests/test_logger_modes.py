@@ -441,7 +441,7 @@ def test_terminal_color_policy_honors_environment_and_explicit_flag(tmp_path, mo
     colored = [sequence for sequence in re.findall(r"\x1b\[([0-9;]*)m", text)
                if any(int(code) in color_codes for code in sequence.split(";") if code)]
     assert bool(colored) == (not explicit and not environment), colored[:5]
-    assert text.count("\x1b[?1049h") == text.count("\x1b[?1049l") == int(mode == "pure")
+    assert text.count("\x1b[?1049h") == text.count("\x1b[?1049l") == 1
 
 
 def test_no_color_preserves_raw_action_terminal_sequences(tmp_path):

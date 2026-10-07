@@ -474,6 +474,7 @@ class ExecutionEngine:
                 run_directory=self.run_directory,
                 keep_running=self.keep_running,
                 use_short_ids=self.use_short_context_ids,
+                run_info=self.run_info,
             )
         else:
             logger = ActionLoggerPure(execution_order, self.output, self.use_short_context_ids,

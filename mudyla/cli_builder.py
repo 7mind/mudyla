@@ -48,12 +48,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show execution plan without executing",
     )
-    parser.set_defaults(plan_style="dag")
+    parser.set_defaults(plan_style=None)
     plan_group = parser.add_mutually_exclusive_group()
+    plan_group.add_argument("--plan-table", dest="plan_style", action="store_const", const="table",
+                           help="Show a static execution plan table (default for the table logger)")
     plan_group.add_argument("--plan-tree", dest="plan_style", action="store_const", const="tree",
                            help="Show the dependency tree in any logger's Plan")
     plan_group.add_argument("--plan-dag", dest="plan_style", action="store_const", const="dag",
-                           help="Show a connected dependency graph with each action once (default)")
+                           help="Show a connected dependency graph (default except for the table logger)")
 
     parser.add_argument(
         "--continue",
@@ -144,7 +146,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--it", "--interactive",
         dest="interactive",
         action="store_true",
-        help="Keep supported logger views open after execution for inspection",
+        help="Show pure/table fullscreen and keep the view open after execution for inspection",
     )
 
     execution_mode_group = parser.add_mutually_exclusive_group()

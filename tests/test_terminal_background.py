@@ -148,13 +148,16 @@ class Terminal(StringIO):
     ("truecolor", False, True, False, "dag", False),
     ("truecolor", False, True, True, "tree", True),
 ])
-def test_query_requires_actual_colored_input_and_output_tty(monkeypatch, color, no_color, output_tty, input_tty, plan, expected):
+@pytest.mark.parametrize("mode", ["pure", "table"])
+def test_query_requires_actual_colored_input_and_output_tty(monkeypatch, color, no_color, output_tty, input_tty, plan, expected, mode):
     graph, keys = crossing_graph()
     stream = Terminal() if output_tty else StringIO()
     monkeypatch.setattr(sys, "stdin", Terminal() if input_tty else StringIO())
     output = OutputFormatter(no_color=no_color, compact=True)
     output._console = Console(file=stream, force_terminal=True, color_system=color, no_color=no_color)
-    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style=plan)
+    logger = (ActionLoggerPure(keys, output, True, graph=graph, plan_style=plan) if mode == "pure" else
+              table.ActionLoggerTable(keys, no_color=no_color))
+    logger.console = output.console
     monkeypatch.setattr(table.ActionLoggerTable, "_setup_terminal", lambda self: setattr(self, "_terminal_active", True))
     logger._setup_terminal()
     logger._probe_terminal_background()
@@ -200,7 +203,8 @@ def test_windows_reader_filters_reply_and_preserves_extended_and_unicode_keys(mo
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal lifecycle")
 @pytest.mark.parametrize("quit_first,reply", [(False, True), (True, True), (False, False)])
 @pytest.mark.parametrize("slow_initial_frame", [False, True])
-def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkeypatch, quit_first, reply, slow_initial_frame):
+@pytest.mark.parametrize("mode", ["pure", "table"])
+def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkeypatch, quit_first, reply, slow_initial_frame, mode):
     import select
     import termios
 
@@ -215,7 +219,8 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
         graph, keys = crossing_graph()
         output = OutputFormatter(no_color=False, compact=True)
         output._console = Console(file=stream, width=80, height=24, color_system="truecolor", no_color=False)
-        logger = ActionLoggerPure(keys, output, True, graph=graph)
+        logger = ActionLoggerPure(keys, output, True, graph=graph) if mode == "pure" else table.ActionLoggerTable(keys)
+        logger.console = output.console
         initial_frames = []
         refresh = logger._refresh_display
 
@@ -258,6 +263,9 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
             assert restored[3] & changed_flags == original[3] & changed_flags
             assert restored[:3] == original[:3] and restored[4:] == original[4:]
             assert captured.count(BACKGROUND_QUERY.encode()) == 1
+            if mode == "table":
+                assert b"\x1b[?1049h" not in captured
+                assert b"\x1b[?1000h" not in captured and b"\x1b[?1006h" not in captured
             started = time.monotonic()
             logger.stop()
             assert time.monotonic() - started < .1

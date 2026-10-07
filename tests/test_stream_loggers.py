@@ -431,7 +431,7 @@ def test_unicode_preparation_errors_preserve_diagnostics_before_logger_start(tmp
                 else "No markdown files found matching pattern: absent_界.md")
     assert expected.encode(encoding, errors="replace").decode(encoding) in stdout, stdout
     assert stdout.count("Using Nix:") == 1
-    assert stdout.count("Run info:") == (0 if mode == "table" else 1)
+    assert stdout.count("Run info:") == 1
     assert "Actions:" not in stdout and "Running command" not in stdout
     assert definition.read_text() == source
     assert not (tmp_path / ".mdl" / "runs").exists()

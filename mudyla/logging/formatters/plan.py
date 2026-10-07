@@ -5,6 +5,8 @@ from typing import Callable, Literal, Optional
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult, RenderableType
 from rich.text import Text
+from rich import box
+from rich.table import Table
 
 from ...dag.context import ContextId
 from ...dag.graph import ActionGraph, ActionKey
@@ -13,7 +15,32 @@ from .details import context_label, literal_text
 from .sections import section
 
 MIN_LABEL_WIDTH = 8
-PlanStyle = Literal["tree", "dag"]
+PlanStyle = Literal["table", "tree", "dag"]
+
+
+def execution_table(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
+                    use_short_ids: bool, shared: dict[ActionKey, int], ascii_only: bool) -> Table:
+    """Number actions once, retaining context identity and typed dependency references."""
+    table = Table(box=box.ASCII if ascii_only else box.ROUNDED, header_style="dim", border_style="dim",
+                  highlight=False, safe_box=True)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Context", overflow="fold")
+    table.add_column("Action", overflow="fold")
+    table.add_column("Goal", justify="center")
+    table.add_column("Deps", style="dim")
+    table.add_column("Shared", justify="right", style="cyan")
+    positions = {key: index for index, key in enumerate(execution_order, 1)}
+    for key in execution_order:
+        dependencies = [dep for dep in graph.get_node(key).dependencies if dep.action in positions]
+        references = [("?" if dep.soft else "~" if dep.weak else "") + str(positions[dep.action])
+                      for dep in sorted(dependencies, key=lambda dep: positions[dep.action])]
+        goal = key in graph.goals
+        table.add_row(str(positions[key]), context_label(key.context_id, formatter, use_short_ids),
+                      literal_text(key.id.name, "bold" if goal else ""), "*" if goal else "",
+                      ", ".join(references) or "-", str(shared[key]) if shared.get(key, 0) > 1 else "-")
+    table.caption = Text("Deps: prerequisite row; ~ weak / ? soft   Shared: goal contexts", style="dim")
+    table.caption_justify = "left"
+    return table
 
 
 @dataclass(frozen=True)

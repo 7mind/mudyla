@@ -152,8 +152,12 @@ class OutputFormatter:
             self._run_fields = []
             self._recorded_renderables.append(section("Run info:", KeyValueView(self._run_fields), None, None))
 
+    @property
+    def recording_preparation(self) -> bool:
+        return self._run_fields is not None
+
     def print_run_field(self, name: str, value: Text, legacy: str) -> None:
-        if self.compact:
+        if self.compact or self.recording_preparation:
             assert self._run_fields is not None, "Run fields require preparation recording"
             self._run_fields.append(summary_field(name, value))
         else:

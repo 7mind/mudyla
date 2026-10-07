@@ -21,15 +21,16 @@ from mudyla.logging.formatters import OutputFormatter
 from mudyla.logging.formatters.dag import DagEdge, DagRow, execution_dag
 
 
-@pytest.mark.parametrize("option", ["--plan-tree", "--plan-dag"])
+@pytest.mark.parametrize("option", ["--plan-table", "--plan-tree", "--plan-dag"])
 def test_plan_options_are_builtin_flags(option):
     _, unknown = CLI().parser.parse_known_args([option])
     assert unknown == []
 
 
-def test_plan_options_are_mutually_exclusive(capsys):
+@pytest.mark.parametrize("options", [["--plan-table", "--plan-tree"], ["--plan-table", "--plan-dag"], ["--plan-tree", "--plan-dag"]])
+def test_plan_options_are_mutually_exclusive(capsys, options):
     with pytest.raises(SystemExit) as error:
-        CLI().parser.parse_args(["--plan-tree", "--plan-dag"])
+        CLI().parser.parse_args(options)
     assert error.value.code == 2
     assert "not allowed with" in capsys.readouterr().err
 
@@ -48,7 +49,7 @@ def test_all_loggers_render_each_dag_action_once(tmp_path, mode, dry, selection)
         '\npass\n```' for name, dependencies in actions.items()), encoding="utf-8")
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="160")
     result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode,
-        *(["--force-interactive"] if mode == "table" else []), *selection, *(["--dry-run"] if dry else []), ":goal"], cwd=tmp_path, env=env,
+        *(["--force-interactive", "--plan-dag"] if mode == "table" and not selection else ["--force-interactive"] if mode == "table" else []), *selection, *(["--dry-run"] if dry else []), ":goal"], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     if mode == "teamcity":
@@ -71,6 +72,74 @@ def crossing_graph():
     for source, target, weak in [(0, 1, False), (0, 3, False), (1, 2, False), (1, 4, True), (2, 4, False), (3, 4, False)]:
         nodes[keys[target]].dependencies.add(Dependency(keys[source], weak=weak))
     return ActionGraph(nodes, {keys[-1]}), keys
+
+
+@pytest.mark.parametrize("mode", ["pure", "table", "simple", "verbose", "github", "teamcity"])
+@pytest.mark.parametrize("dry", [False, True])
+def test_explicit_table_plan_is_rendered_by_cli_modes(tmp_path, mode, dry):
+    (tmp_path / ".git").mkdir()
+    definitions = tmp_path / ".mdl" / "defs"
+    definitions.mkdir(parents=True)
+    (definitions / "actions.md").write_text(
+        '# action: base\n```python\npass\n```\n\n'
+        '# action: work\n```python\nmdl.dep("action.base")\npass\n```\n')
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="100")
+    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode, "--plan-table",
+                             *(["--force-interactive"] if mode == "table" else []),
+                             *(["--dry-run"] if dry else []), ":work"], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    if mode == "teamcity":
+        from mudyla.logging.teamcity import parse_message
+        messages = [parse_message(line) for line in result.stdout.splitlines()]
+        assert all(message is not None for message in messages)
+        displayed = "".join(message.attributes.get("text", "") for message in messages if message is not None)
+    else:
+        displayed = result.stdout
+    plan = displayed.split("Plan:", 1)[1].split("Deps: prerequisite row", 1)[0]
+    for column in ["Context", "Action", "Goal", "Deps", "Shared"]:
+        assert column in plan
+    assert re.search(r"\b1\b.*base", plan) and re.search(r"\b2\b.*work.*\b1\b", plan)
+    assert "deps ready" not in displayed
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_pure_explicit_table_plan_remains_a_table_in_live_and_final_views(completed):
+    graph, keys = crossing_graph()
+    output = OutputFormatter(no_color=True, compact=True)
+    output._console = Console(file=StringIO(), width=100, height=40)
+    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="table")
+    if completed:
+        logger.stop_flag = True
+        output.console.print(logger._build_renderable())
+        displayed = output.console.file.getvalue()
+    else:
+        displayed = "\n".join("".join(segment.text for segment in line) for line in logger._overview_prefix())
+    for heading in ["Context", "Action", "Goal", "Deps", "Shared"]:
+        assert heading in displayed
+    assert "deps ready" not in displayed
+
+
+def test_pure_static_table_plan_reuses_prefix_until_terminal_width_changes(monkeypatch):
+    graph, keys = crossing_graph()
+    output = OutputFormatter(no_color=True, compact=True)
+    output._console = Console(file=StringIO(), width=100, height=40)
+    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="table")
+    calls = []
+    original = logger._plan_section
+
+    def plan():
+        calls.append(output.console.width)
+        return original()
+
+    monkeypatch.setattr(logger, "_plan_section", plan)
+    before = logger._overview_prefix()
+    logger.mark_running(keys[0])
+    assert logger._overview_prefix() == before
+    assert calls == [100], "A static Plan must not rebuild when action status changes"
+    output.console.width = 80
+    logger._overview_prefix()
+    assert calls == [100, 80]
 
 
 @pytest.mark.parametrize("width", [100, 12, 8])
@@ -215,7 +284,10 @@ def test_unspecified_plan_matches_explicit_dag_and_retains_tree_alternative(comp
         CLI()._visualize_execution_plan(graph, keys, ["package"], output, True,
                                         **({"plan_style": selection} if selection else {}))
         frames.append(output.console.file.getvalue())
-    assert CLI().parser.parse_args([]).plan_style == "dag"
+    cli = CLI()
+    args = cli.parser.parse_args([])
+    cli._apply_platform_defaults(args, True)
+    assert args.plan_style == "dag"
     assert frames[0] == frames[1]
     assert "Plan:" in frames[2] and "shared; shown above" in frames[2]
 

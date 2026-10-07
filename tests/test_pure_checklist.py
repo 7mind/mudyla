@@ -23,7 +23,7 @@ from mudyla.logging.formatters import OutputFormatter
 
 
 @pytest.mark.parametrize("interactive", [False, True])
-@pytest.mark.parametrize("plan_style", ["tree", "dag"])
+@pytest.mark.parametrize("plan_style", ["table", "tree", "dag"])
 def test_final_snapshot_contains_selected_graph_once_without_replaying_run_info(interactive, plan_style):
     source, goal = [ActionKey.from_name(name) for name in ["source", "goal"]]
     nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("test.md", 1, key.id.name)))
@@ -40,7 +40,7 @@ def test_final_snapshot_contains_selected_graph_once_without_replaying_run_info(
         output.console.print(logger._build_renderable())
     logger.stop()
     frame = Text.from_ansi(output.console.file.getvalue()).plain
-    assert frame.count("Plan:") == (1 if plan_style == "tree" else 0)
+    assert frame.count("Plan:") == (0 if plan_style == "dag" else 1)
     assert "ONLY_PREPARATION" not in frame
     assert ("✓ source" if interactive else "+ source") in frame or "✓ source" in frame
     assert frame.count("Actions:") == 1
@@ -175,7 +175,7 @@ def test_overview_scrolls_run_information_and_all_actions_without_moving_selecti
     output = OutputFormatter(no_color=True, compact=True)
     output._console = Console(file=StringIO(), width=90, height=30, force_terminal=True)
     keys = [ActionKey.from_name(f"task{index:02d}") for index in range(36)]
-    logger = ActionLoggerPure(keys, output, True)
+    logger = ActionLoggerPure(keys, output, True, keep_running=True)
     logger._run_info = Group(Text("Retainers: kept shared"), Text("Execution plan:"),
                              Text("goal\n└── shared\n    └── dependency"))
 
@@ -210,7 +210,7 @@ def test_overview_resize_preserves_action_position_after_prefix_rewrap():
     output = OutputFormatter(no_color=True, compact=True)
     output._console = Console(file=StringIO(), width=80, height=12, force_terminal=True)
     keys = [ActionKey.from_name(f"task{index:02d}") for index in range(36)]
-    logger = ActionLoggerPure(keys, output, True)
+    logger = ActionLoggerPure(keys, output, True, keep_running=True)
     logger._run_info = Text("retainer " * 35)
     for _ in range(25):
         logger._handle_key_table("down")
@@ -241,7 +241,7 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
         retained = RetainerResult(ActionKey.from_name("keep-shared"), [shared], True, 3)
         run_info = Group(cli._build_retainer_results([retained], output, True), Text("Execution plan"),
                          cli._build_execution_tree(graph, keys, output, True, {}))
-        logger = ActionLoggerPure(keys, output, True, run_info=run_info)
+        logger = ActionLoggerPure(keys, output, True, keep_running=True, run_info=run_info)
         logger._handle_key_table("top")
         output.console.print(logger._build_renderable())
         stream.flush()

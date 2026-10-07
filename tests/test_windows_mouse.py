@@ -88,8 +88,9 @@ def test_windows_wheel_capture_preserves_keyboard_records_and_original_mode(monk
 
 
 @pytest.mark.parametrize("mode", ["pure", "table"])
-def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypatch, mode):
-    api = ConsoleAPI(0x267, [mouse_record(-120)] if mode == "pure" else [])
+@pytest.mark.parametrize("fullscreen", [False, True])
+def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypatch, mode, fullscreen):
+    api = ConsoleAPI(0x267, [mouse_record(-120)] if fullscreen else [])
     key = InputRecord()
     key.kind = WindowsMouseInput.KEY_EVENT
     key.event.key.down = 1
@@ -107,8 +108,9 @@ def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypat
         get_osfhandle=lambda fd: fd, kbhit=lambda: bool(api.records),
         getwch=lambda: chr(api.records.pop(0).event.key.char)), raising=False)
     logger._setup_terminal()
+    logger._screen_active = fullscreen
     logger._set_mouse_capture(True)
-    if mode == "pure":
+    if fullscreen:
         assert logger._read_key_windows() == "wheel_down"
     else:
         assert api.mode == 0x267

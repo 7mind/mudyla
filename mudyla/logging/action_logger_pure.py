@@ -2,8 +2,6 @@
 
 from pathlib import Path
 import json
-import os
-import sys
 import time
 from typing import TYPE_CHECKING, Literal, Optional, cast
 import unicodedata
@@ -18,12 +16,11 @@ from rich.text import Text
 from ..dag.graph import ActionGraph, ActionKey
 from .formatters import OutputFormatter
 from .formatters.details import JsonValue, KeyValueRow, KeyValueView, action_label, context_label, literal_text, metadata_view, output_view
-from .formatters.plan import PlanStyle, execution_tree, sharing_counts, tree_section
+from .formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
 from .formatters.dag import dag_section, execution_dag
 from .formatters.sections import heading, section
 from .action_logger_table import ActionLoggerTable, ScrollState, TaskStatus, ViewState
 from .formatters.failure import legacy_failure
-from .terminal_background import BACKGROUND_QUERY, BackgroundProbe
 
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult
@@ -37,9 +34,9 @@ CURSOR_WIDTH = 2
 class ActionLoggerPure(ActionLoggerTable):
     """Shared action navigation with a borderless checklist and detail views."""
 
+    OVERVIEW_BOTTOM_ROWS = 0
     CONTENT_HORIZONTAL_PADDING = 0
     WRAP_HIGHLIGHTED_CONTENT = True
-    ALTERNATE_SCREEN = True
 
     def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool,
                  *, keep_running: bool = False, show_dirs: bool = False,
@@ -48,7 +45,7 @@ class ActionLoggerPure(ActionLoggerTable):
                  graph: Optional[ActionGraph] = None, plan_style: PlanStyle = "dag") -> None:
         super().__init__(action_keys, no_color=output.no_color, use_short_ids=use_short_ids,
                          keep_running=keep_running, show_dirs=show_dirs, action_dirs=action_dirs,
-                         run_directory=run_directory)
+                         run_directory=run_directory, run_info=run_info)
         self._output = output
         self._action_formatter = output.action
         if force_interactive:
@@ -60,7 +57,6 @@ class ActionLoggerPure(ActionLoggerTable):
         self._escape_states: dict[tuple[ActionKey, str], AnsiState] = {}
         self._partial_lines: dict[tuple[ActionKey, str], str] = {}
         self._interactive = force_interactive or (self.console.is_terminal and not self.console.is_dumb_terminal)
-        self._run_info = run_info
         self._graph = graph
         self._plan_style = plan_style
         self._tree_frame_time = time.time()
@@ -68,13 +64,6 @@ class ActionLoggerPure(ActionLoggerTable):
         self._dag = (execution_dag(graph, action_keys, output.context, use_short_ids, self._sharing_counts,
                                    self._tree_status, self._plan_edge_style)
                      if graph is not None and plan_style == "dag" else None)
-        self._overview_offset = 0
-        self._overview_initialized = False
-        self._overview_prefix_length = 0
-        self._overview_height = 0
-        self._action_anchors: dict[ActionKey, int] = {}
-        self._prefix_cache_key: Optional[tuple[int, str, bool]] = None
-        self._prefix_lines: list[list[Segment]] = []
         self._raw_json_views: set[tuple[ActionKey, ViewState]] = set()
         self._static_snapshot_printed = False
 
@@ -127,7 +116,8 @@ class ActionLoggerPure(ActionLoggerTable):
                      f"q back  j/k scroll{input_hint}  r refresh", "q back  j/k scroll", "q back"]
         else:
             ending = "q close" if self.execution_complete else "q kill"
-            hints = [f"{ending}  j/k select  Enter logs  e stderr  m meta  o output  s source{input_hint}  Wheel/PgUp/PgDn scroll",
+            scroll = "Wheel/PgUp/PgDn" if self.keep_running else "PgUp/PgDn"
+            hints = [f"{ending}  j/k select  Enter logs  e stderr  m meta  o output  s source{input_hint}  {scroll} scroll",
                      f"{ending}  j/k select  Enter logs  e err  m meta  o out  s src{input_hint}",
                      f"{ending}  j/k select  Enter logs{input_hint}", f"{ending}  j/k select", ending]
         footer = self._footer_with_feedback(hints)
@@ -252,28 +242,6 @@ class ActionLoggerPure(ActionLoggerTable):
         else:
             self.console.print(heading(f"mudyla / {len(self.action_keys)} actions"))
 
-    def _probe_terminal_background(self) -> None:
-        if (self._background_probe is None and self._input_enabled
-                and (self._terminal_active or self._windows_mouse is not None)
-                and sys.stdin.isatty() and self.console.file.isatty()
-                and not self.no_color and not self.console.no_color
-                and not self.console.is_dumb_terminal and os.environ.get("TERM") not in {"dumb", "unknown"}
-                and self.console.color_system in {"truecolor", "256"}):
-            self._background_probe = BackgroundProbe(time.monotonic())
-            self.console.file.write(BACKGROUND_QUERY)
-            self.console.file.flush()
-
-    def _main_loop(self) -> None:
-        if not self.stop_flag:
-            self._probe_terminal_background()
-        super()._main_loop()
-        while (self._background_probe is not None and self._background_probe.pending(time.monotonic())
-               and self._input_enabled):
-            if self._read_key() == "terminal_eof":
-                self._input_enabled = False
-                break
-            time.sleep(0.001)
-
     def uses_terminal_input(self) -> bool:
         return self._interactive and super().uses_terminal_input()
 
@@ -384,8 +352,7 @@ class ActionLoggerPure(ActionLoggerTable):
         return rendered, anchors
 
     def _highlight_rows(self, lines: list[list[Segment]], selected_rows: range) -> None:
-        selection_style = (self._background_probe.selection_style(self.console.color_system)
-                           if self._background_probe is not None and not self.no_color and not self.console.no_color else None)
+        selection_style = self._selection_style()
         if selection_style is not None:
             for index in selected_rows:
                 styled = [Segment(segment.text, (segment.style or Style()) + selection_style, segment.control)
@@ -435,24 +402,29 @@ class ActionLoggerPure(ActionLoggerTable):
         if self._plan_style == "dag":
             assert self._dag is not None
             return dag_section(self._dag, self.console.options.ascii_only)
+        if self._plan_style == "table":
+            return section("Plan:", execution_table(self._graph, self.action_keys, self._output.context,
+                           self.use_short_ids, self._sharing_counts, self.console.options.ascii_only), None, None)
+        assert self._plan_style == "tree"
         return tree_section(execution_tree(self._graph, self.action_keys, self._output.context, self.use_short_ids,
                                            self._sharing_counts, self._tree_status), self.console.options.ascii_only)
 
+    def _preparation_renderable(self) -> RenderableType:
+        prefix = super()._preparation_renderable() if self.keep_running else Group()
+        return Group(prefix, self._plan_section(), Text("")) if self._graph is not None and self._plan_style == "table" else prefix
+
+    def _overview_is_scrollable(self) -> bool:
+        return True
+
     def _overview_prefix(self) -> list[list[Segment]]:
         width = self.console.width
-        cache_key = (width, self.console.encoding, self.console.options.ascii_only)
-        if cache_key != self._prefix_cache_key:
-            prefix = self._run_info if self._run_info is not None else Group()
-            lines = self.console.render_lines(prefix, self.console.options.update(width=width), pad=False)
-            self._prefix_lines = [[Segment(segment.text.encode(self.console.encoding, errors="replace").decode(self.console.encoding), segment.style, segment.control)
-                                   for segment in line] for line in lines]
-            self._prefix_cache_key = cache_key
+        prefix = self._cached_preparation()
         dynamic: list[RenderableType] = []
-        if self._graph is not None and self._dag is None:
+        if self._graph is not None and self._plan_style == "tree":
             dynamic.extend([self._plan_section(), Text("")])
         dynamic.append(heading("Actions:"))
         lines = self.console.render_lines(Group(*dynamic), self.console.options.update(width=width), pad=False)
-        rendered = self._prefix_lines + [[Segment(segment.text.encode(self.console.encoding, errors="replace").decode(self.console.encoding), segment.style, segment.control)
+        rendered = prefix + [[Segment(segment.text.encode(self.console.encoding, errors="replace").decode(self.console.encoding), segment.style, segment.control)
                                           for segment in line] for line in lines]
         self._overview_prefix_length = len(rendered)
         return rendered
@@ -480,34 +452,6 @@ class ActionLoggerPure(ActionLoggerTable):
         self._overview_offset = max(0, min(maximum, self._overview_offset))
         self._overview_height = height
         return prefix + actions
-
-    def _handle_key_table(self, key: str) -> bool:
-        with self.lock:
-            rows = self._overview_rows()
-            height = self._get_content_height()
-            if key in {"top", "bottom", "page_up", "page_down", "half_up", "half_down", "wheel_up", "wheel_down"}:
-                maximum = max(0, len(rows) - height)
-                if key == "top":
-                    self._overview_offset = 0
-                elif key == "bottom":
-                    self._overview_offset = maximum
-                else:
-                    amount = self.MOUSE_WHEEL_ROWS if key.startswith("wheel") else max(1, height // 2) if key.startswith("half") else height
-                    self._overview_offset += -amount if key.endswith("up") else amount
-                    self._overview_offset = max(0, min(maximum, self._overview_offset))
-                return False
-            result = super()._handle_key_table(key)
-            if key in {"up", "down"}:
-                row = self._overview_prefix_length + self._action_anchors[self.action_keys[self.selected_index]]
-                self._overview_offset = min(self._overview_offset, row)
-                self._overview_offset = max(self._overview_offset, row - height + 1)
-            return result
-
-    def _overview_content(self) -> Group:
-        rows = self._overview_rows()
-        visible = rows[self._overview_offset:self._overview_offset + self._get_content_height()]
-        segments = Segments([segment for row in visible for segment in [*row, Segment.line()]])
-        return Group(Align(segments, height=self._get_content_height()))
 
     def _build_renderable(self) -> Group:
         with self.lock:
@@ -556,9 +500,6 @@ class ActionLoggerPure(ActionLoggerTable):
 
     def stop(self) -> None:
         if self._interactive:
-            while (self._background_probe is not None and self._background_probe.pending(time.monotonic())
-                   and self._main_thread is not None and self._main_thread.is_alive() and not self.stop_flag):
-                time.sleep(min(0.01, max(0, self._background_probe.deadline - time.monotonic())))
             super().stop()
         with self.lock:
             self.stop_flag = True

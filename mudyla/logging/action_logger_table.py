@@ -24,19 +24,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from rich import box
+from rich.align import Align
 from rich.cells import cell_len
 from rich.console import Console, Group, RenderableType
+from rich.control import Control
 from rich.live import Live
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
+from rich.style import Style
+from rich.segment import Segment, Segments
 
 from ..dag.graph import ActionKey
 from .formatters import OutputFormatter
 from .action_logger import ActionLogger
 from .formatters.failure import legacy_failure
-from .terminal_background import BackgroundProbe
+from .formatters.details import action_label, context_label
+from .formatters.sections import heading
+from .terminal_background import BACKGROUND_QUERY, BackgroundProbe
 
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult
@@ -44,9 +50,6 @@ from .windows_mouse import WindowsMouseInput
 
 # Cross-platform terminal handling
 IS_WINDOWS = sys.platform == "win32"
-
-# Selection indicator - Windows console encoding doesn't support Unicode triangles
-SELECTION_INDICATOR = ">" if IS_WINDOWS else "▶"
 
 if IS_WINDOWS:
     import msvcrt
@@ -101,6 +104,43 @@ class TaskState:
     stream: str = "stdout"
 
 
+class InlineDisplay:
+    """Keep the mutable frame in one logical terminal line across reflow."""
+
+    def __init__(self, renderable: RenderableType, console: Console):
+        self.console = console
+        self.renderable = renderable
+        self.started = False
+        self.transient = True
+
+    def start(self) -> None:
+        self.started = True
+        self.console.show_cursor(False)
+
+    def update(self, renderable: RenderableType, refresh: bool) -> None:
+        self.renderable = renderable
+        if not refresh or not self.started:
+            return
+        width, height = self.console.size
+        rows = self.console.render_lines(renderable, pad=False)[:height]
+        segments = [segment for index, row in enumerate(rows)
+                    for segment in Segment.adjust_line_length(row, width, pad=index < len(rows) - 1)]
+        self.console.file.write("\x1b[J")
+        self.console.file.flush()
+        self.console.print(Segments(segments), end="", soft_wrap=True)
+        self.console.control(Control.move_to_column(0), Control.move(y=1 - len(rows)))
+
+    def stop(self) -> None:
+        if not self.started:
+            return
+        self.started = False
+        try:
+            self.console.file.write("\x1b[J")
+            self.console.file.flush()
+        finally:
+            self.console.show_cursor(True)
+
+
 class ActionLoggerTable(ActionLogger):
     """State machine-based task table with interactive navigation.
 
@@ -116,9 +156,10 @@ class ActionLoggerTable(ActionLogger):
     SCROLL_KEYS = "j/k/Arrows scroll | d/u half | PgUp/PgDn/f/b page | gg/Home top | G/End bottom | q back"
     LOG_KEYS = "j/k/Arrows | d/u half | PgUp/PgDn page | gg/G top/bottom | r refresh | q back"
     FRAME_ROWS = 6
+    TABLE_FRAME_ROWS = 7
+    OVERVIEW_BOTTOM_ROWS = 1
     CONTENT_HORIZONTAL_PADDING = 4
     WRAP_HIGHLIGHTED_CONTENT = False
-    ALTERNATE_SCREEN = False
     ESCAPE_WAIT_SECONDS = 0.02
     MAX_ESCAPE_BYTES = 32
     MAX_INPUT_BYTES = 4096
@@ -134,6 +175,7 @@ class ActionLoggerTable(ActionLogger):
         run_directory: Optional[Path] = None,
         keep_running: bool = False,
         use_short_ids: bool = True,
+        run_info: Optional[RenderableType] = None,
     ):
         self.no_color = no_color
         self.show_dirs = show_dirs
@@ -141,6 +183,14 @@ class ActionLoggerTable(ActionLogger):
         self.keep_running = keep_running
         self.action_dirs_map = action_dirs or {}
         self.use_short_ids = use_short_ids
+        self._run_info = run_info
+        self._prefix_cache_key: Optional[tuple[int, str, bool]] = None
+        self._prefix_lines: list[list[Segment]] = []
+        self._overview_offset = 0
+        self._overview_initialized = False
+        self._overview_prefix_length = 0
+        self._overview_height = 0
+        self._action_anchors: dict[ActionKey, int] = {}
 
         # Formatters - use OutputFormatter which creates all sub-formatters
         self._output = OutputFormatter(no_color=no_color)
@@ -176,6 +226,7 @@ class ActionLoggerTable(ActionLogger):
         self._old_terminal_settings: Optional[list[Any]] = None
         self._terminal_active = False
         self._mouse_enabled = False
+        self._screen_active = False
         self._windows_mouse: Optional[WindowsMouseInput] = None
         self._input_enabled = sys.stdin.isatty()
         self._input_action: Optional[ActionKey] = None
@@ -194,8 +245,9 @@ class ActionLoggerTable(ActionLogger):
         self.stop_flag = False
         self.kill_requested = False  # Flag for engine to check
         self._kill_callback: Optional[Callable[[], None]] = None
-        self.live: Optional[Live] = None
+        self.live: Optional[Live | InlineDisplay] = None
         self._main_thread: Optional[threading.Thread] = None
+        self._display_error: Optional[BaseException] = None
 
     # =========================================================================
     # ActionLogger Interface Implementation
@@ -376,7 +428,7 @@ class ActionLoggerTable(ActionLogger):
                 pass
 
     def _set_mouse_capture(self, enabled: bool) -> None:
-        enabled = enabled and self.ALTERNATE_SCREEN and self.uses_terminal_input()
+        enabled = enabled and self._screen_active and self.uses_terminal_input()
         if self._mouse_enabled == enabled:
             return
         if self._windows_mouse is not None:
@@ -591,6 +643,20 @@ class ActionLoggerTable(ActionLogger):
     def _handle_key_table(self, key: str) -> bool:
         """Handle key in TABLE state. Returns True if should exit/kill."""
         with self.lock:
+            if self._overview_is_scrollable():
+                rows = self._overview_rows()
+                height = self._overview_height
+                if key in {"top", "bottom", "page_up", "page_down", "half_up", "half_down", "wheel_up", "wheel_down"}:
+                    maximum = max(0, len(rows) - height)
+                    if key == "top":
+                        self._overview_offset = 0
+                    elif key == "bottom":
+                        self._overview_offset = maximum
+                    else:
+                        amount = self.MOUSE_WHEEL_ROWS if key.startswith("wheel") else max(1, height // 2) if key.startswith("half") else height
+                        self._overview_offset += -amount if key.endswith("up") else amount
+                        self._overview_offset = max(0, min(maximum, self._overview_offset))
+                    return False
             if key == "up":
                 self.selected_index = max(0, self.selected_index - 1)
             elif key == "down":
@@ -629,6 +695,10 @@ class ActionLoggerTable(ActionLogger):
                 self.state = ViewState.OUTPUT
             elif key == "s":
                 self.state = ViewState.SOURCE
+            if self._overview_is_scrollable() and key in {"up", "down"} and self.action_keys:
+                row = self._overview_prefix_length + self._action_anchors[self.action_keys[self.selected_index]]
+                self._overview_offset = min(self._overview_offset, row)
+                self._overview_offset = max(self._overview_offset, row - self._overview_height + 1 + self.OVERVIEW_BOTTOM_ROWS)
         return False
 
     def _handle_key_scroll(self, key: str) -> None:
@@ -769,7 +839,14 @@ class ActionLoggerTable(ActionLogger):
     }
 
     def _table_window(self) -> tuple[int, int]:
-        visible = self._get_content_height()
+        width, height = self._get_terminal_size()
+        if self.keep_running and not self.stop_flag:
+            start = max(0, min(len(self.action_keys), self._overview_offset - self._overview_prefix_length))
+            header_rows = max(0, self._overview_prefix_length - self._overview_offset)
+            visible = max(0, self._overview_height - self.OVERVIEW_BOTTOM_ROWS - header_rows)
+            return start, min(len(self.action_keys), start + visible)
+        directory_rows = int(self.show_dirs and width < 100)
+        visible = max(1, height - self.TABLE_FRAME_ROWS - directory_rows)
         start = max(0, min(self.selected_index - visible // 2, len(self.action_keys) - visible))
         return start, min(len(self.action_keys), start + visible)
 
@@ -778,42 +855,98 @@ class ActionLoggerTable(ActionLogger):
         with self.lock:
             width, _ = self._get_terminal_size()
             detailed = width >= 76
-            table = Table(box=None, expand=True, padding=(0, 1), pad_edge=False,
-                          header_style="" if self.no_color else "dim", highlight=False)
+            table = Table(box=box.ASCII if self.console.options.ascii_only else box.ROUNDED,
+                          padding=(0, 1), header_style="dim", border_style="dim", highlight=False, safe_box=True)
             table.add_column("", width=1, no_wrap=True)
-            table.add_column("Action", ratio=1, no_wrap=True, overflow="crop")
+            table.add_column("Action", no_wrap=True, overflow="crop" if self.console.options.ascii_only else "ellipsis")
             table.add_column("Status", width=8, no_wrap=True)
             if width >= 40:
-                table.add_column("Time", width=7, justify="right", no_wrap=True)
+                table.add_column("Time", justify="right", no_wrap=True)
             if detailed:
-                table.add_column("Stdout", width=7, justify="right", no_wrap=True)
-                table.add_column("Stderr", width=7, justify="right", no_wrap=True)
+                table.add_column("Stdout", justify="right", no_wrap=True)
+                table.add_column("Stderr", justify="right", no_wrap=True)
             if self.show_dirs and width >= 100:
-                table.add_column("Directory", ratio=1, no_wrap=True, overflow="crop")
+                table.add_column("Directory", no_wrap=True, overflow="crop" if self.console.options.ascii_only else "ellipsis")
 
             start, end = self._table_window()
+            rows: list[list[Text]] = []
             for index in range(start, end):
                 action_key = self.action_keys[index]
                 task = self.tasks[action_key]
                 style = self._get_status_style(task.status)
                 selected = index == self.selected_index
                 full_label = self._action_formatter.format_label_plain(action_key, self.use_short_ids)
-                label = action_key.id.name if str(action_key.context_id) == "default" else full_label
+                label = (Text(action_key.id.name, style="bold") if str(action_key.context_id) == "default" else
+                         action_label(action_key, self._context_formatter, self.use_short_ids, True))
+                label.stylize("dim not bold", len(action_key.id.name) + 1)
+                label.plain = self._display_text(label.plain)
                 if task.status == TaskStatus.RUNNING and task.start_time is not None:
                     duration = self._format_duration(time.time() - task.start_time)
                 else:
                     duration = self._format_duration(task.duration) if task.duration is not None else "-"
-                marker = ">" if self.console.options.ascii_only else SELECTION_INDICATOR
-                cells = [Text(marker if selected else " "), Text(self._display_text(label)),
+                cells = [Text(">" if selected else " ", style="dim"), label,
                          Text(self.STATUS_DISPLAY[task.status][3], style=style)]
                 if width >= 40:
-                    cells.append(Text(duration))
+                    cells.append(Text(duration, style="dim"))
                 if detailed:
                     cells.extend([Text(self._format_size(task.stdout_size)), Text(self._format_size(task.stderr_size))])
                 if self.show_dirs and width >= 100:
                     cells.append(Text(self._display_text(self.action_dirs_map.get(full_label, "-"))))
-                table.add_row(*cells, style="reverse" if selected and not self.no_color else "")
+                rows.append(cells)
+
+            flexible = [1]
+            if self.show_dirs and width >= 100:
+                flexible.append(len(table.columns) - 1)
+            for index, column in enumerate(table.columns):
+                if index not in flexible and column.width is None:
+                    column.width = max([cell_len(str(column.header)), *(row[index].cell_len for row in rows)])
+            # Reserve both borders, column dividers, and two padding cells per column before label widths.
+            available = width - (3 * len(table.columns) + 1) - sum(column.width or 0 for column in table.columns)
+            natural = [max([cell_len(str(table.columns[index].header)), *(row[index].cell_len for row in rows)])
+                       for index in flexible]
+            allocated = [min(size, available // len(flexible)) for size in natural]
+            remaining = available - sum(allocated)
+            for index, size in enumerate(natural):
+                extra = min(size - allocated[index], remaining)
+                allocated[index] += extra
+                remaining -= extra
+                table.columns[flexible[index]].max_width = allocated[index]
+
+            for key, cells in zip(self.action_keys[start:end], rows):
+                if cells[1].cell_len > allocated[0] and str(key.context_id) != "default":
+                    identity = context_label(key.context_id, self._context_formatter, self.use_short_ids)
+                    identity.plain = self._display_text(identity.plain)
+                    identity.stylize("dim not bold")
+                    name_width = max(0, allocated[0] - identity.cell_len - 1)
+                    name = Text(self._display_text(key.id.name), style="bold")
+                    name.truncate(name_width, overflow="crop" if self.console.options.ascii_only else "ellipsis")
+                    cells[1] = name + Text(" " if name_width else "") + identity
+                table.add_row(*cells)
+            if not self.keep_running or self.stop_flag:
+                table.caption = self._build_progress_caption()
+            table.caption_justify = "left"
             return table
+
+    def _build_progress_caption(self) -> Text:
+        summary = self._build_text_status_header()
+        start, end = self._table_window()
+        if end > start and len(self.action_keys) > end - start:
+            summary.append(f"  |  {start + 1}-{end}/{len(self.action_keys)}")
+        summary.stylize("dim")
+        summary.no_wrap = True
+        summary.overflow = "crop"
+        return summary
+
+    def _render_table(self) -> Segments:
+        lines = self.console.render_lines(self._build_table(), pad=False)
+        selection_style = self._selection_style()
+        if selection_style is not None and self.action_keys:
+            start, end = self._table_window()
+            if start <= self.selected_index < end:
+                row = 3 + self.selected_index - start  # Top border, headings, and heading separator.
+                lines[row] = [Segment(segment.text, (segment.style or Style()) + selection_style, segment.control)
+                              for segment in lines[row]]
+        return Segments(segment for line in lines for segment in [*line, Segment.line()])
 
     def _build_text_status_header(self) -> Text:
         """Build text-based status header with counts (for no-color mode)."""
@@ -1075,7 +1208,9 @@ class ActionLoggerTable(ActionLogger):
         """Compose compact views bounded by the terminal viewport."""
         with self.lock:
             width, height = self._get_terminal_size()
-            if height < self.FRAME_ROWS or width < 24:
+            minimum_height = (self.TABLE_FRAME_ROWS + 1 + int(self.show_dirs and width < 100)
+                              if self.state == ViewState.TABLE else self.FRAME_ROWS)
+            if height < minimum_height or width < 24:
                 task = self._get_selected_task()
                 label = task.action_key.id.name if task is not None else "No actions"
                 lines = [self._build_footer()]
@@ -1083,40 +1218,123 @@ class ActionLoggerTable(ActionLogger):
                     lines.insert(0, Text(self._display_text(label), no_wrap=True, overflow="crop"))
                 return Group(*lines)
             if self.state == ViewState.TABLE:
-                summary = self._build_text_status_header()
-                start, end = self._table_window()
-                if len(self.action_keys) > end - start:
-                    summary.append(f"  |  {start + 1}-{end}/{len(self.action_keys)}")
-                title = "mudyla / Actions"
-                content: RenderableType = self._build_table()
-            else:
-                title = "mudyla / " + self._build_header()
-                task = self._get_selected_task()
-                summary = Text("No action selected")
-                if task is not None:
-                    summary = Text(self.STATUS_DISPLAY[task.status][3], style=self._get_status_style(task.status))
-                    summary.append(f"  stdout {self._format_size(task.stdout_size)}  stderr {self._format_size(task.stderr_size)}")
-                content = self._build_detail_content()
+                rows: list[RenderableType]
+                if self.keep_running and not self.stop_flag:
+                    rows = [self._overview_content(), self._build_progress_caption()]
+                else:
+                    rows = [heading("Actions:"), self._render_table()]
+                if self.show_dirs and width < 100:
+                    task = self._get_selected_task()
+                    if task is not None:
+                        label = self._action_formatter.format_label_plain(task.action_key, self.use_short_ids)
+                        rows.append(Text(self._display_text(self.action_dirs_map.get(label, "-")),
+                                         no_wrap=True, overflow="crop"))
+                rows.append(self._build_footer())
+                return Group(*rows)
+            title = "mudyla / " + self._build_header()
+            task = self._get_selected_task()
+            summary = Text("No action selected")
+            if task is not None:
+                summary = Text(self.STATUS_DISPLAY[task.status][3], style=self._get_status_style(task.status))
+                summary.append(f"  stdout {self._format_size(task.stdout_size)}  stderr {self._format_size(task.stderr_size)}")
+            content = self._build_detail_content()
             summary.no_wrap = True
             summary.overflow = "crop"
-            directory = Text("")
-            if self.show_dirs and self.state == ViewState.TABLE and width < 100:
-                task = self._get_selected_task()
-                if task is not None:
-                    label = self._action_formatter.format_label_plain(task.action_key, self.use_short_ids)
-                    directory = Text(self._display_text(self.action_dirs_map.get(label, "-")), no_wrap=True, overflow="crop")
-            panel = Panel(Group(summary, directory, content), title=Text(self._display_text(title)[:width - 8]), title_align="left",
+            panel = Panel(Group(summary, Text(""), content), title=Text(self._display_text(title)[:width - 8]), title_align="left",
                           border_style="" if self.no_color else "dim", padding=(0, 1),
                           width=width, safe_box=True,
                           box=box.ASCII if IS_WINDOWS or self.console.options.ascii_only else box.ROUNDED)
             return Group(panel, self._build_footer())
 
+    def _overview_is_scrollable(self) -> bool:
+        return self.keep_running
+
+    def _preparation_renderable(self) -> RenderableType:
+        return self._run_info if self._run_info is not None else Group()
+
+    def _cached_preparation(self) -> list[list[Segment]]:
+        cache_key = (self.console.width, self.console.encoding, self.console.options.ascii_only)
+        if cache_key != self._prefix_cache_key:
+            lines = self.console.render_lines(self._preparation_renderable(), pad=False)
+            self._prefix_lines = [[Segment(segment.text.encode(self.console.encoding, errors="replace").decode(self.console.encoding),
+                                           segment.style, segment.control) for segment in line] for line in lines]
+            self._prefix_cache_key = cache_key
+        return self._prefix_lines
+
+    def _overview_rows(self) -> list[list[Segment]]:
+        width, terminal_height = self._get_terminal_size()
+        height = max(1, terminal_height - 2 - int(self.show_dirs and width < 100))
+        resized = height != self._overview_height or (self._prefix_cache_key is not None and self._prefix_cache_key[0] != width)
+        previous_row = self._overview_prefix_length + self.selected_index
+        relative = previous_row - self._overview_offset
+        prefix = self._cached_preparation() + self.console.render_lines(heading("Actions:"), pad=False)
+        self._overview_prefix_length = len(prefix) + 3
+        selected_row = self._overview_prefix_length + self.selected_index
+        if not self._overview_initialized:
+            self._overview_offset = max(len(self._prefix_lines), selected_row - height + 1 + self.OVERVIEW_BOTTOM_ROWS)
+            self._overview_initialized = True
+        elif 0 <= relative < self._overview_height:
+            self._overview_offset = selected_row - min(relative, height - 1 - self.OVERVIEW_BOTTOM_ROWS)
+        maximum = max(0, self._overview_prefix_length + len(self.action_keys) + self.OVERVIEW_BOTTOM_ROWS - height)
+        actions_height = self._overview_prefix_length - len(self._prefix_lines) + len(self.action_keys) + self.OVERVIEW_BOTTOM_ROWS
+        if resized and 0 <= relative < self._overview_height and actions_height <= height:
+            self._overview_offset = maximum
+        self._overview_offset = max(0, min(maximum, self._overview_offset))
+        self._overview_height = height
+        self._action_anchors = {key: index for index, key in enumerate(self.action_keys)}
+        start, end = self._table_window()
+        lines = self.console.render_lines(self._render_table(), pad=False)
+        rows = prefix + lines[:3] + [[]] * start + lines[3:3 + end - start] + [[]] * (len(self.action_keys) - end) + lines[3 + end - start:]
+        visible_end = self._overview_offset + height
+        if self._overview_prefix_length <= visible_end < len(rows):
+            rows[visible_end - 1] = lines[-1]
+        return rows
+
+    def _overview_content(self) -> Group:
+        rows = self._overview_rows()
+        visible = rows[self._overview_offset:self._overview_offset + self._overview_height]
+        segments = Segments([segment for row in visible for segment in [*row, Segment.line()]])
+        return Group(Align(segments, height=self._overview_height) if self.keep_running else segments)
+
     # =========================================================================
     # Main Loop
     # =========================================================================
 
+    def _selection_style(self) -> Optional[Style]:
+        return (self._background_probe.selection_style(self.console.color_system)
+                if self._background_probe is not None and not self.no_color and not self.console.no_color else None)
+
+    def _probe_terminal_background(self) -> None:
+        if (self._background_probe is None and self._input_enabled
+                and (self._terminal_active or self._windows_mouse is not None)
+                and sys.stdin.isatty() and self.console.file.isatty()
+                and not self.no_color and not self.console.no_color
+                and not self.console.is_dumb_terminal and os.environ.get("TERM") not in {"dumb", "unknown"}
+                and self.console.color_system in {"truecolor", "256"}):
+            self._background_probe = BackgroundProbe(time.monotonic())
+            self.console.file.write(BACKGROUND_QUERY)
+            self.console.file.flush()
+
     def _main_loop(self) -> None:
+        try:
+            self._run_main_loop()
+        except BaseException as error:
+            self._display_error = error
+            self.stop_flag = True
+            self.kill_requested = True
+            try:
+                self._drain_background_reply()
+            except BaseException as input_error:
+                error.add_note(f"Terminal reply drain failed: {input_error}")
+            with self.lock:
+                self._cleanup_after_error(error)
+            if self._kill_callback is not None:
+                self._kill_callback()
+
+    def _run_main_loop(self) -> None:
         """Main loop handling both input and display updates."""
+        if not self.stop_flag:
+            self._probe_terminal_background()
         last_update = 0.0
         update_interval = 1.0 / 24.0
 
@@ -1157,6 +1375,16 @@ class ActionLoggerTable(ActionLogger):
 
             time.sleep(0.01)
 
+        self._drain_background_reply()
+
+    def _drain_background_reply(self) -> None:
+        while (self._background_probe is not None and self._background_probe.pending(time.monotonic())
+               and self._input_enabled):
+            if self._read_key() == "terminal_eof":
+                self._input_enabled = False
+                break
+            time.sleep(0.001)
+
     # =========================================================================
     # Lifecycle
     # =========================================================================
@@ -1167,22 +1395,13 @@ class ActionLoggerTable(ActionLogger):
     def start(self) -> None:
         """Start the interactive display."""
         self.stop_flag = False
+        self._display_error = None
         self._setup_terminal()
         try:
             self._refresh_display()
-        except BaseException:
+        except BaseException as error:
             self.stop_flag = True
-            live, self.live = self.live, None
-            try:
-                # Discard a failed encoded frame before emitting restoration controls.
-                with self.console.capture():
-                    pass
-                self._set_mouse_capture(False)
-                if live is not None:
-                    live.update(Text(""))
-                    live.stop()
-            finally:
-                self._restore_terminal()
+            self._cleanup_after_error(error)
             raise
 
         self._main_thread = threading.Thread(target=self._main_loop, daemon=True)
@@ -1190,13 +1409,59 @@ class ActionLoggerTable(ActionLogger):
 
     def _refresh_display(self) -> None:
         with self.lock:
+            if self.stop_flag:
+                return
+            fullscreen = self.keep_running or self.state != ViewState.TABLE
+            screen = fullscreen and self.console.is_terminal and not self.console.legacy_windows
+            frame = self._build_renderable()
+            if self.live is not None and self._screen_active != screen:
+                self._release_live(False)
             if self.live is None:
-                self.live = Live(self._build_renderable(), console=self.console, screen=self.ALTERNATE_SCREEN,
-                                 refresh_per_second=24, transient=False, auto_refresh=False,
-                                 vertical_overflow="crop")
+                if not screen and self.console.is_terminal and not self.console.legacy_windows and not self.console.is_dumb_terminal:
+                    self.live = InlineDisplay(frame, self.console)
+                else:
+                    self.live = Live(frame, console=self.console, screen=screen,
+                                     refresh_per_second=24, transient=False, auto_refresh=False,
+                                     vertical_overflow="crop")
+                self._screen_active = screen
                 self.live.start()
             self._set_mouse_capture(True)
-            self.live.update(self._build_renderable(), refresh=True)
+            self.live.update(frame, refresh=True)
+
+    def _release_live(self, discard: bool) -> None:
+        live, self.live = self.live, None
+        try:
+            self._set_mouse_capture(False)
+        finally:
+            try:
+                if live is not None:
+                    live.transient = True
+                    if discard:
+                        with self.console.capture():
+                            pass
+                        live.update(Text(""), refresh=False)
+                    try:
+                        live.stop()
+                    except BaseException as error:
+                        # Live may fail before installing the hook that its stop requires.
+                        restorations = [lambda: self.console.show_cursor(True)]
+                        if self._screen_active:
+                            restorations.append(lambda: self.console.set_alt_screen(False))
+                        for restore in restorations:
+                            try:
+                                restore()
+                            except BaseException as restore_error:
+                                error.add_note(f"Terminal display restoration failed: {restore_error}")
+                        raise
+            finally:
+                self._screen_active = False
+
+    def _cleanup_after_error(self, error: BaseException) -> None:
+        for cleanup in (lambda: self._release_live(True), self._restore_terminal):
+            try:
+                cleanup()
+            except BaseException as cleanup_error:
+                error.add_note(f"Terminal cleanup failed: {cleanup_error}")
 
     def stop(self) -> None:
         """Stop the interactive display.
@@ -1205,33 +1470,32 @@ class ActionLoggerTable(ActionLogger):
         different threads (e.g. timeout timer thread and main execution
         thread). Only the first call performs the actual shutdown.
         """
-        self.stop_flag = True
+        while (self._background_probe is not None and self._background_probe.pending(time.monotonic())
+               and self._main_thread is not None and self._main_thread.is_alive() and not self.stop_flag):
+            time.sleep(min(0.01, max(0, self._background_probe.deadline - time.monotonic())))
+        with self.lock:
+            self.stop_flag = True
 
         if self._main_thread is not None and self._main_thread.is_alive():
             self._main_thread.join(timeout=1.0)
 
-        self._set_mouse_capture(False)
-        self._restore_terminal()
-
-        # Atomically claim the Live instance so only one thread performs shutdown
         with self.lock:
             self.mark_execution_complete()
             self.state = ViewState.TABLE
-            live = self.live
-            self.live = None
-
-        if live:
             try:
-                live.update(self._build_renderable(), refresh=True)
-            except BaseException:
-                with self.console.capture():
-                    pass
-                live.update(Text(""))
+                if self.live is not None:
+                    frame = self._build_renderable()
+                    self._release_live(False)
+                    self._restore_terminal()
+                    self.console.print(frame)
+                else:
+                    self._restore_terminal()
+            except BaseException as error:
+                self._cleanup_after_error(error)
                 raise
-            finally:
-                live.stop()
-            if self.ALTERNATE_SCREEN:
-                self.console.print(self._build_renderable())
+            display_error, self._display_error = self._display_error, None
+            if display_error is not None:
+                raise display_error
 
     def wait_for_quit(self) -> None:
         """Wait for user to quit (call after execution completes with --it)."""

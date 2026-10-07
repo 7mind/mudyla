@@ -14,14 +14,14 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--github-actions`: Alias for `--logger github`; stream output with GitHub Actions groups.
 *   `--teamcity`: Alias for `--logger teamcity`; emit TeamCity service messages.
 *   `--logger pure|table|simple|verbose|github|teamcity`: Select the logger (`pure` by default). `raw` remains an alias for `simple`.
-*   `--plan-tree` / `--plan-dag`: Select the dependency tree or the default connected dependency graph for Plan. Mutually exclusive; available with every logger.
+*   `--plan-table` / `--plan-tree` / `--plan-dag`: Select a static execution table, dependency tree, or connected dependency graph for Plan. Mutually exclusive; available with every logger. Only the table logger defaults to `--plan-table`; other loggers default to DAG.
 *   `--simple-log`: Alias for `--logger simple`.
 *   `--force-interactive`: Force terminal rendering for pure/table (default `pure`). Append-only modes remain append-only.
 *   `--no-color`: Remove colors. A nonempty `NO_COLOR` environment variable has the same effect; empty or unset values retain the default. `--force-interactive` respects this setting. Dim and bold text may remain, and raw mode preserves action-produced terminal sequences.
 *   `--show-dirs`: Show action directories in the selected view.
 *   `--without-nix`: Run without Nix isolation (default on Windows).
 *   `--force-nix`: Force Nix integration even if it would normally be skipped (e.g., on Windows).
-*   `--it`, `--interactive`: Keep a supported logger open after completion, when keyboard input is available.
+*   `--it`, `--interactive`: Show pure/table fullscreen and keep the view open after completion, when keyboard input is available.
 *   `--timeout <ms>`: SIGKILL all running processes and their process trees when the specified number of milliseconds has elapsed.
 
 ## Arguments & Flags
@@ -54,7 +54,7 @@ and run artifacts. They change how execution appears:
 | Logger | Behavior |
 |--------|----------|
 | `pure` (default) | Interactive Actions DAG with animated status, elapsed times, latest log lines and totals. Borderless detail views; optional separate Plan tree and checklist. |
-| `table` | The same action controls and detail views, presented in a bordered table. |
+| `table` | Static plan table, content-sized live action columns, counts in the footer, and the same action controls and detail views. |
 | `simple` | Append-only command/start and completion markers, compact Plan and summaries. Captures successful output silently; shows the combined capture once on failure. |
 | `verbose` | Simple's compact sections plus commands and immediate stdout/stderr, including partial prompts. Failure summaries identify the error and log files without replaying streamed output. |
 | `github` | Shared compact sections with GitHub Actions groups, immediate unprefixed output and the established failure diagnostics. |
@@ -162,17 +162,20 @@ continuation source and current run ID. Every action/context appears as one sele
 node in execution order. The `>` cursor occupies a separate left gutter; connector
 and wrapped continuation rows do not become selectable actions. `--plan-tree`
 retains a separate updating `Plan:` tree above the flat `Actions:` list.
+`--plan-table` pairs a static `Plan:` table with the flat `Actions:` list.
 Strong dependency edges use solid guides; weak and soft edges share dashed guides
 (dotted guides in ASCII terminals). These patterns describe the declared dependency,
 not whether a retainer executed.
 The plan uses the checklist's status glyphs; `◇` means prerequisites completed and
 `○` means waiting (`>` and `o` on ASCII terminals). Ready actions still follow the
 selected sequential/parallel dispatch mode. Names come first, with context and
-shared/goal/weak/soft annotations in dim parentheses. Mouse wheel and
-page keys scroll this document; selecting an action with the arrow keys reveals it.
-Pure's DAG and tree views temporarily own the alternate terminal
-screen; on exit they restore the preceding transcript. Pure prints its final Actions
-graph once; `--plan-tree` prints the final tree and checklist.
+shared/goal/weak/soft annotations in dim parentheses. Page keys scroll this document;
+selecting an action with the arrow keys reveals it. Pure and table render inline by
+default, leaving the mouse wheel with terminal history. Opening a detail view temporarily
+uses the alternate screen; `q` restores the inline overview and its selection.
+`--it` keeps the entire session fullscreen, where the mouse wheel scrolls the view.
+On exit both modes restore the preceding transcript. Pure prints its final Actions
+graph once; `--plan-tree` and `--plan-table` print their respective plan and checklist.
 Run facts appear together under `Run info:`; completion outcome, wall time and log
 location appear under `Result:`. Action totals remain below the checklist.
 Default-axis notices share one `Using default axes: axis:value, ...` field,
@@ -181,7 +184,7 @@ Run info and Result field labels are dim; their complete values keep normal inte
 Context prefixes (`at`, `with`, `flags`) are dim, axis names blue, and argument/flag
 names yellow. Axis and string values are green; counts and timings use cyan without bold.
 Nested output keys and values keep normal intensity; type and index annotations remain dim.
-These styles use the terminal's palette and default foreground. In pure mode,
+These styles use the terminal's palette and default foreground. In pure and table modes,
 the selected action rows get a subtle background tint when a truecolor or 256-color
 terminal reports its background; all foreground colors and font weights remain unchanged. The tint spans the cursor,
 connectors, wrapped label rows and right padding; standalone connector and prerequisite
@@ -189,7 +192,7 @@ reference rows remain unselected.
 Unknown backgrounds, basic ANSI terminals and no-color output use the left cursor alone.
 The same text remains available when colors or terminal styling are disabled.
 
-Pure requests the background once through OSC 11 after the initial frame, only when
+Pure and table request the background once through OSC 11 after the initial frame, only when
 both input and output are terminals. The existing input reader consumes the reply
 without delaying startup. A short run may retain input ownership for the remaining
 250 ms reply interval during shutdown; keys typed after quitting are not action input.
@@ -205,7 +208,7 @@ suppresses live action output as well as failure replay; action status and log
 paths remain visible. `--verbose` and `--github-actions` retain their existing
 streaming behavior.
 
-`--it` / `--interactive` only controls whether the selected view stays open;
+`--it` / `--interactive` selects fullscreen inspection and keeps the selected view open;
 it never changes the logger. `--force-interactive` bypasses terminal detection for
 the selected logger, defaulting to pure. Legacy flags resolve with precedence
 GitHub Actions, then verbose, then simple. `--logger raw --verbose` and
@@ -218,7 +221,7 @@ Without terminal stdin, views cannot accept keys and do not stay open, even when
 rendering is forced. Simple, verbose, GitHub and TeamCity ignore keep-open and force-rendering options.
 `Ctrl+C` stops execution and returns exit status 130.
 
-Both Plan renderers follow the compiled execution graph. The default DAG renders
+All Plan renderers follow the compiled execution graph. The DAG renders
 each action/context once. The optional tree marks repeated dependencies as shared references; context identifiers distinguish separate action
 invocations. Retainers, action listings and summaries use compact rows rather than
 bordered tables. Pure uses `@name` (or `@hash` with `--full-ctx-reprs`) consistently;
@@ -252,18 +255,24 @@ example project. The [README](../../README.md#terminal-interfaces) uses the same
 
 ![pure execution checklist with --plan-tree](../ui/pure-tree-dark.png)
 
-Plan uses a connected dependency graph by default. Use `--plan-tree` for the tree alternative:
+Plan uses a connected dependency graph by default, except table mode which uses a static table.
+Use an explicit plan selector to override either default:
 
 ```bash
 mdl :build :test
 mdl --logger verbose --plan-dag :build :test
 mdl --plan-tree :build :test
+mdl --plan-table :build :test
 ```
 
-Every logger uses the same default DAG layout. Executing pure attaches runtime
+Table mode's default Plan includes action numbers, contexts, goal markers, dependency
+row references (`~` weak, `?` soft), and counts of sharing goal contexts. Action names
+and context identifiers wrap in narrow terminals instead of losing their identity.
+Other modes use the shared DAG layout by default. Executing pure attaches runtime
 data and keyboard selection to this graph under `Actions:`; dry runs and other
-loggers print a static `Plan:`. Explicit `--plan-tree` selects the shared tree,
-including with `--logger table`; the action table remains unchanged. Neither option changes scheduling, pruning or action-list order.
+loggers print a static `Plan:`. Explicit `--plan-table`, `--plan-tree`, and `--plan-dag`
+select the shared table, tree, or DAG, including with `--logger table`; the live action
+table remains unchanged. These options do not change scheduling, pruning or action-list order.
 
 The DAG places each action/context once in execution order, with shared
 prerequisites joining at their dependent actions. Solid lanes mean strong
@@ -294,7 +303,7 @@ mdl --logger table :build :test
 
 ### Keep Running Mode
 
-Use `--it` or `--interactive` to keep the selected view open after execution, allowing you to
+Use `--it` or `--interactive` to open the selected view fullscreen and keep it open after execution, allowing you to
 review successful or failed action outputs and logs. Press `q` to close it. Without `--it`, the process
 exits automatically after execution completes.
 
@@ -304,9 +313,10 @@ mdl --it :build :test
 
 ### Layout
 
-Both views reveal the selected action when navigating with the arrow keys. Pure's
-overview uses all available terminal rows, and scrolling up exposes the complete
-run information without changing the selected action. `Home` reaches its beginning.
+Both views reveal the selected action when navigating with the arrow keys. Inline
+overviews use only their populated rows within the current terminal height.
+With `--it`, scrolling up exposes the complete run information without changing
+the selected action. `Home` reaches its beginning in either fullscreen view.
 Closing a detail view
 restores the overview's selection and scroll position. Header and
 keyboard hints remain bounded by terminal dimensions. On narrow terminals,
@@ -314,16 +324,18 @@ secondary columns are omitted; output sizes remain available in detail views.
 With `--show-dirs`, the selected action's directory moves above the list when a
 directory column will not fit. Context identity respects `--full-ctx-reprs`.
 
-Pure log and text views fill the current terminal height and recompute scrolling
-after every resize. At five rows or fewer, optional headings and hints disappear
+Both views recompute layout after terminal width or height changes. Pure log and text
+views fill the current terminal height. At five rows or fewer, optional headings and hints disappear
 so content uses every row. An active input editor reserves its final row.
 Press `q` to return to the compact checklist; detail text does not enter normal
 terminal scrollback.
 
 ![pure log details](../ui/logs-dark.png)
 
-Table keeps run information, contexts and the plan in normal terminal history.
-Its action and detail panels fit their content, bounded by the terminal height;
+Table keeps aligned run information, contexts, retainers and its static plan in normal terminal history;
+the same preparation remains reachable with `Home` during fullscreen inspection.
+Its action table sizes columns to content, places counts below the rows, and uses the same
+foreground-preserving selection tint as pure. The table and detail panels remain bounded by terminal height;
 large action lists retain a keyboard-navigable window. The final table appears once.
 
 ![interactive action table](../ui/table-dark.png)
@@ -335,9 +347,9 @@ large action lists retain a keyboard-navigable window. The final table appears o
 | Key | Action |
 |-----|--------|
 | Arrows / `j` / `k` | Navigate between actions |
-| Mouse wheel | Scroll the pure overview; scroll terminal history in table |
-| `PgUp` / `PgDn` | Scroll the pure overview; move selection by pages in table |
-| `Home` / `End` | First/last overview row in pure; first/last action in table |
+| Mouse wheel | Scroll terminal history inline; scroll the view fullscreen |
+| `PgUp` / `PgDn` | Scroll the overview; move selection by pages in inline table |
+| `Home` / `End` | First/last overview row; first/last action in inline table |
 | `Enter` / `l` | View stdout logs |
 | `e` | View stderr logs |
 | `o` | View action outputs (`output.json`) |
@@ -351,7 +363,7 @@ large action lists retain a keyboard-navigable window. The final table appears o
 | Key | Action |
 |-----|--------|
 | Arrows / `j` / `k` | Scroll one line |
-| Mouse wheel | Scroll three lines in pure; scroll terminal history in table |
+| Mouse wheel | Scroll three lines |
 | `d` / `u` | Scroll half a page |
 | `PgUp` / `PgDn` / `f` / `b` | Scroll a page |
 | `gg` / `Home` | Jump to top |
@@ -361,8 +373,8 @@ large action lists retain a keyboard-navigable window. The final table appears o
 | `i` | Enter input for this running action in stdout only |
 | `q` | Return to the action overview |
 
-Pure captures the mouse wheel and restores the terminal's previous mode on exit.
-Table leaves the wheel to the terminal; use keyboard controls to scroll its details.
+Both views capture the mouse wheel only while using the fullscreen display and restore
+the terminal's previous mode when returning inline or exiting.
 Pure keeps action positions stable while the list updates. Paused
 log views preserve the same source line when resizing or receiving new output;
 `G` resumes following the latest output.
@@ -406,7 +418,7 @@ accessible; `r` refreshes after the action writes more data.
 
 ![Pure action source](../ui/source-dark.png)
 
-The Actions footer in pure and the header in table report done, restored, running,
+The Actions footers in pure and table report done, restored, running,
 failed and pending action counts. Table also shows the visible action range for
 large plans. Status remains explicit
 text with or without color. Details preserve action-provided ANSI log styles,
@@ -443,8 +455,9 @@ Failure presentation receives the full `ActionKey` explicitly so context-specifi
 use the correct flow. TeamCity shares the CLI formatter and its serialized writer with
 the engine; its protocol adapter does not own processes or captured artifacts.
 Pure inherits `ActionLoggerTable` and shares its task state, keyboard handling, artifact readers,
-scrolling and lifecycle, while overriding its presentation. Pure uses Rich's
-alternate screen; table renders inline in normal terminal history. Pure retains a
+scrolling and lifecycle, while overriding its presentation. Both use Rich's alternate
+screen for `--it` sessions and temporary detail views, restoring inline progress on
+return from a temporary detail view. Pure retains a
 static streaming fallback. The engine sends bounded
 output chunks through `write_output(action_key, text, stream)`; both viewers read
 the existing artifact files for details. Interactive action stdin uses a pipe;
