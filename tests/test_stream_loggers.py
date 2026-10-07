@@ -9,6 +9,8 @@ from io import StringIO
 
 import pytest
 
+from tests.terminal_capture import terminal_text
+
 from mudyla.cli import CLI
 
 
@@ -21,9 +23,13 @@ from mudyla.cli import CLI
     (["--logger", "raw", "--verbose"], "verbose", True),
     (["--logger", "raw", "--github-actions"], "github", False),
     (["--simple-log", "--verbose"], "verbose", True),
-    (["--verbose", "--github-actions"], "github", True),
+    (["--verbose", "--github-actions"], "github", False),
+    (["--github-actions", "--verbose"], "github", False),
+    (["--verbose", "--logger", "github"], "github", False),
+    (["--logger", "github", "--verbose"], "github", False),
     (["--logger", "verbose", "--verbose"], "verbose", True),
-    (["--logger", "github", "--github-actions", "--verbose"], "github", True),
+    (["--logger", "github", "--github-actions", "--verbose"], "github", False),
+    (["--simple-log", "--github-actions", "--verbose"], "github", False),
 ])
 def test_canonical_modes_and_legacy_precedence(options, mode, verbose):
     cli = CLI()
@@ -139,10 +145,45 @@ def test_streaming_modes_flush_partial_prompts_with_suppression_and_inherited_in
     finally:
         child.close(force=True)
     rendered = capture.getvalue()
-    assert "ERR_FRAGMENT\r\n" in rendered
+    for token in ["ANSWER=héllo界", "ERR_FRAGMENT"]:
+        assert rendered.count(token) == 1
+        assert rendered.index(token) < rendered.index("ask@global: Finished (")
+    assert "\r\nask@global: Finished (" in rendered
     assert "\x1b[?1049" not in rendered and "\x1b[?1000" not in rendered
     stderr = next((tmp_path / ".mdl" / "runs").rglob("stderr.log"))
     assert stderr.read_text() == "ERR_FRAGMENT"
+    combined = stderr.with_name("stdout.log").read_text()
+    assert combined.count("ERR_FRAGMENT") == 1
+    assert combined.replace("ERR_FRAGMENT", "") == "\x1b[35mPROMPT>\x1b[0mANSWER=héllo界\n"
+
+
+@pytest.mark.parametrize("mode", ["verbose", "github"])
+@pytest.mark.parametrize("stderr_first", [False, True])
+def test_partial_stream_fragments_preserve_callback_order_and_marker_boundary(monkeypatch, mode, stderr_first):
+    from rich.console import Console
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.action_logger_github import ActionLoggerGitHub
+    from mudyla.logging.action_logger_verbose import ActionLoggerVerbose
+    from mudyla.logging.formatters import OutputFormatter
+
+    capture = StringIO()
+    monkeypatch.setattr(sys, "stdout", capture)
+    monkeypatch.setattr(sys, "stderr", capture)
+    output = OutputFormatter(no_color=True, compact=True)
+    output._console = Console(file=capture, width=100, color_system=None)
+    key = ActionKey.from_name("ask")
+    logger = (ActionLoggerGitHub([key], output) if mode == "github"
+              else ActionLoggerVerbose([key], output, parallel=False))
+    fragments = [("ANSWER=héllo界\n", "stdout"), ("ERR_FRAGMENT", "stderr")]
+    if stderr_first:
+        fragments.reverse()
+    for payload, stream in fragments:
+        logger.write_output(key, payload, stream)
+    payload = "".join(text for text, _ in fragments)
+    assert capture.getvalue() == payload
+    logger.mark_done(key, 1.0)
+    boundary = "" if payload.endswith("\n") else "\n"
+    assert capture.getvalue().startswith(payload + boundary + "ask@global: Finished (1.0 s)\n")
 
 
 @pytest.mark.parametrize("mode,parallel", [("simple", False), ("verbose", False), ("github", False), ("verbose", True)])
@@ -422,7 +463,6 @@ def test_github_completion_is_inside_each_action_group(tmp_path, script, complet
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY")
 def test_parallel_verbose_prefix_uses_marker_identity_foreground(tmp_path):
-    from rich.text import Text
     from rich.console import Console
     pexpect = pytest.importorskip("pexpect")
     (tmp_path / ".git").mkdir()
@@ -437,7 +477,7 @@ def test_parallel_verbose_prefix_uses_marker_identity_foreground(tmp_path):
                           encoding="utf-8", dimensions=(80, 24), timeout=5)
     try:
         child.expect(pexpect.EOF)
-        rendered = Text.from_ansi(child.before)
+        rendered = terminal_text(child.before)
         child.close()
         assert child.exitstatus == 0
     finally:
@@ -492,7 +532,6 @@ def test_github_cancellation_closes_groups_after_any_completion(tmp_path, parall
 def test_verbose_prefix_color_uses_each_destination_capability(tmp_path, terminal_stream, policy):
     import pty
     import threading
-    from rich.text import Text
     from rich.console import Console
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
@@ -533,7 +572,7 @@ def test_verbose_prefix_color_uses_each_destination_capability(tmp_path, termina
     assert not reader.is_alive()
     assert child.returncode == 0
     assert b"\x1b" not in (stderr if terminal_stream == "stdout" else stdout)
-    rendered = Text.from_ansi(data.decode())
+    rendered = terminal_text(data.decode())
     token = "OUT" if terminal_stream == "stdout" else "ERR"
     offset = rendered.plain.index("work@global: " + token)
     color = rendered.get_style_at_offset(Console(), offset).color

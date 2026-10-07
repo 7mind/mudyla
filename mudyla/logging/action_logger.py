@@ -29,11 +29,11 @@ class LoggerMode(str, Enum):
 
 
 def resolve_logger_mode(explicit: Optional[str], simple: bool, verbose: bool, github: bool, teamcity: bool) -> LoggerMode:
-    legacy = LoggerMode.GITHUB if github else LoggerMode.VERBOSE if verbose else LoggerMode.SIMPLE if simple else None
-    if teamcity:
-        if legacy is not None or explicit not in {None, "raw", "teamcity"}:
+    if teamcity or explicit == "teamcity":
+        if simple or github or explicit not in {None, "raw", "teamcity"}:
             raise ValueError("--teamcity conflicts with the selected logging option")
         return LoggerMode.TEAMCITY
+    legacy = LoggerMode.GITHUB if github else LoggerMode.VERBOSE if verbose and explicit != "github" else LoggerMode.SIMPLE if simple else None
     if explicit is None or explicit == "raw":
         return legacy or (LoggerMode.SIMPLE if explicit == "raw" else LoggerMode.PURE)
     selected = LoggerMode(explicit)

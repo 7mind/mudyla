@@ -11,7 +11,11 @@ from mudyla.cli import CLI
 
 
 @pytest.mark.parametrize("options", [["--teamcity"], ["--logger", "teamcity"],
-    ["--logger", "teamcity", "--teamcity"], ["--logger", "raw", "--teamcity"]])
+    ["--logger", "teamcity", "--teamcity"], ["--logger", "raw", "--teamcity"],
+    ["--verbose", "--teamcity"], ["--teamcity", "--verbose"],
+    ["--verbose", "--logger", "teamcity"], ["--logger", "teamcity", "--verbose"],
+    ["--logger", "raw", "--verbose", "--teamcity"],
+    ["--logger", "teamcity", "--teamcity", "--verbose"]])
 def test_teamcity_selectors_resolve_explicitly(options):
     cli = CLI()
     args = cli.parser.parse_args(options)
@@ -40,8 +44,9 @@ def test_teamcity_sequential_blocks_include_completion_and_native_payload(tmp_pa
     assert native in result.stdout
     assert result.stdout.count("##teamcity[blockOpened ") == result.stdout.count("##teamcity[blockClosed ") == 1
     assert result.stdout.index("blockOpened") < result.stdout.index("Running command") < result.stdout.index("Finished (") < result.stdout.index("blockClosed")
-    for title in ["Run info:", "Contexts:", "Goals:", "Plan:", "Actions:", "Result:", "Outputs:"]:
+    for title in ["Run info:", "Contexts:", "Goals:", "Plan:", "Actions:", "Result:"]:
         assert title in result.stdout
+    assert "Outputs:" not in result.stdout
     assert "flowId=" not in result.stdout
     assert next((tmp_path / ".mdl" / "runs").rglob("stdout.log")).read_text() == native
 
@@ -57,9 +62,13 @@ def records(text):
     return result
 
 
-@pytest.mark.parametrize("options", [["--teamcity", "--verbose"], ["--teamcity", "--github-actions"],
+@pytest.mark.parametrize("options", [["--teamcity", "--github-actions"],
     ["--teamcity", "--simple-log"], ["--teamcity", "--logger", "pure"],
-    ["--logger", "teamcity", "--verbose"], ["--logger", "teamcity", "--github-actions"]])
+    ["--logger", "teamcity", "--github-actions"], ["--logger", "teamcity", "--simple-log"],
+    ["--teamcity", "--logger", "verbose"], ["--logger", "verbose", "--teamcity"],
+    ["--teamcity", "--simple-log", "--verbose"], ["--teamcity", "--github-actions", "--verbose"],
+    ["--logger", "teamcity", "--simple-log", "--verbose"],
+    ["--logger", "teamcity", "--github-actions", "--verbose"]])
 def test_teamcity_rejects_conflicting_selectors(options):
     cli = CLI()
     with pytest.raises(SystemExit) as caught:
@@ -177,23 +186,34 @@ def test_parallel_flows_are_distinct_by_full_context_and_preserve_parent_hierarc
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-def test_teamcity_real_scheduling_and_restoration(tmp_path, parallel):
+@pytest.mark.parametrize("selectors", [["--teamcity"], ["--verbose", "--teamcity"],
+    ["--teamcity", "--verbose"], ["--logger", "teamcity", "--verbose"]])
+def test_teamcity_real_scheduling_and_restoration(tmp_path, parallel, selectors):
     definitions = tmp_path / ".mdl" / "defs"
     definitions.mkdir(parents=True)
     (tmp_path / ".git").mkdir()
     script = ('from pathlib import Path\nimport time\n'
+              'print("##teamcity[testStarted name=\'NAME\']", flush=True)\n'
               'Path("NAME.start").write_text(str(time.monotonic()))\ntime.sleep(.2)\n'
-              'Path("NAME.end").write_text(str(time.monotonic()))')
+              'Path("NAME.end").write_text(str(time.monotonic()))\n'
+              'print("##teamcity[testFinished name=\'NAME\']", flush=True)')
     (definitions / "actions.md").write_text("\n\n".join(
         f'# action: {name}\n\n```python\n{script.replace("NAME", name)}\n```' for name in ["left", "right"]))
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1")
-    command = [sys.executable, "-m", "mudyla", "--without-nix", "--teamcity", "--keep-run-dir",
+    command = [sys.executable, "-m", "mudyla", "--without-nix", *selectors, "--keep-run-dir",
                *(["--par"] if parallel else []), ":left", ":right"]
     first = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
     assert first.returncode == 0, first.stdout + first.stderr
     starts = [float((tmp_path / (name + ".start")).read_text()) for name in ["left", "right"]]
     ends = [float((tmp_path / (name + ".end")).read_text()) for name in ["left", "right"]]
     assert (max(starts) < min(ends)) == parallel
+    native = [message for message in records(first.stdout) if message.name in {"testStarted", "testFinished"}]
+    for name in ["left", "right"]:
+        events = [message for message in native if message.attributes["name"] == name]
+        assert [message.name for message in events] == ["testStarted", "testFinished"]
+        assert all(("flowId" in message.attributes) == parallel for message in events)
+        if parallel:
+            assert events[0].attributes["flowId"] == events[1].attributes["flowId"]
     second = subprocess.run(command + ["--continue"], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
     assert second.returncode == 0, second.stdout + second.stderr
     assert "Restored (" in second.stdout and "blockOpened" not in second.stdout and "blockClosed" not in second.stdout

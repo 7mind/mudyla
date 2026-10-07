@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import re
 
 from tests.conftest import MudylaRunner
 
@@ -75,7 +76,7 @@ class TestExecutionModes:
         result = mdl.run_success(["--dry-run", ":final-report"])
 
         # Verify execution plan is shown
-        mdl.assert_in_output(result, "Execution plan:")
+        mdl.assert_in_output(result, "Plan:")
         mdl.assert_in_output(result, "create-directory")
         mdl.assert_in_output(result, "final-report")
 
@@ -95,7 +96,7 @@ class TestExecutionModes:
         result = mdl.run_success([":final-report"])
 
         # Verify parallel mode
-        mdl.assert_in_output(result, "Execution mode: parallel")
+        assert re.search(r"^Execution mode:\s+parallel$", result.stdout, re.MULTILINE)
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -105,7 +106,7 @@ class TestExecutionModes:
         result = mdl.run_success(["--seq", ":final-report"])
 
         # Verify sequential mode
-        mdl.assert_in_output(result, "Execution mode: sequential")
+        assert re.search(r"^Execution mode:\s+sequential$", result.stdout, re.MULTILINE)
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -115,14 +116,14 @@ class TestExecutionModes:
         defs_path = "tests/fixtures/defs/properties-sequential.md"
         result = mdl.run_success(["--defs", defs_path, ":property-sequential"])
 
-        mdl.assert_in_output(result, "Execution mode: sequential")
+        assert re.search(r"^Execution mode:\s+sequential$", result.stdout, re.MULTILINE)
 
     def test_parallel_flag_overrides_properties_default(self, mdl: MudylaRunner, clean_test_output):
         """Test that --par forces parallel execution even with sequential properties."""
         defs_path = "tests/fixtures/defs/properties-sequential.md"
         result = mdl.run_success(["--defs", defs_path, "--par", ":property-sequential"])
 
-        mdl.assert_in_output(result, "Execution mode: parallel")
+        assert re.search(r"^Execution mode:\s+parallel$", result.stdout, re.MULTILINE)
 
     def test_continue_from_previous_run(self, mdl: MudylaRunner, clean_test_output):
         """Test continuing from a previous run."""
@@ -155,7 +156,8 @@ class TestExecutionModes:
         result2 = mdl.run_success(["--keep-run-dir", "--continue", ":create-directory", ":write-message"])
 
         # Verify restoration message
-        mdl.assert_in_output(result2, "restored from previous run")
+        mdl.assert_in_output(result2, "Restored:")
+        mdl.assert_in_output(result2, "2 restored")
         mdl.assert_in_output(result2, "create-directory")
         mdl.assert_in_output(result2, "write-message")
 
@@ -170,15 +172,13 @@ class TestExecutionModes:
         """Test that verbose mode shows actual commands being run."""
         result = mdl.run_success(["--verbose", "--force-nix", ":create-directory"])
 
-        # Verify command details are shown
-        # Note: Rich console may wrap long lines, so we check for parts that won't be split
-        mdl.assert_in_output(result, "Command:")
+        # Verify command details and action lifecycle markers.
+        mdl.assert_in_output(result, "Running command `")
         mdl.assert_in_output(result, "nix develop")
         mdl.assert_in_output(result, ".sh")  # Script extension (may be wrapped from "script.sh")
 
-        # Verify start/done messages
-        mdl.assert_in_output(result, "start:")
-        mdl.assert_in_output(result, "done:")
+        mdl.assert_in_output(result, "create-directory@")
+        mdl.assert_in_output(result, "Finished (")
 
     def test_simple_log_mode(self, mdl: MudylaRunner, clean_test_output):
         """Test simple log mode (no rich table)."""

@@ -36,6 +36,7 @@ from ..dag.graph import ActionKey
 from .formatters import OutputFormatter
 from .action_logger import ActionLogger
 from .formatters.failure import legacy_failure
+from .terminal_background import BackgroundProbe
 
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult
@@ -117,8 +118,10 @@ class ActionLoggerTable(ActionLogger):
     FRAME_ROWS = 6
     CONTENT_HORIZONTAL_PADDING = 4
     WRAP_HIGHLIGHTED_CONTENT = False
+    ALTERNATE_SCREEN = False
     ESCAPE_WAIT_SECONDS = 0.02
     MAX_ESCAPE_BYTES = 32
+    MAX_INPUT_BYTES = 4096
     MOUSE_WHEEL_ROWS = 3
     MAX_INPUT_CHARS = 4096
 
@@ -182,6 +185,8 @@ class ActionLoggerTable(ActionLogger):
         self._input_callback: Optional[Callable[[ActionKey, Optional[str]], Optional[str]]] = None
         self._input_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._pending_input = b""
+        self._pending_windows_input = ""
+        self._background_probe: Optional[BackgroundProbe] = None
         self._windows_input_decoder = codecs.getincrementaldecoder("utf-16-le")(errors="replace")
 
         # Threading and Live display
@@ -371,7 +376,7 @@ class ActionLoggerTable(ActionLogger):
                 pass
 
     def _set_mouse_capture(self, enabled: bool) -> None:
-        enabled = enabled and self.uses_terminal_input()
+        enabled = enabled and self.ALTERNATE_SCREEN and self.uses_terminal_input()
         if self._mouse_enabled == enabled:
             return
         if self._windows_mouse is not None:
@@ -402,18 +407,34 @@ class ActionLoggerTable(ActionLogger):
         """Read a single key press on Windows (non-blocking)."""
         if sys.platform != "win32":
             raise RuntimeError("Windows terminal input requires Windows")
-        if self._windows_mouse is not None:
-            mouse_key = self._windows_mouse.read()
-            if mouse_key is not None:
-                return mouse_key
-        if not msvcrt.kbhit():
+        if self._background_probe is not None:
+            self._pending_windows_input += self._background_probe.feed("", time.monotonic())
+        for _ in range(self.MAX_INPUT_BYTES):
+            if self._windows_mouse is not None:
+                mouse_key = self._windows_mouse.read()
+                if mouse_key is not None:
+                    return mouse_key
+            if self._pending_windows_input:
+                ch, self._pending_windows_input = self._pending_windows_input[0], self._pending_windows_input[1:]
+                break
+            if not msvcrt.kbhit():
+                return ""
+            ch = msvcrt.getwch()
+            if self._background_probe is None:
+                break
+            filtered = self._background_probe.feed(ch, time.monotonic())
+            if filtered:
+                ch, self._pending_windows_input = filtered[0], filtered[1:]
+                break
+        else:
             return ""
 
-        ch = msvcrt.getwch()
-
         if ch in ('\x00', '\xe0'):
-            if msvcrt.kbhit():
-                ch2 = msvcrt.getwch()
+            if self._pending_windows_input or msvcrt.kbhit():
+                if self._pending_windows_input:
+                    ch2, self._pending_windows_input = self._pending_windows_input[0], self._pending_windows_input[1:]
+                else:
+                    ch2 = msvcrt.getwch()
                 if ch2 == 'H':
                     return "up"
                 elif ch2 == 'P':
@@ -464,18 +485,33 @@ class ActionLoggerTable(ActionLogger):
         }
         return key_map.get(char, "")
 
+    def _read_unix_byte(self, timeout: float) -> Optional[bytes]:
+        if self._background_probe is not None:
+            self._pending_input += self._background_probe.feed("", time.monotonic()).encode("latin1")
+        remaining = self.MAX_INPUT_BYTES if self._background_probe is not None else 1
+        while not self._pending_input and remaining:
+            fd = sys.stdin.fileno()
+            ready, _, _ = select.select([fd], [], [], timeout)
+            if not ready:
+                return None
+            raw = os.read(fd, remaining)
+            if not raw:
+                return b""
+            self._pending_input = (self._background_probe.feed(raw.decode("latin1"), time.monotonic()).encode("latin1")
+                                   if self._background_probe is not None else raw)
+            remaining -= len(raw)
+            timeout = 0
+        if not self._pending_input:
+            return None
+        raw, self._pending_input = self._pending_input[:1], self._pending_input[1:]
+        return raw
+
     def _read_key_unix(self) -> str:
         """Read a single key press on Unix (non-blocking with short timeout)."""
         try:
-            fd = sys.stdin.fileno()
-            if self._pending_input:
-                raw = self._pending_input
-                self._pending_input = b""
-            else:
-                ready, _, _ = select.select([sys.stdin], [], [], 0.02)
-                if not ready:
-                    return ""
-                raw = os.read(fd, 1)
+            raw = self._read_unix_byte(self.ESCAPE_WAIT_SECONDS)
+            if raw is None:
+                return ""
             if not raw:
                 return "terminal_eof"
             ch = self._input_decoder.decode(raw)
@@ -485,16 +521,13 @@ class ActionLoggerTable(ActionLogger):
             if ch == "\x1b":
                 seq = bytearray()
                 while len(seq) < self.MAX_ESCAPE_BYTES:
-                    ready, _, _ = select.select([fd], [], [], self.ESCAPE_WAIT_SECONDS)
-                    if not ready:
-                        break
-                    part = os.read(fd, 1)
+                    part = self._read_unix_byte(self.ESCAPE_WAIT_SECONDS)
                     if not part:
                         break
                     seq.extend(part)
                     if len(seq) == 1:
                         if part not in (b"[", b"O"):
-                            self._pending_input = part
+                            self._pending_input = part + self._pending_input
                             break
                     elif b"@" <= part <= b"~":
                         break
@@ -851,9 +884,9 @@ class ActionLoggerTable(ActionLogger):
         input_hint = "  i input" if self._get_input_target() is not None else ""
         if self.state == ViewState.TABLE:
             ending = "q close" if self.execution_complete else "q kill"
-            hints = [f"{ending}  j/k select  Enter stdout  e stderr  m meta  o output  s source{input_hint}  Wheel/PgUp/PgDn scroll  Home/End",
+            hints = [f"{ending}  j/k select  Enter stdout  e stderr  m meta  o output  s source{input_hint}  PgUp/PgDn scroll  Home/End",
                      f"{ending}  j/k select  Enter logs  e/m/o/s views{input_hint}  PgUp/PgDn scroll",
-                     f"{ending}  j/k  Enter logs{input_hint}  Wheel scroll", f"{ending}  j/k  Enter logs{input_hint}", ending]
+                     f"{ending}  j/k  Enter logs{input_hint}  PgUp/PgDn", f"{ending}  j/k  Enter logs{input_hint}", ending]
         else:
             task = self._get_selected_task()
             position = ""
@@ -1039,7 +1072,7 @@ class ActionLoggerTable(ActionLogger):
         return result
 
     def _build_renderable(self) -> Group:
-        """Compose the existing views inside one terminal-sized frame."""
+        """Compose compact views bounded by the terminal viewport."""
         with self.lock:
             width, height = self._get_terminal_size()
             if height < self.FRAME_ROWS or width < 24:
@@ -1074,7 +1107,7 @@ class ActionLoggerTable(ActionLogger):
                     directory = Text(self._display_text(self.action_dirs_map.get(label, "-")), no_wrap=True, overflow="crop")
             panel = Panel(Group(summary, directory, content), title=Text(self._display_text(title)[:width - 8]), title_align="left",
                           border_style="" if self.no_color else "dim", padding=(0, 1),
-                          width=width, height=height - 1, safe_box=True,
+                          width=width, safe_box=True,
                           box=box.ASCII if IS_WINDOWS or self.console.options.ascii_only else box.ROUNDED)
             return Group(panel, self._build_footer())
 
@@ -1146,6 +1179,7 @@ class ActionLoggerTable(ActionLogger):
                     pass
                 self._set_mouse_capture(False)
                 if live is not None:
+                    live.update(Text(""))
                     live.stop()
             finally:
                 self._restore_terminal()
@@ -1157,7 +1191,7 @@ class ActionLoggerTable(ActionLogger):
     def _refresh_display(self) -> None:
         with self.lock:
             if self.live is None:
-                self.live = Live(self._build_renderable(), console=self.console, screen=True,
+                self.live = Live(self._build_renderable(), console=self.console, screen=self.ALTERNATE_SCREEN,
                                  refresh_per_second=24, transient=False, auto_refresh=False,
                                  vertical_overflow="crop")
                 self.live.start()
@@ -1192,10 +1226,12 @@ class ActionLoggerTable(ActionLogger):
             except BaseException:
                 with self.console.capture():
                     pass
+                live.update(Text(""))
                 raise
             finally:
                 live.stop()
-            self.console.print(self._build_renderable())
+            if self.ALTERNATE_SCREEN:
+                self.console.print(self._build_renderable())
 
     def wait_for_quit(self) -> None:
         """Wait for user to quit (call after execution completes with --it)."""

@@ -22,10 +22,11 @@ An example of a real project using this gloomy tool: [Baboon](https://github.com
 
 ## Terminal interfaces
 
-The default `pure` logger presents an aligned live checklist: action, context,
-elapsed time, and the latest log line. Scroll up for compact context summaries and the
-same run information printed before execution. The `Plan:` tree's status glyphs
-update above the interactive `Actions:` list, which keeps execution-plan order.
+The default `pure` logger presents one interactive `Actions:` dependency graph,
+with status, action, context, elapsed time and the latest log line. Scroll up for
+compact context summaries and the same run information printed before execution.
+The graph keeps execution-plan order; the cursor sits to its left. Supported terminals
+add a subtle selection background derived from their theme, preserving text colors.
 Arrow keys
 select and reveal any action. Both pure and
 table support action selection, logs, metadata, outputs, source, and action input.
@@ -34,6 +35,7 @@ Press `i` in the Actions list or stdout view to send input to a selected running
 ```bash
 mdl :build
 mdl --logger table :build
+mdl --plan-tree :build          # Separate Plan tree and flat Actions list
 mdl --it :build                 # Keep the selected view open after completion
 mdl --logger simple :build      # Append-only progress and compact Plan
 mdl --logger verbose :build     # Commands and immediate action output
@@ -63,6 +65,32 @@ to stop execution or close the completed view. Mouse wheel and page keys scroll;
 Pure metadata and outputs use compact labelled fields; `v` toggles their original
 JSON. Contexts use the same `@name` throughout the plan, checklist and details.
 
+Pure Actions with retainers and a theme-aware selected row:
+These screenshots show actual CLI sessions from a small example project, captured
+through a PTY and replayed in the xterm.js terminal emulator.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/ui/pure-dag-dark.png">
+  <img alt="Pure Actions DAG with retainers and a selected action" src="docs/ui/pure-dag-light.png">
+</picture>
+
+<details>
+<summary>Log and output views</summary>
+
+`Enter` opens the selected action's logs; `q` returns to Actions.
+
+![Pure action logs](docs/ui/logs-dark.png)
+
+`o` opens typed outputs; `v` switches to the original JSON.
+
+![Pure typed outputs](docs/ui/outputs-dark.png)
+
+`--plan-tree` keeps a separate Plan and a flat Actions list with the same selection style.
+
+![Pure flat Actions list](docs/ui/pure-tree-dark.png)
+
+</details>
+
 ## Documentation
 
 **[📚 Read the Full Documentation](docs/README.md)**
@@ -74,10 +102,10 @@ JSON. Contexts use the same `@name` throughout the plan, checklist and details.
 
 ## Demo
 
-- Parallel build: [![asciicast](https://asciinema.org/a/757430.svg)](https://asciinema.org/a/757430)
-- Checkpoint recovery: [![asciicast](https://asciinema.org/a/757433.svg)](https://asciinema.org/a/757433)
-- Weak dependencies: [![asciicast](https://asciinema.org/a/757574.svg)](https://asciinema.org/a/757574)
-- Context reduction: [![asciicast](https://asciinema.org/a/758167.svg)](https://asciinema.org/a/758167)
+- [Parallel build](https://asciinema.org/a/757430)
+- [Checkpoint recovery](https://asciinema.org/a/757433)
+- [Weak dependencies](https://asciinema.org/a/757574)
+- [Context reduction](https://asciinema.org/a/758167)
 
 ## Features
 

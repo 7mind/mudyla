@@ -1,6 +1,7 @@
 """Pytest configuration and shared fixtures."""
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -140,6 +141,14 @@ class MudylaRunner:
         """Assert that text does not appear in stdout or stderr."""
         combined = result.stdout + result.stderr
         assert text not in combined, f"Unexpected '{text}' in output:\n{combined}"
+
+    def assert_goal_context(self, result: subprocess.CompletedProcess, action: str, context: str) -> None:
+        contexts, remainder = result.stdout.split("Contexts:\n", 1)[1].split("\nGoals:\n", 1)
+        matches = [name for name, data in re.findall(r"^(@\w+)\s+(.*?)(?=^@|\Z)", contexts, re.MULTILINE | re.DOTALL)
+                   if "".join(data.split()) == "".join(context.split())]
+        assert len(matches) == 1, f"Expected one context {context!r}:\n{contexts}"
+        goals = remainder.split("\n\n", 1)[0].splitlines()
+        assert f"{action} {matches[0]}" in goals, goals
 
     def assert_file_exists(self, path: Path | str) -> None:
         """Assert that a file exists."""

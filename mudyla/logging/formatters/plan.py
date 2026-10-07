@@ -1,7 +1,7 @@
 """Dependency-tree presentation shared by the transcript and live overview."""
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult, RenderableType
 from rich.text import Text
@@ -13,6 +13,7 @@ from .details import context_label, literal_text
 from .sections import section
 
 MIN_LABEL_WIDTH = 8
+PlanStyle = Literal["tree", "dag"]
 
 
 @dataclass(frozen=True)

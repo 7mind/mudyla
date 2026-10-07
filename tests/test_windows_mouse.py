@@ -3,11 +3,14 @@
 import ctypes
 from io import StringIO
 from types import SimpleNamespace
+import pytest
 
 from mudyla.logging.windows_mouse import InputRecord, WindowsMouseInput
 from mudyla.logging import windows_mouse
 from mudyla.logging import action_logger_table as interactive
 from mudyla.dag.graph import ActionKey
+from mudyla.logging.action_logger_pure import ActionLoggerPure
+from mudyla.logging.formatters import OutputFormatter
 
 
 class Function:
@@ -84,15 +87,18 @@ def test_windows_wheel_capture_preserves_keyboard_records_and_original_mode(monk
     assert api.mode == original
 
 
-def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypatch):
-    api = ConsoleAPI(0x267, [mouse_record(-120)])
+@pytest.mark.parametrize("mode", ["pure", "table"])
+def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypatch, mode):
+    api = ConsoleAPI(0x267, [mouse_record(-120)] if mode == "pure" else [])
     key = InputRecord()
     key.kind = WindowsMouseInput.KEY_EVENT
     key.event.key.down = 1
     key.event.key.char = ord("q")
     api.records.append(key)
     monkeypatch.setattr(windows_mouse, "_console_api", lambda: api)
-    logger = interactive.ActionLoggerTable([ActionKey.from_name("work")])
+    keys = [ActionKey.from_name("work")]
+    logger = (ActionLoggerPure(keys, OutputFormatter(no_color=False, compact=True), True, force_interactive=True)
+              if mode == "pure" else interactive.ActionLoggerTable(keys))
     logger.console.file = StringIO()
     logger._input_enabled = True
     monkeypatch.setattr(interactive.sys, "platform", "win32")
@@ -102,7 +108,11 @@ def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypat
         getwch=lambda: chr(api.records.pop(0).event.key.char)), raising=False)
     logger._setup_terminal()
     logger._set_mouse_capture(True)
-    assert logger._read_key_windows() == "wheel_down"
+    if mode == "pure":
+        assert logger._read_key_windows() == "wheel_down"
+    else:
+        assert api.mode == 0x267
+        assert "\x1b[?1000h" not in logger.console.file.getvalue()
     assert logger._read_key_windows() == "q"
     logger._set_mouse_capture(False)
     logger._restore_terminal()

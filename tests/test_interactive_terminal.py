@@ -19,6 +19,29 @@ def action_keys(count: int) -> list[ActionKey]:
     return [ActionKey(ActionId(f"task{index:02d}"), ContextId(())) for index in range(count)]
 
 
+@pytest.mark.parametrize("width", [40, 120, 160])
+@pytest.mark.parametrize("view", list(ViewState))
+def test_inline_table_footer_advertises_keyboard_controls_only(monkeypatch, width, view):
+    logger = ActionLoggerTable(action_keys(1))
+    logger.state = view
+    monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, 24))
+    footer = logger._build_footer().plain
+    assert "Wheel" not in footer
+    assert "j/k" in footer
+    if width >= 120:
+        assert "PgUp/PgDn" in footer
+
+
+def test_pure_overview_footer_retains_mouse_wheel_hint():
+    from mudyla.logging.action_logger_pure import ActionLoggerPure
+    from mudyla.logging.formatters import OutputFormatter
+
+    output = OutputFormatter(no_color=True, compact=True)
+    output._console = Console(file=StringIO(), width=160, height=24, force_terminal=True)
+    logger = ActionLoggerPure(action_keys(1), output, True)
+    assert "Wheel/PgUp/PgDn scroll" in logger._build_footer().plain
+
+
 def rendered(logger: ActionLoggerTable, width: int, height: int) -> str:
     stream = StringIO()
     console = Console(file=stream, width=width, height=height, force_terminal=False)
@@ -178,15 +201,20 @@ def test_stop_before_start_is_idempotent():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Native POSIX terminal restoration")
 @pytest.mark.parametrize("stage", ["start", "stop"])
-def test_render_error_restores_screen_cursor_and_terminal(monkeypatch, stage):
+@pytest.mark.parametrize("mode", ["table", "pure"])
+def test_render_error_restores_screen_cursor_and_terminal(monkeypatch, stage, mode):
     import termios
     from rich.console import Group
     from rich.text import Text
+    from mudyla.logging.action_logger_pure import ActionLoggerPure
+    from mudyla.logging.formatters import OutputFormatter
 
     master, slave = os.openpty()
     with os.fdopen(slave, "r", encoding="utf-8") as terminal, TextIOWrapper(BytesIO(), encoding="ascii") as stream:
         monkeypatch.setattr(sys, "stdin", terminal)
-        logger = ActionLoggerTable(action_keys(1), no_color=True)
+        logger = (ActionLoggerPure(action_keys(1), OutputFormatter(no_color=True, compact=True), True,
+                                   force_interactive=True) if mode == "pure" else
+                  ActionLoggerTable(action_keys(1), no_color=True))
         logger.console = Console(file=stream, width=80, height=24, force_terminal=True)
         logger.state = ViewState.LOGS_STDOUT
         original = termios.tcgetattr(terminal)
@@ -201,10 +229,10 @@ def test_render_error_restores_screen_cursor_and_terminal(monkeypatch, stage):
             changed_flags = termios.ICANON | termios.ECHO | termios.ISIG | termios.NOFLSH
             assert termios.tcgetattr(terminal)[3] & changed_flags == original[3] & changed_flags
             output = stream.buffer.getvalue().decode("ascii")
-            assert output.count("\x1b[?1049h") == output.count("\x1b[?1049l") == 1
+            assert output.count("\x1b[?1049h") == output.count("\x1b[?1049l") == int(mode == "pure")
             assert output.count("\x1b[?25l") == output.count("\x1b[?25h") == 1
-            assert output.count("\x1b[?1000h") == output.count("\x1b[?1000l") == 1
-            assert output.count("\x1b[?1006h") == output.count("\x1b[?1006l") == 1
+            assert output.count("\x1b[?1000h") == output.count("\x1b[?1000l") == int(mode == "pure")
+            assert output.count("\x1b[?1006h") == output.count("\x1b[?1006l") == int(mode == "pure")
         finally:
             logger._restore_terminal()
             if logger.live is not None:

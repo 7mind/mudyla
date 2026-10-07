@@ -48,6 +48,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show execution plan without executing",
     )
+    parser.set_defaults(plan_style="dag")
+    plan_group = parser.add_mutually_exclusive_group()
+    plan_group.add_argument("--plan-tree", dest="plan_style", action="store_const", const="tree",
+                           help="Show the dependency tree in any logger's Plan")
+    plan_group.add_argument("--plan-dag", dest="plan_style", action="store_const", const="dag",
+                           help="Show a connected dependency graph with each action once (default)")
 
     parser.add_argument(
         "--continue",

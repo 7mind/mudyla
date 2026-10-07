@@ -114,6 +114,7 @@ class TestMultiContext:
     def test_context_in_rich_table(self, mdl: MudylaRunner, clean_test_output):
         """Test that context column appears in rich table for multi-context execution."""
         result = mdl.run_success([
+            "--logger", "table", "--force-interactive",
             ":conditional-build",
             "--axis build-mode:development",
             ":conditional-build",
@@ -133,22 +134,19 @@ class TestMultiContext:
         mdl.assert_in_output(result, "conditional-build")
 
     def test_context_format_in_output(self, mdl: MudylaRunner, clean_test_output):
-        """Test that context format uses 'context#action' notation for goals."""
+        """Test that each goal refers to its displayed context."""
         result = mdl.run_success([
             ":conditional-build",
             "--axis build-mode:release",
         ])
 
-        # Verify context#action format appears in Goals section
-        # conditional-build is a goal, so it should have # format
-        mdl.assert_in_output(result, "build-mode:release")
-        mdl.assert_in_output(result, "#conditional-build")
+        mdl.assert_goal_context(result, "conditional-build",
+                                'at build-mode:release with output-dir="test-output"')
 
-        # create-directory is a dependency (not a goal), so it appears in tables
-        # where Context and Action are separate columns (no # in between)
+        # Dependencies retain their own reduced contexts.
         mdl.assert_in_output(result, "create-directory")
 
-        # Verify NOT using old action@context format
+        # Compact goals separate action names from context references.
         mdl.assert_not_in_output(result, "create-directory@")
         mdl.assert_not_in_output(result, "conditional-build@")
 
@@ -173,9 +171,7 @@ class TestMultiContextEdgeCases:
         """Test that actions without axis conditions get default context."""
         result = mdl.run_success([":create-directory"])
 
-        # create-directory has no axis conditions, so it gets default context
-        mdl.assert_in_output(result, "default")
-        mdl.assert_in_output(result, "#create-directory")
+        mdl.assert_goal_context(result, "create-directory", 'at (none) with output-dir="test-output"')
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -189,7 +185,8 @@ class TestMultiContextEdgeCases:
 
         # conditional-build only cares about build-mode, not cross-platform or platform
         mdl.assert_in_output(result, "build-mode:release")
-        mdl.assert_in_output(result, "#conditional-build")  # Goal has # format
+        mdl.assert_goal_context(result, "conditional-build",
+                                'at build-mode:release with output-dir="test-output"')
 
         # create-directory has no conditions, gets default context
         # It appears in tables where Context and Action are separate columns
@@ -226,8 +223,8 @@ class TestMultiContextEdgeCases:
         mdl.assert_in_output(result, "default")
         mdl.assert_in_output(result, "generate-sources")
 
-        # platform-build is a goal, so it has # format in Goals section
-        mdl.assert_in_output(result, "#platform-build")
+        for platform in ["jvm", "js"]:
+            mdl.assert_goal_context(result, "platform-build", f"at cross-platform:{platform}")
 
         mdl.assert_in_output(result, "Execution completed successfully")
 
@@ -269,12 +266,8 @@ class TestTransitiveContextReduction:
         mdl.assert_in_output(result, "demo-platform:jvm")
         mdl.assert_in_output(result, "demo-gen-sources")
 
-        # Full contexts for the goals
-        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:2.13")
-        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:3.3")
-
-        # demo-publish is a goal, so it has # format in Goals section
-        mdl.assert_in_output(result, "#demo-publish")
+        for scala in ["2.13", "3.3"]:
+            mdl.assert_goal_context(result, "demo-publish", f"at demo-platform:jvm, demo-scala:{scala}")
 
         mdl.assert_in_output(result, "Execution completed successfully")
 
@@ -301,11 +294,9 @@ class TestTransitiveContextReduction:
         mdl.assert_in_output(result, "demo-platform:jvm")
         mdl.assert_in_output(result, "demo-platform:js")
 
-        # Four full contexts for the goals
-        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:2.13")
-        mdl.assert_in_output(result, "demo-platform:jvm+demo-scala:3.3")
-        mdl.assert_in_output(result, "demo-platform:js+demo-scala:2.13")
-        mdl.assert_in_output(result, "demo-platform:js+demo-scala:3.3")
+        for platform in ["jvm", "js"]:
+            for scala in ["2.13", "3.3"]:
+                mdl.assert_goal_context(result, "demo-publish", f"at demo-platform:{platform}, demo-scala:{scala}")
 
         mdl.assert_in_output(result, "Execution completed successfully")
 

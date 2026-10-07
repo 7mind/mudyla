@@ -37,6 +37,8 @@ def test_logger_selection(options, expected):
 @pytest.mark.parametrize("options", [
     ["--logger", "pure", "--verbose"], ["--logger", "table", "--verbose"],
     ["--logger", "pure", "--github-actions"], ["--logger", "table", "--simple-log"],
+    ["--logger", "github", "--simple-log", "--verbose"],
+    ["--logger", "verbose", "--github-actions"],
 ])
 def test_contradictory_logger_options_fail_before_execution(options):
     cli = CLI()
@@ -87,17 +89,19 @@ def test_pure_preparation_has_exactly_one_blank_line_between_sections(tmp_path):
                                                      ([], 'raise SystemExit(7)', 1),
                                                      (["--dry-run"], 'mdl.ret("ok", True, "bool")', 0),
                                                      (["--continue", "--keep-run-dir"], 'mdl.ret("ok", True, "bool")', 0)])
-def test_pure_transcript_prints_one_final_tree_or_one_dry_run_plan(tmp_path, options, script, expected):
+def test_pure_transcript_prints_one_final_actions_graph_or_one_dry_run_plan(tmp_path, options, script, expected):
     if "--continue" in options:
         previous = run_project(tmp_path, ["--keep-run-dir"], script)
         assert previous.returncode == 0
     result = run_project(tmp_path, options, script)
     assert result.returncode == expected, result.stdout + result.stderr
-    assert result.stdout.count("Plan:") == 1, result.stdout
-    tree = result.stdout.index("Plan:")
-    assert "Run info:" in result.stdout[:tree] and "Contexts:" in result.stdout[:tree] and "Goals:" in result.stdout[:tree]
+    heading = "Plan:" if "--dry-run" in options else "Actions:"
+    assert result.stdout.count(heading) == 1, result.stdout
+    graph = result.stdout.index(heading)
+    assert "Run info:" in result.stdout[:graph] and "Contexts:" in result.stdout[:graph] and "Goals:" in result.stdout[:graph]
     if "--dry-run" not in options:
-        assert tree < result.stdout.index("Actions:\n") < result.stdout.index("Result:\n")
+        assert "Plan:" not in result.stdout
+        assert graph < result.stdout.index("Result:\n")
         assert "○ hello" not in result.stdout
 
 
@@ -299,6 +303,42 @@ def test_output_presentation_preserves_declared_types_and_saved_json(tmp_path, m
         assert '"hello"' in result.stdout and '"disabled": false' in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["pure", "simple", "verbose", "github", "teamcity"])
+@pytest.mark.parametrize("goals,full", [(["empty"], False), (["empty", "values"], False), (["empty"], True)])
+def test_compact_results_omit_empty_groups_without_changing_saved_json(tmp_path, mode, goals, full):
+    (tmp_path / ".git").mkdir()
+    definitions = tmp_path / ".mdl" / "defs"
+    definitions.mkdir(parents=True)
+    (definitions / "actions.md").write_text(
+        '# action: values\n\n```python\nmdl.ret("zero", 0, "int")\n'
+        'mdl.ret("disabled", False, "bool")\nmdl.ret("text", "", "string")\n```\n\n'
+        '# action: empty\n\n```python\nmdl.dep("action.values")\n```\n', encoding="utf-8")
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="300")
+    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode,
+                            "--out", "result.json", *(["--full-output"] if full else []),
+                            *(":" + name for name in goals)], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    selected = {"empty": {}}
+    if full or "values" in goals:
+        selected["values"] = {"zero": 0, "disabled": False, "text": ""}
+    assert json.loads((tmp_path / "result.json").read_text()) == selected
+    if mode == "teamcity":
+        from mudyla.logging.teamcity import parse_message
+        messages = [parse_message(line) for line in result.stdout.splitlines()]
+        assert all(message is not None for message in messages), result.stdout
+        displayed = "".join(message.attributes.get("text", "") for message in messages if message is not None)
+    else:
+        displayed = result.stdout
+    if len(selected) == 1:
+        assert "Outputs:" not in displayed, displayed
+    else:
+        outputs = displayed.split("Outputs:\n", 1)[1]
+        assert "values @global" in outputs and "empty @global" not in outputs, outputs
+        for name, declared, value in [("zero", "int", "0"), ("disabled", "bool", "false"), ("text", "string", '\"\"')]:
+            assert re.search(rf"{name}:\s+{declared}\s+= {value}", outputs), outputs
+
+
 def test_restored_outputs_retain_declared_types_without_rewriting_artifacts(tmp_path):
     script = 'mdl.ret("answer", 0, "int")\nmdl.ret("enabled", False, "bool")'
     first = run_project(tmp_path, ["--keep-run-dir"], script)
@@ -401,7 +441,7 @@ def test_terminal_color_policy_honors_environment_and_explicit_flag(tmp_path, mo
     colored = [sequence for sequence in re.findall(r"\x1b\[([0-9;]*)m", text)
                if any(int(code) in color_codes for code in sequence.split(";") if code)]
     assert bool(colored) == (not explicit and not environment), colored[:5]
-    assert text.count("\x1b[?1049h") == text.count("\x1b[?1049l") == 1
+    assert text.count("\x1b[?1049h") == text.count("\x1b[?1049l") == int(mode == "pure")
 
 
 def test_no_color_preserves_raw_action_terminal_sequences(tmp_path):

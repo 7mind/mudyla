@@ -92,9 +92,8 @@ class TestBasicOperations:
         result = mdl.run_success(["--verbose", ":final-report"])
 
         # Verify verbose output is present
-        mdl.assert_in_output(result, "start:")
-        mdl.assert_in_output(result, "done:")
-        mdl.assert_in_output(result, "Command:")
+        mdl.assert_in_output(result, "Running command `")
+        mdl.assert_in_output(result, "Finished (")
 
         # Verify all actions in the chain executed
         mdl.assert_in_output(result, "create-directory")
@@ -107,16 +106,16 @@ class TestBasicOperations:
         result = mdl.run_success([":final-report"])
 
         # Verify execution plan is shown
-        mdl.assert_in_output(result, "Execution plan:")
+        mdl.assert_in_output(result, "Actions:")
+        mdl.assert_not_in_output(result, "Plan:")
         mdl.assert_in_output(result, "create-directory")
         mdl.assert_in_output(result, "final-report")
 
-        # Verify dependency notation (dependencies shown as numbers)
-        mdl.assert_in_output(result, "Deps")
+        mdl.assert_in_output(result, "│")
 
     def test_rich_table_display(self, mdl: MudylaRunner, clean_test_output):
         """Test that rich table is displayed during execution."""
-        result = mdl.run_success(["--force-interactive", ":write-message"])
+        result = mdl.run_success(["--logger", "table", "--force-interactive", ":write-message"])
 
         # Verify table headers
         mdl.assert_in_output(result, "Context")
@@ -125,62 +124,23 @@ class TestBasicOperations:
         mdl.assert_in_output(result, "Time")
         mdl.assert_in_output(result, "Status")
         # Just verify the table structure exists with the box drawing characters
-        assert "┃" in result.stdout, "Expected table box drawing characters"
-        assert "━" in result.stdout, "Expected table box drawing characters"
+        assert "│" in result.stdout, "Expected action-view panel borders"
+        assert "─" in result.stdout, "Expected action-view panel borders"
 
         # Verify task completed successfully (execution message at end, not in truncated table)
         mdl.assert_in_output(result, "Execution completed successfully")
 
-    def test_json_output_structure(self, mdl: MudylaRunner, clean_test_output):
-        """Test that JSON output is properly structured."""
-        result = mdl.run_success([":write-message"])
-
-        # Extract JSON from output (after Outputs: header - with emoji or ASCII)
-        output_lines = result.stdout.split("\n")
-        json_start = None
-        for i, line in enumerate(output_lines):
-            # Match either emoji "📊 Outputs:" or ASCII "> Outputs:"
-            if "Outputs:" in line and ("📊" in line or ">" in line):
-                json_start = i + 1
-                break
-
-        assert json_start is not None, "Could not find JSON output in response"
-
-        # Collect JSON lines
-        json_lines = []
-        for line in output_lines[json_start:]:
-            if line.strip():
-                json_lines.append(line)
-            else:
-                break
-
-        json_text = "\n".join(json_lines)
-
-        # Parse and validate JSON
-        try:
-            outputs = json.loads(json_text)
-
-            # Navigate through nested structure to find write-message outputs
-            # Output structure is now nested by axes: {axis-name: {axis-value: {...}}}
-            def find_action_outputs(data, action_name="write-message"):
-                """Recursively search for action outputs in nested structure."""
-                if isinstance(data, dict):
-                    # Check if this level has the action directly
-                    if action_name in data:
-                        return data[action_name]
-                    # Otherwise recurse into nested structures
-                    for value in data.values():
-                        result = find_action_outputs(value, action_name)
-                        if result is not None:
-                            return result
-                return None
-
-            write_message_output = find_action_outputs(outputs, "write-message")
-            assert write_message_output is not None, f"Could not find write-message output in: {outputs}"
-            assert "message-file" in write_message_output, f"Missing message-file in: {write_message_output}"
-            assert "message-length" in write_message_output, f"Missing message-length in: {write_message_output}"
-        except json.JSONDecodeError as e:
-            pytest.fail(f"Invalid JSON output: {e}\n{json_text}")
+    def test_json_output_structure(self, mdl: MudylaRunner, clean_test_output, tmp_path):
+        """Test the machine-readable output independently from console presentation."""
+        output_file = tmp_path / "outputs.json"
+        result = mdl.run_success(["--out", str(output_file), ":write-message"])
+        mdl.assert_in_output(result, "Outputs:")
+        outputs = json.loads(output_file.read_text())
+        write_message = outputs["args.message"]["Hello, Mudyla!"]["args.output-dir"]["test-output"]["write-message"]
+        assert write_message == {
+            "message-file": "test-output/message.txt",
+            "message-length": 15,
+        }
 
     def test_failure_output_visible_by_default(self, mdl: MudylaRunner, clean_test_output):
         """Ensure failed actions surface their outputs when no suppression flag is used."""

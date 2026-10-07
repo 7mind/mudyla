@@ -35,7 +35,8 @@ from .axis_wildcards import expand_all_wildcards
 from .utils.project_root import find_project_root
 from .logging.formatters import OutputFormatter
 from .logging.formatters.details import JsonValue, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
-from .logging.formatters.plan import execution_tree, sharing_counts, tree_section
+from .logging.formatters.plan import PlanStyle, execution_tree, sharing_counts, tree_section
+from .logging.formatters.dag import dag_section, execution_dag
 from .logging.formatters.sections import section
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
@@ -182,9 +183,7 @@ class CLI:
             execution_order = pruned_graph.get_execution_order()
             static_plan = None
             if not quiet_mode:
-                if not output.compact:
-                    output.print(f"\n{sym.Clipboard} [bold]Execution plan:[/bold]")
-                static_plan = self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids)
+                static_plan = self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids, args.plan_style)
 
             if args.dry_run:
                 output.print_run_field("Execution", Text("Dry run - not executing"),
@@ -212,6 +211,7 @@ class CLI:
                 keep_run_dir=args.keep_run_dir or keep_running,
                 no_color=args.no_color,
                 logger_mode=LoggerMode(args.logger),
+                plan_style=args.plan_style,
                 force_interactive=args.force_interactive,
                 show_dirs=args.show_dirs,
                 parallel_execution=parallel_execution,
@@ -261,7 +261,7 @@ class CLI:
                 groups: list[RenderableType] = []
                 for key in sorted(selected, key=str):
                     action_result = result.action_results.get(key)
-                    if action_result is None:
+                    if action_result is None or not action_result.outputs:
                         continue
                     records: dict[str, JsonValue] = {}
                     for name, value in action_result.outputs.items():
@@ -545,20 +545,21 @@ class CLI:
         out_path: Optional[str],
         presented_outputs: Optional[Group] = None,
     ) -> None:
-        """Print pure output rows or the existing JSON presentation.
+        """Print nonempty compact output groups or the existing JSON presentation.
 
         Args:
             outputs_to_report: Dictionary of outputs to report
             output: Output formatter
             no_color: Whether colors are disabled
             out_path: Optional file path to save outputs
-            presented_outputs: Typed pure rows; the saved JSON remains unchanged
+            presented_outputs: Typed compact groups; the saved JSON remains unchanged
         """
         sym = output.symbols
         output_json = json.dumps(outputs_to_report, indent=2)
         if presented_outputs is not None:
-            output.print(section("Outputs:", presented_outputs, None, None))
-            output.print("")
+            if presented_outputs.renderables:
+                output.print(section("Outputs:", presented_outputs, None, None))
+                output.print("")
         else:
             output.print(f"\n{sym.Chart} [bold]Outputs:[/bold]")
             if not no_color:
@@ -582,7 +583,7 @@ class CLI:
         except ValueError as error:
             self.parser.error(str(error))
         args.logger = mode.value
-        args.verbose = mode == LoggerMode.VERBOSE or (mode == LoggerMode.GITHUB and args.verbose)
+        args.verbose = mode == LoggerMode.VERBOSE
         args.github_actions = mode == LoggerMode.GITHUB
         usable_terminal = sys.stdout.isatty() and sys.stdin.isatty() and os.environ.get("TERM") not in {"dumb", "unknown"}
         if mode == LoggerMode.TABLE and not usable_terminal and not args.force_interactive:
@@ -885,8 +886,9 @@ class CLI:
         goals: list[str],
         output: OutputFormatter,
         use_short_ids: bool,
-    ) -> Optional[Group]:
-        """Visualize execution plan as a rich table.
+        plan_style: PlanStyle = "dag",
+    ) -> Group:
+        """Render the shared DAG or explicitly selected dependency tree.
 
         Args:
             graph: The execution graph
@@ -894,79 +896,24 @@ class CLI:
             goals: List of goal action names
             output: Output formatter
             use_short_ids: Whether to use short context IDs
+            plan_style: DAG by default, or the explicit tree alternative
         """
-        from rich.table import Table
-
-        sym = output.symbols
-        no_color = output.no_color
-
         # Compute sharing counts: how many unique goal contexts use each action
         sharing_counts = self._compute_sharing_counts(graph, execution_order, goals)
 
-        if output.compact:
-            return self._print_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts)
+        if plan_style == "dag":
+            def initial_status(key: ActionKey) -> Text:
+                ready = not graph.get_node(key).dependencies
+                glyphs = (">", "o") if output.console.options.ascii_only else ("◇", "○")
+                return Text(glyphs[0 if ready else 1] + " ", style="cyan" if ready else "dim")
 
-        # Styles conditional on no_color
-        header_style = "" if no_color else "bold"
-        action_style = "" if no_color else "cyan"
-        dim_style = "" if no_color else "dim"
-        blue_style = "" if no_color else "blue"
-
-        table = Table(show_header=True, header_style=header_style)
-        table.add_column("#", justify="right")
-        table.add_column("Context")
-        table.add_column("Action", style=action_style)
-        table.add_column("Goal", justify="center")
-        table.add_column("Deps", style=dim_style)
-        table.add_column("Shared", justify="right", style=blue_style)
-
-        ctx_fmt = output.action.context
-
-        for i, action_key in enumerate(execution_order, 1):
-            node = graph.get_node(action_key)
-            is_goal = action_key.id.name in goals
-
-            # Number column
-            num_str = str(i)
-
-            # Context column - use formatter for colored output
-            context_text = ctx_fmt.format_id_with_symbol(action_key.context_id, use_short_ids)
-
-            # Action column - escape to prevent markup injection
-            action_str = output.escape(action_key.id.name)
-
-            # Goal column
-            goal_str = sym.Target if is_goal else ""
-
-            # Dependencies column
-            if node.dependencies:
-                sorted_deps = sorted(node.dependencies, key=lambda d: d.action.id.name)
-                dep_parts = []
-                for dep in sorted_deps:
-                    if dep.action not in execution_order:
-                        continue  # Skip dependencies not in execution order (e.g., pruned soft deps)
-                    dep_num = execution_order.index(dep.action) + 1
-                    if dep.weak:
-                        dep_parts.append(f"~{dep_num}")
-                    elif dep.soft:
-                        dep_parts.append(f"?{dep_num}")  # Show soft deps with question mark
-                    else:
-                        dep_parts.append(str(dep_num))
-                deps_str = ", ".join(dep_parts) if dep_parts else "-"
-            else:
-                deps_str = "-"
-
-            # Shared column - show how many contexts share this action
-            share_count = sharing_counts.get(action_key, 1)
-            shared_str = str(share_count) if share_count > 1 else "-"
-
-            table.add_row(num_str, context_text, action_str, goal_str, deps_str, shared_str)
-
-        # Use output's console to respect no_color setting
-        output.console.print(table)
-        output.print("")  # Empty line after plan
-
-        return None
+            dag = execution_dag(graph, execution_order, output.context, use_short_ids, sharing_counts,
+                                initial_status, lambda key: "dim")
+            plan = Group(dag_section(dag, output.console.options.ascii_only), Text(""))
+            output.print(plan)
+            return plan
+        assert plan_style == "tree"
+        return self._print_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts)
 
     def _print_execution_tree(self, graph: ActionGraph, execution_order: list[ActionKey], output: OutputFormatter,
                               use_short_ids: bool, sharing_counts: dict[ActionKey, int]) -> Group:

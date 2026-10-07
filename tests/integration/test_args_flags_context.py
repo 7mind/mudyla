@@ -18,8 +18,8 @@ class TestArgsFlagsContext:
         # Should have 2 builds (dev and prod)
         # 1 compile (because compile uses 'target', which defaults to empty, and doesn't depend on 'mode')
         
-        mdl.assert_in_output(result, "args.mode:dev")
-        mdl.assert_in_output(result, "args.mode:prod")
+        for mode in ["dev", "prod"]:
+            mdl.assert_goal_context(result, "build", f'at (none) with mode="{mode}", target=""')
         
         # compile (shared) + 2 builds = 3 actions
         mdl.assert_in_output(result, "3 required action(s)")
@@ -37,9 +37,8 @@ class TestArgsFlagsContext:
         # build does NOT depend on check.
         # So build should be shared.
         
-        mdl.assert_in_output(result, "flags.check:true")
-        # Implicit flags no longer show as "flags.check:false" in context name, they map to default
-        # But the split should still happen (true vs default)
+        mdl.assert_goal_context(result, "test", 'at (none) with mode="dev", target="" flags check=true')
+        mdl.assert_goal_context(result, "test", 'at (none) with mode="dev", target=""')
         
         # Shared compile -> Shared build -> 2 tests
         # Actions: compile, build, test(true), test(false/default) = 4 actions
@@ -68,5 +67,4 @@ class TestArgsFlagsContext:
             ":compile", "--target=x86",
         ])
         
-        mdl.assert_in_output(result, "args.target:x86")
-        mdl.assert_in_output(result, "#compile")
+        mdl.assert_goal_context(result, "compile", 'at (none) with target="x86"')

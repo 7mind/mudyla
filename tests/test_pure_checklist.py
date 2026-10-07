@@ -23,14 +23,16 @@ from mudyla.logging.formatters import OutputFormatter
 
 
 @pytest.mark.parametrize("interactive", [False, True])
-def test_final_snapshot_contains_same_tree_once_without_replaying_run_info(interactive):
+@pytest.mark.parametrize("plan_style", ["tree", "dag"])
+def test_final_snapshot_contains_selected_graph_once_without_replaying_run_info(interactive, plan_style):
     source, goal = [ActionKey.from_name(name) for name in ["source", "goal"]]
     nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("test.md", 1, key.id.name)))
              for key in [source, goal]}
     nodes[goal].dependencies.add(Dependency(source))
     output = OutputFormatter(no_color=True, compact=True)
     output._console = Console(file=StringIO(), width=100, height=24, force_terminal=interactive)
-    logger = ActionLoggerPure([source, goal], output, True, graph=ActionGraph(nodes, {goal}), run_info=Text("ONLY_PREPARATION"))
+    logger = ActionLoggerPure([source, goal], output, True, graph=ActionGraph(nodes, {goal}),
+                              plan_style=plan_style, run_info=Text("ONLY_PREPARATION"))
     for key in [source, goal]:
         logger.mark_done(key, .1)
     logger.stop()
@@ -38,7 +40,7 @@ def test_final_snapshot_contains_same_tree_once_without_replaying_run_info(inter
         output.console.print(logger._build_renderable())
     logger.stop()
     frame = Text.from_ansi(output.console.file.getvalue()).plain
-    assert frame.count("Plan:") == 1
+    assert frame.count("Plan:") == (1 if plan_style == "tree" else 0)
     assert "ONLY_PREPARATION" not in frame
     assert ("✓ source" if interactive else "+ source") in frame or "✓ source" in frame
     assert frame.count("Actions:") == 1
@@ -93,7 +95,7 @@ def test_live_tree_updates_dependency_readiness_and_shared_references_without_mo
     graph = ActionGraph(nodes, {goal})
     output = OutputFormatter(no_color=True, compact=True)
     output._console = Console(file=StringIO(), width=width, height=24, force_terminal=True)
-    logger = ActionLoggerPure(keys, output, True, graph=graph, run_info=Text("RUN_INFORMATION"))
+    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="tree", run_info=Text("RUN_INFORMATION"))
 
     def document():
         rows = logger._overview_prefix()
@@ -374,7 +376,7 @@ def test_dependency_tree_shares_only_exact_action_contexts(encoding):
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
         output = OutputFormatter(no_color=True, compact=True)
         output._console = Console(file=stream, width=90, force_terminal=False)
-        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False)
+        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False, "tree")
         stream.flush()
         result = stream.buffer.getvalue().decode(encoding)
     assert "build (@" + output.context.format_id(build.context_id, False).plain in result
@@ -404,7 +406,7 @@ def test_pure_information_commands_use_compact_rows(tmp_path, option):
     assert "build" in result.stdout and "shared" in result.stdout
     assert not any(char in result.stdout for char in "┏┓┗┛┃━")
     if option == "--dry-run":
-        assert "goal" in result.stdout and "└" in result.stdout
+        assert "goal" in result.stdout and "│" in result.stdout
     else:
         assert "Build the package." in result.stdout
 
@@ -483,7 +485,8 @@ def test_parallel_edges_have_stable_strength_order_and_shared_context_identity()
 
 
 @pytest.mark.parametrize("retain,strong", [(True, False), (False, False), (False, True)])
-def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_path, retain, strong):
+@pytest.mark.parametrize("plan_options", [["--plan-tree"], ["--plan-dag"]])
+def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_path, retain, strong, plan_options):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
     definitions.mkdir(parents=True)
@@ -494,13 +497,13 @@ def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_pa
         '# action: build\n\n```python\nmdl.soft("action.cache", "action.keep")\n' +
         ('mdl.dep("action.cache")\n' if strong else '') + 'print("BUILD_DONE")\n```\n')
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="160")
-    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--simple-log", ":build"],
+    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--simple-log", *plan_options, ":build"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     plan = result.stdout.split("Plan:", 1)[1].split("Actions:", 1)[0]
     assert ("cache (@global" in plan) == (retain or strong)
     if retain or strong:
-        assert "╌" in plan and "soft" in plan
+        assert ("╎" if plan_options == ["--plan-dag"] else "╌") in plan.split("deps ready", 1)[0] and "soft" in plan
     if strong:
-        assert "├─" in plan
+        assert ("│" if plan_options == ["--plan-dag"] else "├─") in plan.split("deps ready", 1)[0]
     assert (tmp_path / "retainer-ran").exists() == (not strong)

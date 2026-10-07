@@ -27,6 +27,7 @@ from .runtime_bash import BashRuntime
 from .runtime_python import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
 from ..logging.action_logger import ActionLogger, LoggerMode
+from ..logging.formatters.plan import PlanStyle
 
 OUTPUT_CHUNK_BYTES = 4096
 INPUT_RETRY_SECONDS = 0.01
@@ -199,6 +200,7 @@ class ExecutionEngine:
         *,
         logger_mode: LoggerMode,
         force_interactive: bool,
+        plan_style: PlanStyle = "dag",
         run_info: Optional[RenderableType] = None,
         output: Optional[OutputFormatter] = None,
     ):
@@ -214,6 +216,7 @@ class ExecutionEngine:
         self.keep_run_dir = keep_run_dir
         self.no_color = no_color
         self.logger_mode = logger_mode
+        self.plan_style = plan_style
         self.force_interactive = force_interactive
         self.run_info = run_info
         self.show_dirs = show_dirs
@@ -477,7 +480,7 @@ class ExecutionEngine:
                                       keep_running=self.keep_running, show_dirs=self.show_dirs,
                                       action_dirs=self._build_action_dir_mapping(execution_order),
                                       run_directory=self.run_directory, force_interactive=self.force_interactive,
-                                      run_info=self.run_info, graph=self.graph)
+                                      run_info=self.run_info, graph=self.graph, plan_style=self.plan_style)
     
         logger.set_kill_callback(self._request_kill)
         logger.set_input_callback(self._send_action_input)

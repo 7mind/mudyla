@@ -13,6 +13,8 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
+from tests.terminal_capture import terminal_text
+
 from mudyla.dag.graph import ActionKey
 from mudyla.logging.action_logger_table import ActionLoggerTable, TaskStatus, ViewState
 from mudyla.logging.action_logger_pure import ActionLoggerPure
@@ -72,7 +74,7 @@ def test_action_finishing_during_input_restores_navigation(terminal_project, tmp
     child.expect_exact("UNSENT")
     release.touch()
     child.expect_exact("Action finished")
-    footer = Text.from_ansi(child.before).plain
+    footer = terminal_text(child.before).plain
     assert "q back" in footer and "j/k" in footer, footer
     child.send("q")
     child.expect_exact("q close")
@@ -100,7 +102,7 @@ def test_nonstdout_input_shortcut_does_not_capture_navigation(terminal_project, 
     release.touch()
     child.expect_exact("q close")
     child.expect_exact("q close")
-    assert "i input" not in Text.from_ansi(child.before).plain
+    assert "i input" not in terminal_text(child.before).plain
     child.send("q")
     child.expect(pexpect.EOF)
     child.close()
@@ -296,6 +298,56 @@ def test_force_interactive_overrides_terminal_capability(terminal_project, mode,
     assert child.exitstatus == 0
 
 
+@pytest.mark.parametrize("view", [ViewState.TABLE, ViewState.LOGS_STDOUT])
+def test_table_small_frames_do_not_fill_the_terminal(tmp_path, monkeypatch, view):
+    keys = [ActionKey.from_name(name) for name in ["base", "work"]]
+    logger = ActionLoggerTable(keys, no_color=True)
+    logger.console = Console(file=StringIO(), width=120, height=60, force_terminal=True, no_color=True)
+    monkeypatch.setattr(logger, "_get_terminal_size", lambda: (120, 60))
+    logger.mark_running(keys[0], tmp_path)
+    (tmp_path / "stdout.log").write_text("FIRST_LOG_LINE\nSECOND_LOG_LINE\n")
+    logger.state = view
+    lines = logger.console.render_lines(logger._build_renderable(), pad=False)
+    assert len(lines) <= 9, "Short table/detail frames must leave preceding run information visible"
+    text = "\n".join("".join(segment.text for segment in line) for line in lines)
+    assert "base" in text and ("work" in text if view == ViewState.TABLE else "SECOND_LOG_LINE" in text)
+
+
+def test_table_native_run_information_stays_in_normal_terminal_history(terminal_project, tmp_path):
+    import pexpect
+
+    release = tmp_path / "release"
+    actions = ('# arguments\n- `args.flavor`: Context\n  - type: `string`\n  - default: demo\n\n'
+               '# action: base\n```python\nprint("BASE_OUTPUT")\n```\n\n'
+               '# action: work\n```python\nmdl.use("args.flavor")\nmdl.dep("action.base")\n'
+               'from pathlib import Path\nimport time\nprint("WORK_STDOUT", flush=True)\n'
+               f'while not Path({str(release)!r}).exists(): time.sleep(.01)\n```\n')
+    child = terminal_project("table", actions, options=("--it", "--no-color"), dimensions=(60, 120))
+    transcript = StringIO()
+    child.logfile_read = transcript
+    child.expect_exact("q kill")
+    child.expect_exact("q kill")
+    initial = transcript.getvalue()
+    for field in ["Project root:", "Execution mode:", "Run ID:", "Contexts:", "Plan:"]:
+        assert field in initial
+    assert "\x1b[?1049h" not in initial, "An alternate screen hides the printed run information"
+    assert "\x1b[?1000h" not in initial and "\x1b[?1006h" not in initial
+    child.send("jl")
+    child.expect_exact("WORK_STDOUT")
+    child.expect_exact("q back")
+    child.setwinsize(40, 100)
+    child.expect_exact("q back")
+    child.send("q")
+    release.touch()
+    child.expect_exact("q close")
+    child.send("q")
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0
+    assert "\x1b[?1049h" not in transcript.getvalue()
+    assert "\x1b[?1000h" not in transcript.getvalue() and "\x1b[?1006h" not in transcript.getvalue()
+
+
 @pytest.mark.parametrize("execution", ["--seq", "--par"])
 def test_live_tree_tracks_real_shared_action_starts_and_completion(terminal_project, tmp_path, execution):
     import pexpect
@@ -309,13 +361,13 @@ def test_live_tree_tracks_real_shared_action_starts_and_completion(terminal_proj
                     f'while not Path("{name}-release").exists(): time.sleep(.02)\n'
                     'mdl.ret("ok", True, "bool")\n```\n\n')
     actions += '# action: goal\n\n```python\nmdl.dep("action.left")\nmdl.dep("action.right")\nmdl.ret("ok", True, "bool")\n```\n'
-    child = terminal_project("pure", actions, options=("--it", execution), goals=(":goal",), dimensions=(40, 100))
+    child = terminal_project("pure", actions, options=("--it", "--plan-tree", execution), goals=(":goal",), dimensions=(40, 100))
     child.expect_exact("BASE_WAIT")
 
     def current_tree():
         child.expect_exact("q kill")
         child.expect_exact("q kill")
-        return Text.from_ansi(child.before).plain.split("Actions:", 1)[0]
+        return terminal_text(child.before).plain.split("Actions:", 1)[0]
 
     first = current_tree()
     running = r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"
@@ -340,13 +392,58 @@ def test_live_tree_tracks_real_shared_action_starts_and_completion(terminal_proj
     (tmp_path / "right-release").touch()
     child.expect_exact("q close")
     child.expect_exact("q close")
-    complete = Text.from_ansi(child.before).plain.split("Actions:", 1)[0]
+    complete = terminal_text(child.before).plain.split("Actions:", 1)[0]
     assert "✓ left" in complete and "✓ right" in complete and complete.count("✓ base") == 1
     assert complete.count("✓ goal") == 2
     child.send("q")
     child.expect(pexpect.EOF)
     child.close()
     assert child.exitstatus == 0
+
+
+def test_live_dag_resizes_detail_and_restores_complete_final_actions(terminal_project, tmp_path):
+    import pexpect
+    import re
+
+    actions = ('# action: source\n\n```python\nfrom pathlib import Path\nimport time\n'
+               'print("\\n".join("LOG_LINE_" + str(i) for i in range(20)), flush=True)\n'
+               'print("SOURCE_WAIT", flush=True)\n'
+               'while not Path("release").exists(): time.sleep(.02)\n```\n\n')
+    for name in ["left", "right"]:
+        actions += f'# action: {name}\n\n```python\nmdl.dep("action.source")\n```\n\n'
+    actions += '# action: goal\n\n```python\nmdl.dep("action.left")\nmdl.dep("action.right")\n```\n'
+    child = terminal_project("pure", actions, options=("--it", "--par", "--plan-dag"),
+                             goals=(":goal",), dimensions=(40, 100))
+    child.expect_exact("SOURCE_WAIT")
+    child.expect_exact("q kill")
+    child.expect_exact("q kill")
+    initial = terminal_text(child.before).plain
+    assert "Plan:" not in initial
+    assert len(re.findall(r"goal\s+\(@global; goal\)", initial)) == 1, initial
+    child.send("l")
+    child.expect_exact("q back")
+    child.setwinsize(5, 40)
+    child.expect_exact("SOURCE_WAIT")
+    child.setwinsize(40, 100)
+    child.expect_exact("q back")
+    child.send("q")
+    child.expect_exact("q kill")
+    child.expect_exact("q kill")
+    returned = terminal_text(child.before).plain
+    assert "Plan:" not in returned and "Actions:" in returned
+    assert "LOG_LINE_19" not in returned
+    (tmp_path / "release").touch()
+    child.expect_exact("q close")
+    child.send("q")
+    child.expect(pexpect.EOF)
+    assert "\x1b[?1049l" in child.before
+    final = terminal_text(child.before.split("\x1b[?1049l", 1)[1]).plain
+    child.close()
+    assert child.exitstatus == 0
+    assert "Plan:" not in final and final.count("Actions:") == 1, final
+    actions = final.split("Actions:", 1)[1].split("Result:", 1)[0]
+    assert len(re.findall(r"goal\s+\(@global; goal\)", actions)) == 1
+    assert all(name in actions for name in ["source", "left", "right", "goal"])
 
 
 @pytest.mark.parametrize("mode", ["pure", "table"])
@@ -399,13 +496,13 @@ def test_pure_overview_contains_the_complete_cli_run_information(terminal_projec
                              goals=("work", "--message=CONTEXT_ONE", ":work", "--message=CONTEXT_TWO"),
                              dimensions=(40, 140))
     child.expect_exact("\x1b[?1049h")
-    prelude = Text.from_ansi(child.before).plain
+    prelude = terminal_text(child.before).plain
     child.expect_exact("q close")
     pages = []
     for key in ["\x1b[H", "\x1b[6~", "\x1b[6~"]:
         child.send(key)
         child.expect_exact("q close")
-        pages.append(Text.from_ansi(child.before).plain)
+        pages.append(terminal_text(child.before).plain)
     overview = "\n".join(pages)
     run_id = re.search(r"Run ID:\s*(\S+)", prelude).group(1)
     markers = ["Using Nix: No (disabled with --without-nix)", str(tmp_path),
@@ -422,11 +519,10 @@ def test_pure_overview_contains_the_complete_cli_run_information(terminal_projec
     assert child.exitstatus == 0, child.before
 
 
-@pytest.mark.parametrize("mode", ["pure", "table"])
-def test_mouse_wheel_scrolls_details_and_capture_spans_the_interactive_session(terminal_project, mode):
+def test_pure_mouse_wheel_scrolls_details_and_capture_spans_the_interactive_session(terminal_project):
     import pexpect
 
-    child = terminal_project(mode, '# action: work\n\n```python\n'
+    child = terminal_project("pure", '# action: work\n\n```python\n'
                              'for n in range(100):\n    print(f"LOG_{n:03d}")\n```\n',
                              options=("--it",), dimensions=(24, 100))
     recorded = StringIO()
@@ -434,7 +530,7 @@ def test_mouse_wheel_scrolls_details_and_capture_spans_the_interactive_session(t
     child.expect_exact("q close")
     assert "\x1b[?1000h" in recorded.getvalue()
     child.send("l")
-    visible = 21 if mode == "pure" else 18
+    visible = 21
     child.expect_exact(f"{101 - visible}-100/100 live")
     child.send("\x1b[<64;10;5M")
     child.expect_exact(f"{98 - visible}-97/100")
@@ -469,8 +565,9 @@ def test_detail_mouse_capture_restores_after_cancellation(terminal_project, mode
     child.expect(pexpect.EOF)
     child.close()
     assert child.exitstatus == (130 if ending == "interrupt" else 1)
-    assert recorded.getvalue().count("\x1b[?1000h") == recorded.getvalue().count("\x1b[?1000l") == 1
-    assert recorded.getvalue().count("\x1b[?1006h") == recorded.getvalue().count("\x1b[?1006l") == 1
+    expected = int(mode == "pure")
+    assert recorded.getvalue().count("\x1b[?1000h") == recorded.getvalue().count("\x1b[?1000l") == expected
+    assert recorded.getvalue().count("\x1b[?1006h") == recorded.getvalue().count("\x1b[?1006l") == expected
 
 
 @pytest.mark.parametrize("mode", ["pure", "table"])

@@ -27,23 +27,9 @@ class TestSoftDependencies:
         # Consumer should run
         mdl.assert_in_output(result, "soft-consumer-not-retained")
 
-        # Provider should NOT run (check it's not in execution plan)
-        # Note: We check plan because output might mention action names differently
-        output_text = result.stdout + result.stderr
-        lines = output_text.split('\n')
-
-        # Find the execution plan section and check soft-provider is NOT listed
-        in_plan = False
-        soft_provider_in_plan = False
-        for line in lines:
-            if "Execution plan:" in line:
-                in_plan = True
-            elif in_plan and "soft-provider" in line:
-                soft_provider_in_plan = True
-            elif in_plan and "Executing actions" in line:
-                break
-
-        assert not soft_provider_in_plan, "soft-provider should NOT be in execution plan"
+        actions = result.stdout.split("Actions:\n", 1)[1].split("\nResult:\n", 1)[0]
+        assert "soft-consumer-not-retained" in actions
+        assert "soft-provider" not in actions, "soft-provider should not appear in the pruned Actions graph"
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")

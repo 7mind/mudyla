@@ -1,8 +1,15 @@
 """Integration tests for retainer context-specific args/flags/axis values."""
 
 import pytest
+import re
 
 from tests.conftest import MudylaRunner
+
+
+def retainer_blocks(output: str) -> dict[str, str]:
+    blocks = re.findall(r"^soft-provider (@\w+)\n(.*?)(?=\n\n|\Z)", output, re.MULTILINE | re.DOTALL)
+    assert len({context for context, _ in blocks}) == len(blocks), "Repeated retainer context"
+    return dict(blocks)
 
 
 @pytest.mark.integration
@@ -41,7 +48,8 @@ class TestRetainerContext:
         mdl.assert_in_output(result, "Execution completed successfully")
 
         # Verify there are multiple retainer executions with different contexts
-        assert output.count("#soft-provider ran in") >= 3, (
+        blocks = retainer_blocks(output)
+        assert len(blocks) >= 3, (
             "Expected at least 3 retainer executions for different contexts"
         )
 
@@ -62,7 +70,7 @@ class TestRetainerContext:
         )
 
         # Verify global arg is visible to all retainers
-        assert output.count("Global arg: God is in his heaven") >= 3, (
+        assert all("Global arg: God is in his heaven" in block for block in blocks.values()), (
             "Expected all retainers to see the global arg"
         )
 
@@ -110,42 +118,20 @@ class TestRetainerContext:
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
 
-        # Find all retainer output blocks
-        lines = output.split('\n')
-        retainer_blocks = []
-        current_block = []
-        in_retainer = False
-
-        for line in lines:
-            if "#soft-provider ran in" in line:
-                if current_block:
-                    retainer_blocks.append('\n'.join(current_block))
-                current_block = [line]
-                in_retainer = True
-            elif in_retainer:
-                if line.strip().startswith("stdout:") or line.strip().startswith("stderr:"):
-                    current_block.append(line)
-                elif line.strip() and not line.strip().startswith("stdout:") and not line.strip().startswith("stderr:"):
-                    in_retainer = False
-                    if current_block:
-                        retainer_blocks.append('\n'.join(current_block))
-                        current_block = []
-
-        if current_block:
-            retainer_blocks.append('\n'.join(current_block))
+        blocks = list(retainer_blocks(output).values())
 
         # Verify we have multiple retainer blocks
-        assert len(retainer_blocks) >= 2, f"Expected at least 2 retainer blocks, got {len(retainer_blocks)}"
+        assert len(blocks) >= 2, f"Expected at least 2 retainer blocks, got {len(blocks)}"
 
         # Verify that context-two-value appears in exactly one block
-        blocks_with_context_two = [b for b in retainer_blocks if "context-two-value" in b]
+        blocks_with_context_two = [b for b in blocks if "context-two-value" in b]
         assert len(blocks_with_context_two) == 1, (
             f"Expected 'context-two-value' in exactly one retainer block, "
             f"found in {len(blocks_with_context_two)}"
         )
 
         # Verify that DEFAULT:BAWW (default) appears in at least one block
-        blocks_with_default = [b for b in retainer_blocks if "DEFAULT:BAWW" in b]
+        blocks_with_default = [b for b in blocks if "DEFAULT:BAWW" in b]
         assert len(blocks_with_default) >= 1, (
             "Expected at least one retainer to see the default value"
         )
