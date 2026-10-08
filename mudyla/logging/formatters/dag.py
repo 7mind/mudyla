@@ -1,4 +1,4 @@
-"""Connected dependency lanes in the scheduler's existing action order."""
+"""Project one immutable layered dependency layout into terminal rows."""
 
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -11,8 +11,13 @@ from rich.text import Span, Text
 from ...dag.graph import ActionGraph, ActionKey, Dependency
 from .context import ContextFormatter
 from .details import context_label, literal_text
+from . import layered
+from .layered import Direction, LayeredLayout, LayoutCell
 from .plan import MIN_LABEL_WIDTH
 from .sections import section
+
+
+UNICODE_LINES = (" ", "│", "│", "│", "─", "╯", "╮", "┤", "─", "╰", "╭", "├", "─", "┴", "┬", "┼")
 
 
 @dataclass(frozen=True)
@@ -27,15 +32,14 @@ class DagEdge:
 
 
 @dataclass(frozen=True)
-class DagRow:
-    key: ActionKey
-    lane: int
-    entry: tuple[Optional[DagEdge], ...]
-    before: tuple[Optional[DagEdge], ...]
-    after: tuple[Optional[DagEdge], ...]
+class DagLayout:
+    keys: tuple[ActionKey, ...]
+    edges: tuple[DagEdge, ...]
+    geometry: LayeredLayout
 
 
 TextAttributes = tuple[str, tuple[Span, ...], str | Style, Optional[str], Optional[str], Optional[bool], str, Optional[int]]
+FrameAttributes = tuple[tuple[TextAttributes, TextAttributes], ...]
 
 
 def text_attributes(text: Text) -> TextAttributes:
@@ -46,19 +50,14 @@ def text_attributes(text: Text) -> TextAttributes:
 class RenderedDagRow:
     label: TextAttributes
     status: TextAttributes
-    edge_styles: tuple[str, ...]
     lines: list[list[Segment]]
-    anchor: int
     label_rows: int
 
 
 @dataclass
 class DependencyDag:
     graph: ActionGraph
-    rows: list[DagRow]
-    edges: list[DagEdge]
-    lane_count: int
-    crossings: bool
+    layout: DagLayout
     formatter: ContextFormatter
     use_short_ids: bool
     shared: dict[ActionKey, int]
@@ -66,6 +65,16 @@ class DependencyDag:
     edge_style: Callable[[ActionKey], str]
     _rendered_rows: dict[ActionKey, RenderedDagRow] = field(default_factory=dict, init=False, repr=False)
     _render_options: Optional[tuple[ConsoleOptions, Optional[str], bool]] = field(default=None, init=False, repr=False)
+    _frame_attributes: Optional[tuple[FrameAttributes, tuple[str, ...]]] = field(default=None, init=False, repr=False)
+    _frame: Optional[tuple[list[list[Segment]], dict[ActionKey, range]]] = field(default=None, init=False, repr=False)
+
+    @property
+    def edges(self) -> tuple[DagEdge, ...]:
+        return self.layout.edges
+
+    @property
+    def crossings(self) -> bool:
+        return self.layout.geometry.crossings > 0
 
     def label_parts(self, key: ActionKey) -> tuple[Text, Text]:
         label = literal_text(key.id.name, "bold" if key in self.graph.goals else "not bold")
@@ -83,109 +92,36 @@ class DependencyDag:
         name, annotation = self.label_parts(key)
         return name + Text(" ") + annotation
 
-    def _rail(self, edge: DagEdge, ascii_only: bool) -> Text:
-        glyph = ("|" if ascii_only else "│") if edge.kind == "strong" else (":" if ascii_only else "╎")
-        return Text(glyph, style=self.edge_style(edge.target))
-
-    def _continuation(self, row: DagRow, spacing: int, ascii_only: bool) -> Text:
-        return Text(" " * (spacing - 1)).join([
-            self._rail(edge, ascii_only) if edge is not None else Text(" ") for edge in row.after
-        ]).append(" " * max(0, (self.lane_count - len(row.after)) * spacing))
-
-    def _transitions(self, row: DagRow, spacing: int, ascii_only: bool) -> list[Text]:
-        destinations = {edge: lane for lane, edge in enumerate(row.before) if edge is not None}
-        current = [*row.entry, *([None] * (self.lane_count - len(row.entry)))]
-        moves = [(lane, destinations[edge], edge) for lane, edge in enumerate(row.entry) if edge is not None]
-        assert [edge for edge in row.entry if edge is not None] == [edge for edge in row.before if edge is not None]
-        displacements = [destination - source for source, destination, _ in moves if destination != source]
-        if spacing == 2 and not ascii_only and len(displacements) > 2 and set(displacements) in ({-1}, {1}):
-            direction = displacements[0]
-            positions = {2 * lane: edge for lane, edge in enumerate(row.entry) if edge is not None}
-            lines = []
-            for _ in range(2):
-                cells: list[Optional[Text]] = [None] * ((self.lane_count - 1) * 2 + 1)
-                following: dict[int, DagEdge] = {}
-                for column, edge in positions.items():
-                    target = column if column == 2 * destinations[edge] else column + direction
-                    assert cells[column] is None and cells[target] is None
-                    if column == target:
-                        cells[column] = self._rail(edge, False)
-                    else:
-                        style = self.edge_style(edge.target)
-                        cells[column] = Text("╰" if direction > 0 else "╯", style=style)
-                        cells[target] = Text("╮" if direction > 0 else "╭", style=style)
-                    following[target] = edge
-                lines.append(Text().join(cell if cell is not None else Text(" ") for cell in cells))
-                positions = following
-            assert positions == {2 * lane: edge for lane, edge in enumerate(row.before) if edge is not None}
-            return lines
-        ordered = sorted((move for move in moves if move[1] < move[0]))
-        ordered.extend(sorted((move for move in moves if move[1] > move[0]), reverse=True))
-        lines = []
-        for source, destination, edge in ordered:
-            left, right = sorted((source, destination))
-            assert all(current[lane] is None for lane in range(left, right + 1) if lane != source), "Lane shift crossed an open edge"
-            line = Text()
-            for column in range((self.lane_count - 1) * spacing + 1):
-                lane, between = divmod(column, spacing)
-                if left * spacing <= column <= right * spacing:
-                    if column == source * spacing:
-                        glyph = ("\\" if source < destination else "/") if ascii_only else ("╰" if source < destination else "╯")
-                    elif column == destination * spacing:
-                        glyph = ("\\" if source < destination else "/") if ascii_only else ("╮" if source < destination else "╭")
-                    else:
-                        glyph = ("-" if ascii_only else "─") if edge.kind == "strong" else ("." if ascii_only else "╌")
-                    line.append(glyph, style=self.edge_style(edge.target))
-                elif not between:
-                    occupant = current[lane]
-                    line.append_text(self._rail(occupant, ascii_only) if occupant is not None else Text(" "))
-                else:
-                    line.append(" ")
-            lines.append(line)
-            current[source], current[destination] = None, edge
-        assert current[:len(row.before)] == list(row.before)
-        return lines
-
-    def _gutter(self, row: DagRow, spacing: int, ascii_only: bool) -> Text:
-        incident = {lane: edge for lane, edge in enumerate(row.before) if edge is not None and edge.target == row.key}
-        incident.update({lane: edge for lane, edge in enumerate(row.after) if edge is not None and edge.source == row.key})
-        left, right = min([row.lane, *incident]), max([row.lane, *incident])
-        gutter = Text()
-        for column in range((self.lane_count - 1) * spacing + 1):
-            lane, between = divmod(column, spacing)
-            if not between and lane == row.lane:
-                node = self.status(row.key).copy()
-                node.rstrip()
-                gutter.append_text(node)
+    def _gutter(self, cells: tuple[LayoutCell, ...], styles: tuple[str, ...], ascii_only: bool,
+                node: Optional[tuple[int, Text]]) -> Text:
+        gutter = Text(end="")
+        by_column = {cell.column: cell for cell in cells}
+        node_column, status = node if node is not None else (-1, Text())
+        for column in range(self.layout.geometry.width):
+            if column == node_column:
+                glyph = status.copy()
+                glyph.rstrip()
+                assert glyph.cell_len == 1, "Dependency status must occupy one cell"
+                gutter.append_text(glyph)
                 continue
-            crossing = [edge for endpoint, edge in incident.items()
-                        if min(endpoint, row.lane) * spacing <= column <= max(endpoint, row.lane) * spacing]
-            if crossing:
-                active = next((edge for edge in crossing if "not dim" in self.edge_style(edge.target)), crossing[0])
-                style = self.edge_style(active.target)
-                if between or lane not in incident:
-                    existing = row.before[lane] if lane < len(row.before) else None
-                    if not between and existing is not None:
-                        glyph = "x" if ascii_only else "╪"
-                    else:
-                        glyph = ("-" if ascii_only else "─") if any(edge.kind == "strong" for edge in crossing) else ("." if ascii_only else "╌")
-                else:
-                    up = lane < len(row.before) and row.before[lane] is not None
-                    down = lane < len(row.after) and row.after[lane] is not None
-                    if ascii_only:
-                        glyph = "+"
-                    elif left < lane < right:
-                        glyph = "┼" if up and down else "┴" if up else "┬"
-                    elif lane < row.lane:
-                        glyph = "├" if up and down else "╰" if up else "╭"
-                    else:
-                        glyph = "┤" if up and down else "╯" if up else "╮"
-                gutter.append(glyph, style=style)
-            elif not between:
-                edge = row.before[lane] if lane < len(row.before) else None
-                gutter.append_text(self._rail(edge, ascii_only) if edge is not None else Text(" "))
-            else:
+            cell = by_column.get(column)
+            if cell is None:
                 gutter.append(" ")
+                continue
+            edge_ids = tuple(connection.edge for connection in cell.connections)
+            active = next((edge for edge in edge_ids if "not dim" in styles[edge]), edge_ids[0])
+            weak = all(self.edges[edge].kind != "strong" for edge in edge_ids)
+            vertical = cell.directions == Direction.UP | Direction.DOWN
+            horizontal = cell.directions == Direction.LEFT | Direction.RIGHT
+            if cell.crossing:
+                glyph_text = "x" if ascii_only else "╪"
+            elif vertical:
+                glyph_text = (":" if ascii_only else "╎") if weak else ("|" if ascii_only else "│")
+            elif horizontal:
+                glyph_text = ("." if ascii_only else "╌") if weak else ("-" if ascii_only else "─")
+            else:
+                glyph_text = "+" if ascii_only else UNICODE_LINES[cell.directions]
+            gutter.append(glyph_text, style=styles[active])
         return gutter
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
@@ -196,77 +132,80 @@ class DependencyDag:
 
     def visual_lines(self, console: Console, options: ConsoleOptions,
                      node_label: Callable[[ActionKey, int], Text]) -> tuple[list[list[Segment]], dict[ActionKey, range]]:
-        configuration = (options, console.color_system, console.no_color)
+        configuration = options, console.color_system, console.no_color
         if configuration != self._render_options:
             self._rendered_rows.clear()
-            self._render_options = (options.update(), console.color_system, console.no_color)
+            self._render_options = options.update(), console.color_system, console.no_color
+            self._frame_attributes = None
+        geometry = self.layout.geometry
+        narrow = geometry.width + 1 + MIN_LABEL_WIDTH > options.max_width
+        statuses = {key: self.status(key) for key in self.layout.keys}
+        if narrow:
+            for status in statuses.values():
+                status.truncate(max(0, options.max_width - 1), overflow="crop")
+        labels = {key: node_label(key, max(1, options.max_width -
+                                         (statuses[key].cell_len if narrow else geometry.width + 1)))
+                  for key in self.layout.keys}
+        edge_styles = tuple(self.edge_style(edge.target) for edge in self.edges)
+        attributes = (tuple((text_attributes(labels[key]), text_attributes(statuses[key])) for key in self.layout.keys),
+                      edge_styles)
+        if attributes == self._frame_attributes and len(self._rendered_rows) == len(self.layout.keys):
+            assert self._frame is not None
+            return self._frame
         lines: list[list[Segment]] = []
         node_rows: dict[ActionKey, range] = {}
-        spacing = 2 if self.lane_count * 2 + MIN_LABEL_WIDTH <= options.max_width else 1
-        gutter_width = (self.lane_count - 1) * spacing + 1
-        narrow = gutter_width + 1 + MIN_LABEL_WIDTH > options.max_width
-        incoming: dict[ActionKey, list[DagEdge]] = {}
+        incoming: dict[ActionKey, list[DagEdge]] = {key: [] for key in self.layout.keys}
         if narrow:
-            lines.extend(console.render_lines(Text("Plan too narrow for connected lanes; prerequisites listed below.", style="dim"), options, pad=False))
-            incoming = {row.key: [] for row in self.rows}
+            lines.extend(console.render_lines(Text("Plan too narrow for connected lanes; prerequisites listed below.", style="dim"),
+                                              options, pad=False))
             for edge in self.edges:
                 incoming[edge.target].append(edge)
-        styles = {row.key: self.edge_style(row.key) for row in self.rows}
-        for index, row in enumerate(self.rows):
-            status = self.status(row.key)
-            if narrow:
-                status.truncate(max(0, options.max_width - 1), overflow="crop")
-            label_width = max(1, options.max_width - (status.cell_len if narrow else gutter_width + 1))
-            label = node_label(row.key, label_width)
-            label_attributes, status_attributes = text_attributes(label), text_attributes(status)
-            edge_styles = tuple(styles[edge.target] for lanes in (row.entry, row.before, row.after)
-                                for edge in lanes if edge is not None)
-            rendered = self._rendered_rows.get(row.key)
-            if (rendered is None or rendered.label != label_attributes or rendered.status != status_attributes
-                    or rendered.edge_styles != edge_styles):
-                block: list[list[Segment]] = []
+        for rank, key in enumerate(self.layout.keys):
+            label_attributes, status_attributes = attributes[0][rank]
+            rendered = self._rendered_rows.get(key)
+            if rendered is None or rendered.label != label_attributes or rendered.status != status_attributes:
+                label_width = max(1, options.max_width - (statuses[key].cell_len if narrow else geometry.width + 1))
+                block = console.render_lines(labels[key], options.update(width=label_width), pad=False)
                 if narrow:
-                    anchor = 0
-                    for line_index, segments in enumerate(console.render_lines(label, options.update(width=label_width), pad=False)):
-                        line = Text()
-                        line.append_text(status if line_index == 0 else Text(" " * status.cell_len))
+                    wrapped: list[list[Segment]] = []
+                    for index, segments in enumerate(block):
+                        line = statuses[key].copy() if index == 0 else Text(" " * statuses[key].cell_len)
                         line.append_text(Text.assemble(*[(segment.text, segment.style or "") for segment in segments]))
-                        block.extend(console.render_lines(line, options, pad=False))
-                    label_rows = len(block)
-                    for edge in incoming[row.key]:
-                        reference = Text("  needs ", style="dim") + self._label(edge.source)
-                        reference.append(f" ({edge.kind})", style="dim")
-                        if edge.dependency.retainer_action is not None:
-                            retainer = edge.dependency.retainer_action
-                            reference.append(" retainer: ", style="dim")
-                            reference.append_text(literal_text(retainer.id.name))
-                            reference.append(" ")
-                            reference.append_text(context_label(retainer.context_id, self.formatter, self.use_short_ids))
-                        block.extend(console.render_lines(reference, options, pad=False))
-                else:
-                    for transition in self._transitions(row, spacing, options.ascii_only):
-                        block.extend(console.render_lines(transition, options, pad=False))
-                    continuation = self._continuation(row, spacing, options.ascii_only)
-                    anchor = len(block)
-                    for line_index, segments in enumerate(console.render_lines(label, options.update(width=label_width), pad=False)):
-                        line = self._gutter(row, spacing, options.ascii_only) if line_index == 0 else continuation.copy()
-                        line.append(" ")
-                        line.append_text(Text.assemble(*[(segment.text, segment.style or "") for segment in segments]))
-                        block.extend(console.render_lines(line, options, pad=False))
-                    label_rows = len(block) - anchor
-                    if index < len(self.rows) - 1 and any(row.after):
-                        block.extend(console.render_lines(continuation, options, pad=False))
-                rendered = RenderedDagRow(label_attributes, status_attributes, edge_styles, block, anchor, label_rows)
-                self._rendered_rows[row.key] = rendered
-            start = len(lines) + rendered.anchor
-            node_rows[row.key] = range(start, start + rendered.label_rows)
-            lines.extend(rendered.lines)
-        return lines, node_rows
+                        wrapped.extend(console.render_lines(line, options, pad=False))
+                    block = wrapped
+                label_rows = len(block)
+                for edge in incoming[key]:
+                    reference = Text("  needs ", style="dim") + self._label(edge.source)
+                    reference.append(f" ({edge.kind})", style="dim")
+                    if edge.dependency.retainer_action is not None:
+                        retainer = edge.dependency.retainer_action
+                        reference.append(" retainer: ", style="dim")
+                        reference.append_text(literal_text(retainer.id.name))
+                        reference.append(" ")
+                        reference.append_text(context_label(retainer.context_id, self.formatter, self.use_short_ids))
+                    block.extend(console.render_lines(reference, options, pad=False))
+                rendered = RenderedDagRow(label_attributes, status_attributes, block, label_rows)
+                self._rendered_rows[key] = rendered
+            start = len(lines)
+            if narrow:
+                lines.extend(rendered.lines)
+            else:
+                for index, segments in enumerate(rendered.lines):
+                    cells = geometry.action_rows[rank] if index == 0 else geometry.continuation_rows[rank]
+                    node = (geometry.action_columns[rank], statuses[key]) if index == 0 else None
+                    gutter = self._gutter(cells, edge_styles, options.ascii_only, node)
+                    gutter.append(" ")
+                    lines.append([*console.render(gutter, options), *segments])
+                if rank < len(geometry.connector_rows):
+                    lines.extend(list(console.render(self._gutter(cells, edge_styles, options.ascii_only, None), options))
+                                 for cells in geometry.connector_rows[rank])
+            node_rows[key] = range(start, start + rendered.label_rows)
+        self._frame_attributes = attributes
+        self._frame = lines, node_rows
+        return self._frame
 
 
-def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
-                  use_short_ids: bool, shared: dict[ActionKey, int], status: Callable[[ActionKey], Text],
-                  edge_style: Callable[[ActionKey], str]) -> DependencyDag:
+def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey]) -> DagLayout:
     positions = {key: index for index, key in enumerate(execution_order)}
     assert len(positions) == len(execution_order), "Plan action keys must be unique"
     edges = [DagEdge(dependency.action, key, dependency) for key in execution_order
@@ -274,52 +213,16 @@ def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatte
     edges.sort(key=lambda edge: (positions[edge.source], positions[edge.target],
                                 {"strong": 0, "weak": 1, "soft": 2}[edge.kind],
                                 str(edge.dependency.retainer_action)))
-    assert all(positions[edge.source] < positions[edge.target] for edge in edges), "Plan order must put prerequisites first"
-    outgoing_by_source: dict[ActionKey, list[DagEdge]] = {key: [] for key in execution_order}
-    for dependency_edge in edges:
-        outgoing_by_source[dependency_edge.source].append(dependency_edge)
-    lanes: list[Optional[DagEdge]] = []
-    rows: list[DagRow] = []
-    lane_count = 1
-    for key in execution_order:
-        entry = tuple(lanes)
-        outgoing = outgoing_by_source[key]
-        if len(outgoing) > 1:
-            lanes = [edge for edge in lanes if edge is not None]
-        incoming = [lane for lane, edge in enumerate(lanes) if edge is not None and edge.target == key]
-        lane = min(incoming) if incoming else next((index for index, edge in enumerate(lanes) if edge is None), len(lanes))
-        if lane == len(lanes):
-            lanes.append(None)
-        for slot in range(lane, lane + len(outgoing)):
-            if slot == len(lanes):
-                lanes.append(None)
-            occupant = lanes[slot]
-            if occupant is None or occupant.target == key:
-                continue
-            empty = next((index for index in range(slot + 1, len(lanes)) if lanes[index] is None), len(lanes))
-            if empty == len(lanes):
-                lanes.append(None)
-            for index in range(empty, slot, -1):
-                lanes[index] = lanes[index - 1]
-            lanes[slot] = None
-        before = tuple(lanes)
-        for index, edge in enumerate(lanes):
-            if edge is not None and edge.target == key:
-                lanes[index] = None
-        for offset, edge in enumerate(outgoing):
-            lanes[lane + offset] = edge
-        rows.append(DagRow(key, lane, entry, before, tuple(lanes)))
-        lane_count = max(lane_count, len(lanes))
-        while lanes and lanes[-1] is None:
-            lanes.pop()
-    assert not any(lanes), "Plan has unclosed dependency edges"
-    crossings = False
-    for row in rows:
-        incident = [row.lane, *(lane for lane, edge in enumerate(row.before) if edge is not None and edge.target == row.key),
-                    *(lane for lane, edge in enumerate(row.after) if edge is not None and edge.source == row.key)]
-        crossings |= any(edge is not None and edge.target != row.key and min(incident) < lane < max(incident)
-                         for lane, edge in enumerate(row.before))
-    return DependencyDag(graph, rows, edges, lane_count, crossings, formatter, use_short_ids, shared, status, edge_style)
+    endpoints = tuple((positions[edge.source], positions[edge.target]) for edge in edges)
+    geometry = layered.solve_layered_layout(len(execution_order), endpoints)
+    return DagLayout(tuple(execution_order), tuple(edges), geometry)
+
+
+def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
+                  use_short_ids: bool, shared: dict[ActionKey, int], status: Callable[[ActionKey], Text],
+                  edge_style: Callable[[ActionKey], str], *, layout: DagLayout) -> DependencyDag:
+    assert layout.keys == tuple(execution_order), "Dependency layout must match scheduler order"
+    return DependencyDag(graph, layout, formatter, use_short_ids, shared, status, edge_style)
 
 
 def dag_section(dag: DependencyDag, ascii_only: bool) -> Group:

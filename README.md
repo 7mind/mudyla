@@ -33,6 +33,8 @@ table support action selection, logs, metadata, outputs, source, and action inpu
 Table uses a static plan table and content-sized live columns, with counts below
 the rows and the same subtle theme-aware selection.
 Pure and table display inline by default, leaving the mouse wheel to scroll terminal history.
+Shrinking the terminal during inline updates can leave previous frame fragments in history.
+`--fullscreen` uses the alternate screen during execution and exits automatically.
 `--it` / `--interactive` opens fullscreen and keeps the completed view open.
 Opening details from an inline view temporarily enters fullscreen; returning restores
 the same action selection.
@@ -44,6 +46,7 @@ mdl :build
 mdl --logger table :build
 mdl --plan-tree :build          # Separate Plan tree and flat Actions list
 mdl --plan-table :build         # Static Plan table and flat Actions list
+mdl --fullscreen :build         # Fullscreen view; exit after completion
 mdl --it :build                 # Fullscreen view; keep open after completion
 mdl --logger simple :build      # Append-only progress and compact Plan
 mdl --logger verbose :build     # Commands and immediate action output

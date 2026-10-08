@@ -36,7 +36,7 @@ from .utils.project_root import find_project_root
 from .logging.formatters import OutputFormatter
 from .logging.formatters.details import JsonValue, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
 from .logging.formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
-from .logging.formatters.dag import dag_section, execution_dag
+from .logging.formatters.dag import DagLayout, build_dag_layout, dag_section, execution_dag
 from .logging.formatters.sections import section
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
@@ -182,9 +182,11 @@ class CLI:
                 )
 
             execution_order = pruned_graph.get_execution_order()
+            dag_layout = build_dag_layout(pruned_graph, execution_order) if args.plan_style == "dag" else None
             static_plan = None
             if not quiet_mode:
-                static_plan = self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids, args.plan_style)
+                static_plan = self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids,
+                                                              dag_layout, args.plan_style)
 
             if args.dry_run:
                 output.print_run_field("Execution", Text("Dry run - not executing"),
@@ -218,6 +220,8 @@ class CLI:
                 parallel_execution=parallel_execution,
                 use_short_context_ids=use_short_ids,
                 keep_running=keep_running,
+                fullscreen=args.fullscreen,
+                dag_layout=dag_layout,
                 timeout_ms=args.timeout_ms,
                 output=output,
             )
@@ -884,11 +888,12 @@ class CLI:
 
     def _visualize_execution_plan(
         self,
-        graph,
-        execution_order,
+        graph: ActionGraph,
+        execution_order: list[ActionKey],
         goals: list[str],
         output: OutputFormatter,
         use_short_ids: bool,
+        dag_layout: Optional[DagLayout],
         plan_style: PlanStyle = "dag",
     ) -> Group:
         """Render the selected static plan presentation.
@@ -899,6 +904,7 @@ class CLI:
             goals: List of goal action names
             output: Output formatter
             use_short_ids: Whether to use short context IDs
+            dag_layout: Solved dependency geometry shared with the live logger
             plan_style: Table, connected DAG, or dependency tree
         """
         # Compute sharing counts: how many unique goal contexts use each action
@@ -911,13 +917,14 @@ class CLI:
             return plan
 
         if plan_style == "dag":
+            assert dag_layout is not None
             def initial_status(key: ActionKey) -> Text:
                 ready = not graph.get_node(key).dependencies
                 glyphs = (">", "o") if output.console.options.ascii_only else ("◇", "○")
                 return Text(glyphs[0 if ready else 1] + " ", style="cyan" if ready else "dim")
 
             dag = execution_dag(graph, execution_order, output.context, use_short_ids, sharing_counts,
-                                initial_status, lambda key: "dim")
+                                initial_status, lambda key: "dim", layout=dag_layout)
             plan = Group(dag_section(dag, output.console.options.ascii_only), Text(""))
             output.print(plan)
             return plan

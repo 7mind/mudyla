@@ -19,6 +19,7 @@ from mudyla.cli import CLI
     ([], "pure"), (["--logger", "pure"], "pure"),
     (["--logger", "raw"], "simple"), (["--logger", "table"], "table"),
     (["--it"], "pure"), (["--interactive"], "pure"), (["--force-interactive"], "pure"),
+    (["--fullscreen"], "pure"), (["--it", "--fullscreen"], "pure"),
     (["--logger", "pure", "--it"], "pure"),
     (["--logger", "table", "--it"], "table"), (["--logger", "raw", "--it"], "simple"),
     (["--logger", "table", "--force-interactive"], "table"),

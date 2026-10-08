@@ -20,6 +20,7 @@ def test_cli_parser_defaults_and_options_present():
     assert defaults["no_out_on_fail"] is False
     assert defaults["keep_run_dir"] is False
     assert defaults["no_color"] is False
+    assert defaults["fullscreen"] is False
     assert defaults["sequential"] is False
     assert defaults["parallel"] is False
     # Note: 'goals' was removed from argparse and is now parsed from unknown arguments

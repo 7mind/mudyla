@@ -17,7 +17,7 @@ from ..dag.graph import ActionGraph, ActionKey
 from .formatters import OutputFormatter
 from .formatters.details import JsonValue, KeyValueRow, KeyValueView, action_label, context_label, literal_text, metadata_view, output_view
 from .formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
-from .formatters.dag import dag_section, execution_dag
+from .formatters.dag import DagLayout, build_dag_layout, dag_section, execution_dag
 from .formatters.sections import heading, section
 from .action_logger_table import ActionLoggerTable, ScrollState, TaskStatus, ViewState
 from .formatters.failure import legacy_failure
@@ -39,12 +39,13 @@ class ActionLoggerPure(ActionLoggerTable):
     WRAP_HIGHLIGHTED_CONTENT = True
 
     def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool,
-                 *, keep_running: bool = False, show_dirs: bool = False,
+                 *, keep_running: bool = False, fullscreen: bool = False, show_dirs: bool = False,
                  action_dirs: Optional[dict[str, str]] = None, run_directory: Optional[Path] = None,
                  force_interactive: bool = False, run_info: Optional[RenderableType] = None,
-                 graph: Optional[ActionGraph] = None, plan_style: PlanStyle = "dag") -> None:
+                 graph: Optional[ActionGraph] = None, plan_style: PlanStyle = "dag",
+                 dag_layout: Optional[DagLayout] = None) -> None:
         super().__init__(action_keys, no_color=output.no_color, use_short_ids=use_short_ids,
-                         keep_running=keep_running, show_dirs=show_dirs, action_dirs=action_dirs,
+                         keep_running=keep_running, fullscreen=fullscreen, show_dirs=show_dirs, action_dirs=action_dirs,
                          run_directory=run_directory, run_info=run_info)
         self._output = output
         self._action_formatter = output.action
@@ -61,9 +62,12 @@ class ActionLoggerPure(ActionLoggerTable):
         self._plan_style = plan_style
         self._tree_frame_time = time.time()
         self._sharing_counts = sharing_counts(graph, action_keys, [key.id.name for key in graph.goals]) if graph is not None else {}
-        self._dag = (execution_dag(graph, action_keys, output.context, use_short_ids, self._sharing_counts,
-                                   self._tree_status, self._plan_edge_style)
-                     if graph is not None and plan_style == "dag" else None)
+        self._dag = None
+        if graph is not None and plan_style == "dag":
+            if dag_layout is None:
+                dag_layout = build_dag_layout(graph, action_keys)
+            self._dag = execution_dag(graph, action_keys, output.context, use_short_ids, self._sharing_counts,
+                                      self._tree_status, self._plan_edge_style, layout=dag_layout)
         self._raw_json_views: set[tuple[ActionKey, ViewState]] = set()
         self._static_snapshot_printed = False
 
@@ -116,7 +120,7 @@ class ActionLoggerPure(ActionLoggerTable):
                      f"q back  j/k scroll{input_hint}  r refresh", "q back  j/k scroll", "q back"]
         else:
             ending = "q close" if self.execution_complete else "q kill"
-            scroll = "Wheel/PgUp/PgDn" if self.keep_running else "PgUp/PgDn"
+            scroll = "Wheel/PgUp/PgDn" if self.fullscreen else "PgUp/PgDn"
             hints = [f"{ending}  j/k select  Enter logs  e stderr  m meta  o output  s source{input_hint}  {scroll} scroll",
                      f"{ending}  j/k select  Enter logs  e err  m meta  o out  s src{input_hint}",
                      f"{ending}  j/k select  Enter logs{input_hint}", f"{ending}  j/k select", ending]
@@ -410,7 +414,7 @@ class ActionLoggerPure(ActionLoggerTable):
                                            self._sharing_counts, self._tree_status), self.console.options.ascii_only)
 
     def _preparation_renderable(self) -> RenderableType:
-        prefix = super()._preparation_renderable() if self.keep_running else Group()
+        prefix = super()._preparation_renderable() if self.fullscreen else Group()
         return Group(prefix, self._plan_section(), Text("")) if self._graph is not None and self._plan_style == "table" else prefix
 
     def _overview_is_scrollable(self) -> bool:

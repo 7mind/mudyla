@@ -176,11 +176,13 @@ class ActionLoggerTable(ActionLogger):
         keep_running: bool = False,
         use_short_ids: bool = True,
         run_info: Optional[RenderableType] = None,
+        fullscreen: bool = False,
     ):
         self.no_color = no_color
         self.show_dirs = show_dirs
         self.run_directory = run_directory
         self.keep_running = keep_running
+        self.fullscreen = fullscreen or keep_running
         self.action_dirs_map = action_dirs or {}
         self.use_short_ids = use_short_ids
         self._run_info = run_info
@@ -840,7 +842,7 @@ class ActionLoggerTable(ActionLogger):
 
     def _table_window(self) -> tuple[int, int]:
         width, height = self._get_terminal_size()
-        if self.keep_running and not self.stop_flag:
+        if self.fullscreen and not self.stop_flag:
             start = max(0, min(len(self.action_keys), self._overview_offset - self._overview_prefix_length))
             header_rows = max(0, self._overview_prefix_length - self._overview_offset)
             visible = max(0, self._overview_height - self.OVERVIEW_BOTTOM_ROWS - header_rows)
@@ -922,7 +924,7 @@ class ActionLoggerTable(ActionLogger):
                     name.truncate(name_width, overflow="crop" if self.console.options.ascii_only else "ellipsis")
                     cells[1] = name + Text(" " if name_width else "") + identity
                 table.add_row(*cells)
-            if not self.keep_running or self.stop_flag:
+            if not self.fullscreen or self.stop_flag:
                 table.caption = self._build_progress_caption()
             table.caption_justify = "left"
             return table
@@ -1219,7 +1221,7 @@ class ActionLoggerTable(ActionLogger):
                 return Group(*lines)
             if self.state == ViewState.TABLE:
                 rows: list[RenderableType]
-                if self.keep_running and not self.stop_flag:
+                if self.fullscreen and not self.stop_flag:
                     rows = [self._overview_content(), self._build_progress_caption()]
                 else:
                     rows = [heading("Actions:"), self._render_table()]
@@ -1247,7 +1249,7 @@ class ActionLoggerTable(ActionLogger):
             return Group(panel, self._build_footer())
 
     def _overview_is_scrollable(self) -> bool:
-        return self.keep_running
+        return self.fullscreen
 
     def _preparation_renderable(self) -> RenderableType:
         return self._run_info if self._run_info is not None else Group()
@@ -1294,7 +1296,7 @@ class ActionLoggerTable(ActionLogger):
         rows = self._overview_rows()
         visible = rows[self._overview_offset:self._overview_offset + self._overview_height]
         segments = Segments([segment for row in visible for segment in [*row, Segment.line()]])
-        return Group(Align(segments, height=self._overview_height) if self.keep_running else segments)
+        return Group(Align(segments, height=self._overview_height) if self.fullscreen else segments)
 
     # =========================================================================
     # Main Loop
@@ -1411,7 +1413,7 @@ class ActionLoggerTable(ActionLogger):
         with self.lock:
             if self.stop_flag:
                 return
-            fullscreen = self.keep_running or self.state != ViewState.TABLE
+            fullscreen = self.fullscreen or self.state != ViewState.TABLE
             screen = fullscreen and self.console.is_terminal and not self.console.legacy_windows
             frame = self._build_renderable()
             if self.live is not None and self._screen_active != screen:

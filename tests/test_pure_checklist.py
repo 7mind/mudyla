@@ -386,7 +386,7 @@ def test_dependency_tree_shares_only_exact_action_contexts(encoding):
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
         output = OutputFormatter(no_color=True, compact=True)
         output._console = Console(file=stream, width=90, force_terminal=False)
-        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False, "tree")
+        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False, None, "tree")
         stream.flush()
         result = stream.buffer.getvalue().decode(encoding)
     assert "build (@" + output.context.format_id(build.context_id, False).plain in result

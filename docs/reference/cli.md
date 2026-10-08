@@ -22,6 +22,7 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--without-nix`: Run without Nix isolation (default on Windows).
 *   `--force-nix`: Force Nix integration even if it would normally be skipped (e.g., on Windows).
 *   `--it`, `--interactive`: Show pure/table fullscreen and keep the view open after completion, when keyboard input is available.
+*   `--fullscreen`: Show pure/table fullscreen during execution and exit automatically after completion.
 *   `--timeout <ms>`: SIGKILL all running processes and their process trees when the specified number of milliseconds has elapsed.
 
 ## Arguments & Flags
@@ -173,7 +174,9 @@ shared/goal/weak/soft annotations in dim parentheses. Page keys scroll this docu
 selecting an action with the arrow keys reveals it. Pure and table render inline by
 default, leaving the mouse wheel with terminal history. Opening a detail view temporarily
 uses the alternate screen; `q` restores the inline overview and its selection.
-`--it` keeps the entire session fullscreen, where the mouse wheel scrolls the view.
+Shrinking the terminal during inline updates can leave previous frame fragments in history.
+`--fullscreen` keeps the live view in the alternate screen and exits after execution.
+`--it` also keeps the completed view open. In fullscreen, the mouse wheel scrolls the view.
 On exit both modes restore the preceding transcript. Pure prints its final Actions
 graph once; `--plan-tree` and `--plan-table` print their respective plan and checklist.
 Run facts appear together under `Run info:`; completion outcome, wall time and log
@@ -306,6 +309,7 @@ mdl --logger table :build :test
 Use `--it` or `--interactive` to open the selected view fullscreen and keep it open after execution, allowing you to
 review successful or failed action outputs and logs. Press `q` to close it. Without `--it`, the process
 exits automatically after execution completes.
+Use `--fullscreen` for fullscreen progress without waiting for `q`; combining both flags keeps the completed view open.
 
 ```bash
 mdl --it :build :test
@@ -315,7 +319,7 @@ mdl --it :build :test
 
 Both views reveal the selected action when navigating with the arrow keys. Inline
 overviews use only their populated rows within the current terminal height.
-With `--it`, scrolling up exposes the complete run information without changing
+With `--fullscreen` or `--it`, scrolling up exposes the complete run information without changing
 the selected action. `Home` reaches its beginning in either fullscreen view.
 Closing a detail view
 restores the overview's selection and scroll position. Header and
@@ -456,7 +460,7 @@ use the correct flow. TeamCity shares the CLI formatter and its serialized write
 the engine; its protocol adapter does not own processes or captured artifacts.
 Pure inherits `ActionLoggerTable` and shares its task state, keyboard handling, artifact readers,
 scrolling and lifecycle, while overriding its presentation. Both use Rich's alternate
-screen for `--it` sessions and temporary detail views, restoring inline progress on
+screen for `--fullscreen`, `--it` sessions and temporary detail views, restoring inline progress on
 return from a temporary detail view. Pure retains a
 static streaming fallback. The engine sends bounded
 output chunks through `write_output(action_key, text, stream)`; both viewers read
@@ -476,6 +480,13 @@ when the existing artifact reader parses fresh or restored results; final pure
 reporting therefore keeps types after ordinary run-directory cleanup. This internal
 annotation does not change artifact schemas or the `--out` aggregate.
 The live graph uses the exact pruned execution graph and shared task state.
+Its Sugiyama layout fixes ranks to scheduler order, inserts virtual vertices on long
+edges, reduces crossings with weighted medians and transpositions, and assigns
+coordinates with the [corrected Brandes–Köpf algorithm](https://arxiv.org/abs/2008.01252).
+The CLI solves this geometry and its routing channels once after pruning. Preparation,
+live views and the final graph share the immutable solution; resizing wraps labels and
+maps cached connector rows without solving again. Narrow terminals list prerequisites
+with their declared strength and retainer instead of drawing overlapping lanes.
 Pure DAG mode renders it once under Actions, retaining the recorded run information
 in its original order. The optional tree remains a separate live Plan. The shared tree formatter wraps deep
 branches when their guides would otherwise exhaust the terminal width.

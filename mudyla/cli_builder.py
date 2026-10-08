@@ -143,6 +143,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="Show pure/table fullscreen and exit after execution",
+    )
+
+    parser.add_argument(
         "--it", "--interactive",
         dest="interactive",
         action="store_true",

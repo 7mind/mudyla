@@ -28,6 +28,7 @@ from .runtime_python import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
 from ..logging.action_logger import ActionLogger, LoggerMode
 from ..logging.formatters.plan import PlanStyle
+from ..logging.formatters.dag import DagLayout, build_dag_layout
 
 OUTPUT_CHUNK_BYTES = 4096
 INPUT_RETRY_SECONDS = 0.01
@@ -199,10 +200,12 @@ class ExecutionEngine:
         timeout_ms: Optional[int] = None,
         *,
         logger_mode: LoggerMode,
+        fullscreen: bool = False,
         force_interactive: bool,
         plan_style: PlanStyle = "dag",
         run_info: Optional[RenderableType] = None,
         output: Optional[OutputFormatter] = None,
+        dag_layout: Optional[DagLayout] = None,
     ):
         self.graph = graph
         self.project_root = project_root
@@ -219,10 +222,12 @@ class ExecutionEngine:
         self.plan_style = plan_style
         self.force_interactive = force_interactive
         self.run_info = run_info
+        self.dag_layout = dag_layout
         self.show_dirs = show_dirs
         self.parallel_execution = parallel_execution
         self.use_short_context_ids = use_short_context_ids
         self.keep_running = keep_running
+        self.fullscreen = fullscreen
         self.timeout_ms = timeout_ms
 
         # Create output formatter (includes all sub-formatters)
@@ -473,15 +478,19 @@ class ExecutionEngine:
                 show_dirs=self.show_dirs,
                 run_directory=self.run_directory,
                 keep_running=self.keep_running,
+                fullscreen=self.fullscreen,
                 use_short_ids=self.use_short_context_ids,
                 run_info=self.run_info,
             )
         else:
+            if self.plan_style == "dag" and self.dag_layout is None:
+                self.dag_layout = build_dag_layout(self.graph, execution_order)
             logger = ActionLoggerPure(execution_order, self.output, self.use_short_context_ids,
-                                      keep_running=self.keep_running, show_dirs=self.show_dirs,
+                                      keep_running=self.keep_running, fullscreen=self.fullscreen, show_dirs=self.show_dirs,
                                       action_dirs=self._build_action_dir_mapping(execution_order),
                                       run_directory=self.run_directory, force_interactive=self.force_interactive,
-                                      run_info=self.run_info, graph=self.graph, plan_style=self.plan_style)
+                                      run_info=self.run_info, graph=self.graph, plan_style=self.plan_style,
+                                      dag_layout=self.dag_layout)
     
         logger.set_kill_callback(self._request_kill)
         logger.set_input_callback(self._send_action_input)

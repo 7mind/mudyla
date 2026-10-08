@@ -19,7 +19,7 @@ from tests.terminal_capture import terminal_text
 
 
 @pytest.mark.parametrize("mode", ["pure", "table"])
-@pytest.mark.parametrize("option", [None, "--it", "--interactive", "--force-interactive"])
+@pytest.mark.parametrize("option", [None, "--it", "--interactive", "--force-interactive", "--fullscreen"])
 def test_screen_ownership_follows_session_and_temporary_detail(terminal_project, tmp_path, mode, option):
     import pexpect
 
@@ -29,7 +29,7 @@ def test_screen_ownership_follows_session_and_temporary_detail(terminal_project,
                              f'while not Path({str(release)!r}).exists(): time.sleep(.01)\n```\n',
                              options=(option,) if option else (), dimensions=(24, 100))
     captured = StringIO()
-    fullscreen = option in {"--it", "--interactive"}
+    fullscreen = option in {"--it", "--interactive", "--fullscreen"}
     child.logfile_read = captured
     child.expect_exact("q kill")
     assert captured.getvalue().count("\x1b[?1049h") == int(fullscreen)
@@ -42,7 +42,7 @@ def test_screen_ownership_follows_session_and_temporary_detail(terminal_project,
     child.expect_exact("q kill")
     assert captured.getvalue().count("\x1b[?1049l") == int(not fullscreen)
     release.touch()
-    if fullscreen:
+    if option in {"--it", "--interactive"}:
         child.expect_exact("q close")
         child.send("q")
     child.expect(pexpect.EOF)
