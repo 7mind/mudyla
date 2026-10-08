@@ -20,6 +20,7 @@ from mudyla.logging.action_logger_pure import ActionLoggerPure, MAX_LOG_CHARS
 from mudyla.logging.action_logger_table import TaskStatus
 from mudyla.executor.retainer_executor import RetainerResult
 from mudyla.logging.formatters import OutputFormatter
+from tests.terminal_capture import terminal_text
 
 
 @pytest.mark.parametrize("interactive", [False, True])
@@ -234,7 +235,7 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
     for key in keys[1:]:
         nodes[key].dependencies.add(Dependency(shared))
     graph = ActionGraph(nodes, {first, second})
-    with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
+    with TextIOWrapper(BytesIO(), encoding=encoding, newline="\r\n") as stream:
         output = OutputFormatter(no_color=True, compact=True)
         output._console = Console(file=stream, width=65, height=24, force_terminal=True)
         cli = CLI()
@@ -245,7 +246,7 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
         logger._handle_key_table("top")
         output.console.print(logger._build_renderable())
         stream.flush()
-        frame = Text.from_ansi(stream.buffer.getvalue().decode(encoding)).plain
+        frame = terminal_text(stream.buffer.getvalue().decode(encoding)).plain
     assert "Retainers" in frame and "keep-shared" in frame and "3ms: shared" in frame
     assert "Execution plan" in frame and "shared (@global)" in frame
     assert "goal" in frame and "Actions" in frame
