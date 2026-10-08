@@ -39,7 +39,7 @@ def test_canonical_modes_and_legacy_precedence(options, mode, verbose):
     assert args.verbose == verbose
 
 
-def run_project(path: Path, options: list[str], script: str) -> subprocess.CompletedProcess[str]:
+def run_project(path: Path, options: list[str], script: str, *, columns: int = 300) -> subprocess.CompletedProcess[str]:
     (path / ".git").mkdir(exist_ok=True)
     definitions = path / ".mdl" / "defs"
     definitions.mkdir(parents=True, exist_ok=True)
@@ -47,7 +47,7 @@ def run_project(path: Path, options: list[str], script: str) -> subprocess.Compl
         '# action: seed\n\n```python\nmdl.ret("seed", 1, "int")\n```\n\n'
         '# action: work\n\n```python\nmdl.dep("action.seed")\n' + script + '\n```\n', encoding="utf-8")
     env = os.environ.copy()
-    env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="300")
+    env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS=str(columns))
     return subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", *options, ":work"],
                           cwd=path, env=env, capture_output=True, text=True, timeout=10)
 
@@ -473,12 +473,12 @@ def test_unicode_preparation_errors_preserve_diagnostics_before_logger_start(tmp
 
 @pytest.mark.parametrize("mode", ["simple", "verbose", "github"])
 def test_command_marker_retains_one_complete_logical_line(tmp_path, mode):
-    project = tmp_path / ("long_directory_" * 12)
-    project.mkdir()
-    result = run_project(project, ["--logger", mode, "--keep-run-dir"], 'print("PAYLOAD")')
+    columns = 80
+    result = run_project(tmp_path, ["--logger", mode, "--keep-run-dir"], 'print("PAYLOAD")', columns=columns)
     assert result.returncode == 0, result.stderr
     command_lines = [line for line in result.stdout.splitlines() if "Running command" in line]
     assert len(command_lines) == 2
+    assert all(len(line) > columns for line in command_lines), command_lines
     assert all(line.endswith("script.py`") for line in command_lines), command_lines
 
 
