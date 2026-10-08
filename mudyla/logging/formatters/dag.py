@@ -36,6 +36,7 @@ class DagLayout:
     keys: tuple[ActionKey, ...]
     edges: tuple[DagEdge, ...]
     geometry: LayeredLayout
+    execution_order: tuple[ActionKey, ...]
 
 
 TextAttributes = tuple[str, tuple[Span, ...], str | Style, Optional[str], Optional[str], Optional[bool], str, Optional[int]]
@@ -189,6 +190,8 @@ class DependencyDag:
             start = len(lines)
             if narrow:
                 lines.extend(rendered.lines)
+                if rank < len(geometry.connector_rows) and geometry.connector_rows[rank] == ((),):
+                    lines.append([])
             else:
                 for index, segments in enumerate(rendered.lines):
                     cells = geometry.action_rows[rank] if index == 0 else geometry.continuation_rows[rank]
@@ -205,6 +208,29 @@ class DependencyDag:
         return self._frame
 
 
+def _presentation_order(keys: tuple[ActionKey, ...], edges: tuple[DagEdge, ...]) -> tuple[ActionKey, ...]:
+    neighbors: dict[ActionKey, set[ActionKey]] = {key: set() for key in keys}
+    for edge in edges:
+        neighbors[edge.source].add(edge.target)
+        neighbors[edge.target].add(edge.source)
+    unseen = set(keys)
+    components: list[tuple[ActionKey, ...]] = []
+    for first in keys:
+        if first not in unseen:
+            continue
+        pending = [first]
+        connected: set[ActionKey] = set()
+        while pending:
+            key = pending.pop()
+            if key in connected:
+                continue
+            connected.add(key)
+            pending.extend(neighbors[key] - connected)
+        unseen.difference_update(connected)
+        components.append(tuple(key for key in keys if key in connected))
+    return tuple(key for component in components for key in component)
+
+
 def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey]) -> DagLayout:
     positions = {key: index for index, key in enumerate(execution_order)}
     assert len(positions) == len(execution_order), "Plan action keys must be unique"
@@ -213,15 +239,17 @@ def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey]) -> Da
     edges.sort(key=lambda edge: (positions[edge.source], positions[edge.target],
                                 {"strong": 0, "weak": 1, "soft": 2}[edge.kind],
                                 str(edge.dependency.retainer_action)))
-    endpoints = tuple((positions[edge.source], positions[edge.target]) for edge in edges)
-    geometry = layered.solve_layered_layout(len(execution_order), endpoints)
-    return DagLayout(tuple(execution_order), tuple(edges), geometry)
+    keys = _presentation_order(tuple(execution_order), tuple(edges))
+    presentation = {key: index for index, key in enumerate(keys)}
+    endpoints = tuple((presentation[edge.source], presentation[edge.target]) for edge in edges)
+    geometry = layered.solve_layered_layout(len(keys), endpoints)
+    return DagLayout(keys, tuple(edges), geometry, tuple(execution_order))
 
 
 def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
                   use_short_ids: bool, shared: dict[ActionKey, int], status: Callable[[ActionKey], Text],
                   edge_style: Callable[[ActionKey], str], *, layout: DagLayout) -> DependencyDag:
-    assert layout.keys == tuple(execution_order), "Dependency layout must match scheduler order"
+    assert layout.execution_order == tuple(execution_order), "Dependency layout must match scheduler order"
     return DependencyDag(graph, layout, formatter, use_short_ids, shared, status, edge_style)
 
 

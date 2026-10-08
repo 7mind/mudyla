@@ -12,7 +12,7 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
-from layout_graphs import layered_kinds, nested_forks, repeated_diamonds
+from layout_graphs import fixture, layered_kinds, nested_forks, repeated_diamonds
 
 from mudyla.ast.models import ActionDefinition, SourceLocation
 from mudyla.cli import CLI
@@ -134,13 +134,96 @@ def assert_independent_routes(layout: DagLayout) -> None:
                 crossing = any({first, second} == {frozenset("UD"), frozenset("LR")}
                                for first, second in combinations(connections.values(), 2))
                 assert cell.crossing == crossing
+                if crossing:
+                    assert all(value in {frozenset("UD"), frozenset("LR")} for value in connections.values())
             y += 1
+        marker = next((cell for cell in action if cell.column == layout.geometry.action_columns[rank]), None)
+        if marker is not None:
+            assert all(rank in (layout.geometry.routes[connection.edge].source,
+                                layout.geometry.routes[connection.edge].target) for connection in marker.connections)
     assert actual == expected
+    for track in layout.geometry.tracks:
+        cell = next(cell for cell in layout.geometry.connector_rows[track.source][0] if cell.column == track.column)
+        assert cell.directions == layered.Direction.UP | layered.Direction.DOWN
+        assert tuple(connection.edge for connection in cell.connections) == (track.edge,)
+
+
+def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
+    import mudyla.cli as cli_module
+
+    definitions = Path(__file__).resolve().parents[1] / ".mdl" / "defs" / "interactive-demo.md"
+    (tmp_path / ".git").mkdir()
+    destination = tmp_path / ".mdl" / "defs"
+    destination.mkdir(parents=True)
+    (destination / "actions.md").write_text(definitions.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    layouts = []
+    original = cli_module.build_dag_layout
+
+    def capture(*args):
+        layout = original(*args)
+        layouts.append(layout)
+        return layout
+
+    monkeypatch.setattr(cli_module, "build_dag_layout", capture)
+    assert CLI().run(["--without-nix", "--simple-log", "--dry-run", ":demo-interactive"]) == 0
+    assert len(layouts) == 1
+    layout = layouts[0]
+    columns = {key.id.name: column for key, column in zip(layout.keys, layout.geometry.action_columns)}
+    assert columns["demo-build"] != columns["demo-check"]
+    route = next(route for edge, route in zip(layout.edges, layout.geometry.routes)
+                 if edge.source.id.name == "demo-check" and edge.target.id.name == "demo-interactive")
+    assert any(track.target == route.source and track.column == route.points[0][0] for track in layout.geometry.tracks)
+    assert len(route.points) - 2 <= 1
+    assert route.points[0][0] == route.points[1][0]
+    assert_independent_routes(layout)
+
+
+def test_disconnected_components_group_navigation_without_changing_execution_order():
+    keys = [ActionKey.from_name(name) for name in ["a", "c", "b", "d"]]
+    graph = fixture("components", keys, [(2, Dependency(keys[0])), (3, Dependency(keys[1]))], [2, 3], 80).graph
+    layout = build_dag_layout(graph, keys)
+    presentation = [keys[index] for index in [0, 2, 1, 3]]
+    assert layout.keys == tuple(presentation)
+    assert layout.execution_order == tuple(keys)
+    output = OutputFormatter(no_color=True, compact=True)
+    dag = execution_dag(graph, keys, output.context, False, {}, lambda key: Text("x"), lambda key: "", layout=layout)
+    with pytest.raises(AssertionError, match="scheduler order"):
+        execution_dag(graph, presentation, output.context, False, {}, lambda key: Text("x"), lambda key: "", layout=layout)
+    for width in [80, 8]:
+        console = Console(file=StringIO(), width=width)
+        lines, anchors = dag.visual_lines(console, console.options, lambda key, width: dag._label(key))
+        assert "".join(segment.text for segment in lines[anchors[keys[1]].start - 1]).strip() == ""
+        assert list(anchors) == presentation
+    logger = ActionLoggerPure(keys, output, False, graph=graph, dag_layout=layout, force_interactive=True)
+    assert logger.action_keys == presentation
+    logger.selected_index = 2
+    assert logger._get_selected_action_key() == keys[1]
+    assert keys == [ActionKey.from_name(name) for name in ["a", "c", "b", "d"]]
+    assert_independent_routes(layout)
+
+
+def test_singleton_and_chain_use_minimal_graph_rows():
+    for names, links, expected in [(["only"], [], ["x"]), (["a", "b"], [(0, 1)], ["x", "│", "x"])]:
+        keys = [ActionKey.from_name(name) for name in names]
+        graph = fixture("minimal", keys, [(target, Dependency(keys[source])) for source, target in links],
+                        [len(keys) - 1], 80).graph
+        layout = build_dag_layout(graph, keys)
+        output = OutputFormatter(no_color=True, compact=True)
+        dag = execution_dag(graph, keys, output.context, False, {}, lambda key: Text("x"), lambda key: "", layout=layout)
+        rows = []
+        for rank, cells in enumerate(layout.geometry.action_rows):
+            rows.append(dag._gutter(cells, ("",) * len(layout.edges), False,
+                                   (layout.geometry.action_columns[rank], Text("x"))).plain.rstrip())
+            if rank < len(layout.geometry.connector_rows):
+                rows.extend(dag._gutter(row, ("",) * len(layout.edges), False, None).plain.rstrip()
+                            for row in layout.geometry.connector_rows[rank])
+        assert rows == expected
 
 
 @pytest.mark.parametrize("make_fixture", [nested_forks, layered_kinds, repeated_diamonds],
                          ids=["nested-forks", "layered-kinds", "repeated-diamonds"])
-def test_complex_layouts_align_markers_and_keep_complete_dependency_tracks(make_fixture):
+def test_complex_layouts_keep_branch_lanes_and_complete_dependency_tracks(make_fixture):
     fixture = make_fixture()
     keys = list(fixture.order)
     layout = build_dag_layout(fixture.graph, keys)
@@ -149,15 +232,15 @@ def test_complex_layouts_align_markers_and_keep_complete_dependency_tracks(make_
     assert layout.keys == fixture.order
     assert {(edge.target, edge.dependency) for edge in layout.edges} == {
         (key, dependency) for key in keys for dependency in fixture.graph.get_node(key).dependencies}
-    assert len(set(geometry.action_columns)) == 1
-    assert geometry.action_columns[0] == 2 * len({track.column for track in geometry.tracks})
+    assert len(set(geometry.action_columns)) > 1
     for route, track in zip(geometry.routes, geometry.tracks):
-        source, start, end, target = route.points
-        assert source[0] == target[0] == geometry.action_columns[0]
-        assert start[0] == end[0] == track.column < source[0]
-        assert source[1] == start[1] < end[1] == target[1]
+        assert len(route.points) - 2 <= 2
+        assert route.points[0][0] == geometry.action_columns[route.source]
+        assert route.points[-1][0] == geometry.action_columns[route.target]
+        vertical = [(first, last) for first, last in zip(route.points, route.points[1:]) if first[0] == last[0]]
+        assert len(vertical) == 1 and vertical[0][0][0] == track.column
     for rank, rows in enumerate(geometry.connector_rows):
-        assert len(rows) == int(any(track.source <= rank < track.target for track in geometry.tracks))
+        assert len(rows) == 1
     output = OutputFormatter(no_color=True, compact=True)
     dag = execution_dag(fixture.graph, keys, output.context, False, {}, lambda key: Text("o "),
                         lambda key: "dim", layout=layout)
@@ -166,7 +249,8 @@ def test_complex_layouts_align_markers_and_keep_complete_dependency_tracks(make_
     rendered = ["".join(segment.text for segment in line) for line in lines]
     for key, marker in zip(keys, geometry.action_columns):
         assert len(anchors[key]) == 1
-        assert rendered[anchors[key].start][marker:] == "o " + dag._label(key).plain
+        assert rendered[anchors[key].start][marker] == "o"
+        assert rendered[anchors[key].start][geometry.width + 1:] == dag._label(key).plain
     assert all(Text(line).cell_len <= console.width for line in rendered)
     for edge, track in zip(layout.edges, geometry.tracks):
         if edge.kind != "strong":
@@ -184,7 +268,7 @@ def test_complex_layouts_align_markers_and_keep_complete_dependency_tracks(make_
         assert "".join(text.split()).count("retainer:retain") == 2
 
 
-def test_unoccupied_rank_cuts_add_no_connector_rows():
+def test_disconnected_actions_have_blank_separators():
     for count in [0, 1, 3]:
         keys = [ActionKey.from_name(f"isolated{index}") for index in range(count)]
         nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("fixture", 1, key.id.name)))
@@ -192,17 +276,19 @@ def test_unoccupied_rank_cuts_add_no_connector_rows():
         graph = ActionGraph(nodes, set(keys))
         layout = build_dag_layout(graph, keys)
         assert len(layout.geometry.action_rows) == count
-        assert not any(layout.geometry.connector_rows)
+        assert layout.geometry.connector_rows == (((),),) * max(0, count - 1)
         assert not any(layout.geometry.continuation_rows)
         output = OutputFormatter(no_color=True, compact=True)
         dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "),
                             lambda key: "dim", layout=layout)
         console = Console(file=StringIO(), width=80)
         console.print(dag)
-        assert len(console.file.getvalue().splitlines()) == count
+        lines = console.file.getvalue().splitlines()
+        assert sum(bool(line.strip()) for line in lines) == count
+        assert sum(not line.strip() for line in lines) == max(0, count - 1)
 
 
-def test_wrapped_labels_continue_complete_tracks_without_endpoint_ports():
+def test_wrapped_labels_continue_only_outgoing_and_through_tracks():
     keys = [ActionKey.from_name(name) for name in ["source", "target"]]
     nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("fixture", 1, key.id.name)))
              for key in keys}
@@ -397,9 +483,9 @@ def test_complex_execution_plan_bounds_connector_rows_and_keeps_each_action_once
     assert_independent_routes(layout)
     assert sum(len(rows) for rows in layout.geometry.connector_rows) == 6
     assert max(len(rows) for rows in layout.geometry.connector_rows) == 1
-    assert layout.geometry.width == 21
-    assert len(set(layout.geometry.action_columns)) == 1
-    assert all(len(route.points) == 4 for route in layout.geometry.routes)
+    assert layout.geometry.width == 12
+    assert len(set(layout.geometry.action_columns)) > 1
+    assert all(len(route.points) - 2 <= 2 for route in layout.geometry.routes)
     output = OutputFormatter(no_color=True, compact=True)
     dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=layout)
     stream = StringIO()
@@ -419,7 +505,7 @@ def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
     calls = {}
-    for name in ["solve_layered_layout", "_allocate_routing", "_improve_track_order", "_rasterize"]:
+    for name in ["solve_layered_layout", "_assign_lanes", "_allocate_routing", "_rasterize"]:
         original = getattr(layered, name)
 
         def counted(*args, stage=name, function=original, **kwargs):
@@ -448,7 +534,7 @@ def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(
     monkeypatch.setattr(ActionLoggerPure, "start", start)
     assert CLI().run(["--without-nix", ":work"]) == 0
     assert len(layouts) == 2 and layouts[0] is layouts[1]
-    assert calls == {name: 1 for name in ["solve_layered_layout", "_allocate_routing", "_improve_track_order", "_rasterize"]}
+    assert calls == {name: 1 for name in ["solve_layered_layout", "_assign_lanes", "_allocate_routing", "_rasterize"]}
 
 
 def test_dag_preserves_contexts_parallel_strengths_retainers_and_pruned_endpoints():

@@ -160,7 +160,7 @@ flushed prompts without a newline. Its overview contains the same run informatio
 printed before execution: Nix mode, project path, default axes, warnings, context
 IDs mapped to compact values, goals, retainers, execution mode, dependency plan,
 continuation source and current run ID. Every action/context appears as one selectable
-node in execution order. The `>` cursor occupies a separate left gutter; connector
+node in component order, preserving execution order within each component. The `>` cursor occupies a separate left gutter; connector
 and wrapped continuation rows do not become selectable actions. `--plan-tree`
 retains a separate updating `Plan:` tree above the flat `Actions:` list.
 `--plan-table` pairs a static `Plan:` table with the flat `Actions:` list.
@@ -275,13 +275,14 @@ Other modes use the shared DAG layout by default. Executing pure attaches runtim
 data and keyboard selection to this graph under `Actions:`; dry runs and other
 loggers print a static `Plan:`. Explicit `--plan-table`, `--plan-tree`, and `--plan-dag`
 select the shared table, tree, or DAG, including with `--logger table`; the live action
-table remains unchanged. These options do not change scheduling, pruning or action-list order.
+table remains unchanged. These options do not change scheduling or pruning.
 
-The DAG places each action/context once in execution order, with shared
-prerequisites joining at their dependent actions. Solid lanes mean strong
+The DAG groups disconnected components with a blank line between them and places
+each action/context once, preserving execution order within its component. Shared
+prerequisites join at their dependent actions. Solid lanes mean strong
 dependencies; dashed lanes mean weak or soft dependencies (`|` and `:` in ASCII).
-Sibling branches occupy adjacent lanes; rounded connector bends shift other lanes
-aside before a fork. When a merge still crosses another path, `╪` (`x` in ASCII)
+Branches occupy distinct lanes; each dependency keeps one vertical track with
+horizontal arms only at its endpoints. When a merge crosses another path, `╪` (`x` in ASCII)
 marks a crossing without a connection. Lane positions remain fixed while statuses
 change. Pending connections are dim; connections
 to running actions use normal-intensity cyan, completion green, restored actions
@@ -480,12 +481,13 @@ when the existing artifact reader parses fresh or restored results; final pure
 reporting therefore keeps types after ordinary run-directory cleanup. This internal
 annotation does not change artifact schemas or the `--out` aggregate.
 The live graph uses the exact pruned execution graph and shared task state.
-Its [interval channel routing](https://users.eecs.northwestern.edu/~haizhou/357/lec7.pdf)
-assigns each complete dependency to one vertical track in scheduler order. Overlapping
-intervals use separate tracks; markers share one column beside their labels, and
-routes turn only at their endpoints. Bounded track swaps reduce crossing
-edge pairs without claiming a global crossing optimum. Occupied rank cuts receive
-one connector row; unoccupied cuts receive none.
+A greedy top-down grid layout assigns compact node lanes.
+A bounded interval allocator gives every complete dependency
+one distinct vertical track while its interval overlaps another edge. Routes have
+at most two endpoint bends; this heuristic does not claim optimal crossings or width.
+Each occupied rank cut receives one connector row; disconnected components receive
+one blank separator. Keyboard navigation follows this component-grouped presentation;
+the scheduler retains its original execution order.
 The CLI solves this geometry and its routing tracks once after pruning. Preparation,
 live views and the final graph share the immutable solution; resizing wraps labels and
 maps cached connector rows without solving again. Narrow terminals list prerequisites
@@ -494,7 +496,9 @@ Pure DAG mode renders it once under Actions, retaining the recorded run informat
 in its original order. The optional tree remains a separate live Plan. The shared tree formatter wraps deep
 branches when their guides would otherwise exhaust the terminal width.
 `mudyla.logging.formatters.dag` derives its lane layout from retained dependency
-records and the supplied execution order. Status callbacks style that layout
+records and the supplied execution order. The immutable `DagLayout.execution_order`
+retains that original order, while `DagLayout.keys` groups connected components.
+Status callbacks style that layout
 without changing its node positions or importing interactive logger state. Its
 shared `visual_lines` renderer accepts node labels and returns full-ActionKey row
 anchors. Pure uses those anchors for keyboard selection and resize visibility;

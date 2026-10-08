@@ -44,7 +44,12 @@ class ActionLoggerPure(ActionLoggerTable):
                  force_interactive: bool = False, run_info: Optional[RenderableType] = None,
                  graph: Optional[ActionGraph] = None, plan_style: PlanStyle = "dag",
                  dag_layout: Optional[DagLayout] = None) -> None:
-        super().__init__(action_keys, no_color=output.no_color, use_short_ids=use_short_ids,
+        display_keys = action_keys
+        if graph is not None and plan_style == "dag":
+            if dag_layout is None:
+                dag_layout = build_dag_layout(graph, action_keys)
+            display_keys = list(dag_layout.keys)
+        super().__init__(display_keys, no_color=output.no_color, use_short_ids=use_short_ids,
                          keep_running=keep_running, fullscreen=fullscreen, show_dirs=show_dirs, action_dirs=action_dirs,
                          run_directory=run_directory, run_info=run_info)
         self._output = output
@@ -64,8 +69,7 @@ class ActionLoggerPure(ActionLoggerTable):
         self._sharing_counts = sharing_counts(graph, action_keys, [key.id.name for key in graph.goals]) if graph is not None else {}
         self._dag = None
         if graph is not None and plan_style == "dag":
-            if dag_layout is None:
-                dag_layout = build_dag_layout(graph, action_keys)
+            assert dag_layout is not None
             self._dag = execution_dag(graph, action_keys, output.context, use_short_ids, self._sharing_counts,
                                       self._tree_status, self._plan_edge_style, layout=dag_layout)
         self._raw_json_views: set[tuple[ActionKey, ViewState]] = set()
