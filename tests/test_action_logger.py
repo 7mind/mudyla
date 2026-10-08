@@ -521,23 +521,6 @@ class TestTableBuilding:
         assert table is not None
         assert table.row_count == 2
 
-    def test_build_table_with_context(self):
-        """Test building table with context in task names."""
-        mgr = ActionLoggerTable(make_action_keys(["platform:jvm#task1", "platform:jvm#task2"]))
-
-        table = mgr._build_table()
-
-        assert table is not None
-
-    def test_build_table_shows_selection(self):
-        """Test that table shows selection indicator."""
-        mgr = ActionLoggerTable(make_action_keys(["task1", "task2", "task3"]))
-        mgr.selected_index = 1
-
-        table = mgr._build_table()
-
-        assert table is not None
-
     def test_build_table_with_running_task(self):
         """Test building table with a running task shows status in legend."""
         action_keys = make_action_keys(["task1"])

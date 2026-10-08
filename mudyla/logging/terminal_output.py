@@ -22,8 +22,13 @@ def same_destination(first: TextIO, second: TextIO) -> bool:
         return True
     try:
         if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
             import msvcrt
-            return msvcrt.get_osfhandle(first.fileno()) == msvcrt.get_osfhandle(second.fileno())
+            compare = ctypes.WinDLL("kernelbase").CompareObjectHandles
+            compare.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            compare.restype = wintypes.BOOL
+            return bool(compare(msvcrt.get_osfhandle(first.fileno()), msvcrt.get_osfhandle(second.fileno())))
         return os.path.samestat(os.fstat(first.fileno()), os.fstat(second.fileno()))
     except (OSError, ValueError):
         return False

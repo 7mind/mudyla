@@ -13,9 +13,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ['3.12', '3.13', '3.14']
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: macos-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.14'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.0.0
@@ -25,7 +33,7 @@ jobs:
       - name: Test logger interfaces and terminal compatibility
         run: >-
           python -m pytest tests/test_action_logger.py tests/test_interactive_terminal.py
-          tests/test_stream_loggers.py tests/test_terminal_output.py tests/test_terminal_capture.py tests/test_teamcity_logger.py tests/test_logger_modes.py tests/test_logger_interactions.py tests/test_pure_checklist.py tests/test_pure_dag_actions.py tests/test_terminal_background.py tests/test_plan_dag.py tests/test_detail_formatters.py tests/test_windows_mouse.py tests/test_cli_parser_structure.py
-          --override-ini addopts=-q -o log_cli=false
+          tests/test_stream_loggers.py tests/test_terminal_output.py tests/test_terminal_capture.py tests/test_teamcity_logger.py tests/test_logger_modes.py tests/test_logger_interactions.py tests/test_pure_checklist.py tests/test_pure_dag_actions.py tests/test_terminal_background.py tests/test_plan_dag.py tests/test_detail_formatters.py tests/test_windows_mouse.py tests/test_cli_parser_structure.py tests/test_bash_runtime.py
+          --override-ini addopts=-v -o log_cli=false -o faulthandler_timeout=60 --durations=20 --maxfail=1
       - name: Check logger types
         run: python -m mypy mudyla/logging/action_logger.py mudyla/logging/action_logger_simple.py mudyla/logging/action_logger_verbose.py mudyla/logging/action_logger_github.py mudyla/logging/action_logger_teamcity.py mudyla/logging/teamcity.py mudyla/logging/action_logger_pure.py mudyla/logging/action_logger_table.py mudyla/logging/windows_mouse.py mudyla/logging/terminal_output.py mudyla/logging/terminal_background.py mudyla/logging/formatters/details.py mudyla/logging/formatters/plan.py mudyla/logging/formatters/dag.py mudyla/logging/formatters/output.py mudyla/logging/formatters/sections.py --follow-imports=silent

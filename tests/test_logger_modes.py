@@ -68,18 +68,12 @@ def test_default_pure_streams_literal_output_without_terminal_controls(tmp_path)
     assert "\x1b" not in result.stdout
 
 
-def test_pure_preparation_sections_are_separated_from_notices(tmp_path):
-    result = run_project(tmp_path, ["--dry-run"], 'mdl.ret("ok", True, "bool")')
-    assert result.returncode == 0
-    lines = result.stdout.splitlines()
-    for label in ["Contexts:", "Plan:"]:
-        assert lines[lines.index(label) - 1] == "", result.stdout
-
-
 def test_pure_preparation_has_exactly_one_blank_line_between_sections(tmp_path):
     result = run_project(tmp_path, ["--dry-run"], 'mdl.ret("ok", True, "bool")')
     assert result.returncode == 0, result.stdout + result.stderr
     lines = result.stdout.rstrip("\n").splitlines()
+    for label in ["Contexts:", "Plan:"]:
+        assert lines[lines.index(label) - 1] == "", result.stdout
     assert not any(not first.strip() and not second.strip() for first, second in zip(lines, lines[1:])), result.stdout
     tree = lines.index("Plan:")
     assert lines[tree - 1] == "" and lines[tree - 2].strip(), result.stdout
@@ -269,14 +263,6 @@ def test_pure_preparation_failure_flushes_existing_sections_once(tmp_path, monke
     assert "UNREACHABLE_ACTION" not in text and "Result:" not in text
 
 
-def test_raw_alias_uses_simple_progress(tmp_path):
-    result = run_project(tmp_path, ["--logger", "raw"], 'mdl.ret("ok", True, "bool")')
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Running command" in result.stdout
-    assert "Finished" in result.stdout
-    assert "\x1b" not in result.stdout
-
-
 @pytest.mark.parametrize("mode", ["pure", "table", "raw"])
 def test_output_presentation_preserves_declared_types_and_saved_json(tmp_path, mode):
     script = ('from pathlib import Path\nfile = Path.cwd() / "value.txt"\nfile.write_text("payload")\n'
@@ -303,8 +289,12 @@ def test_output_presentation_preserves_declared_types_and_saved_json(tmp_path, m
         assert '"hello"' in result.stdout and '"disabled": false' in result.stdout
 
 
-@pytest.mark.parametrize("mode", ["pure", "simple", "verbose", "github", "teamcity"])
-@pytest.mark.parametrize("goals,full", [(["empty"], False), (["empty", "values"], False), (["empty"], True)])
+@pytest.mark.parametrize("mode,goals,full", [
+    ("pure", ["empty"], False), ("pure", ["empty", "values"], False), ("pure", ["empty"], True),
+    ("simple", ["empty", "values"], False), ("verbose", ["empty"], True),
+    ("github", ["empty"], False),
+    ("teamcity", ["empty"], False), ("teamcity", ["empty", "values"], False),
+])
 def test_compact_results_omit_empty_groups_without_changing_saved_json(tmp_path, mode, goals, full):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
@@ -477,32 +467,49 @@ def test_simple_no_color_terminal_output_contains_no_color_or_cursor_controls(tm
         child.close(force=True)
 
 
-def test_cancellation_during_process_registration_stops_new_child(tmp_path, monkeypatch):
-    import mudyla.cli as cli_module
-    import mudyla.executor.engine as engine_module
-
-    run_project(tmp_path, [], 'mdl.ret("ok", True, "bool")')
+@pytest.mark.parametrize("helper_process", [False, True])
+def test_cancellation_during_process_registration_stops_new_child(tmp_path, helper_process):
+    (tmp_path / ".git").mkdir()
+    definitions = tmp_path / ".mdl" / "defs"
+    definitions.mkdir(parents=True)
     marker = tmp_path / "survived-cancellation"
-    (tmp_path / ".mdl" / "defs" / "actions.md").write_text(
+    release = tmp_path / "allow-completion"
+    (definitions / "actions.md").write_text(
         '# action: hello\n\n```python\nfrom pathlib import Path\nimport time\n'
-        'time.sleep(.2)\nPath("survived-cancellation").touch()\n```\n', encoding="utf-8")
-
-    class CancelBeforeRegistration(engine_module.ExecutionEngine):
-        def _execute_subprocess(self, prepared, logger):
-            original = engine_module.subprocess.Popen
-
-            def create(*args, **kwargs):
-                process = original(*args, **kwargs)
+        'while not Path("allow-completion").exists(): time.sleep(.01)\n'
+        'Path("survived-cancellation").touch()\n```\n', encoding="utf-8")
+    wrapper = tmp_path / "cancel_registration.py"
+    wrapper.write_text('''import faulthandler, sys
+from unittest.mock import patch
+import mudyla.cli as cli
+import mudyla.executor.engine as engine
+faulthandler.dump_traceback_later(5)
+class CancelBeforeRegistration(engine.ExecutionEngine):
+    def _execute_subprocess(self, prepared, logger):
+        original = engine.subprocess.Popen
+        def create(*args, **kwargs):
+            process = original(*args, **kwargs)
+            if args[0] == prepared.exec_cmd:
                 self._request_kill()
-                return process
-
-            with patch.object(engine_module.subprocess, "Popen", create):
-                return super()._execute_subprocess(prepared, logger)
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli_module, "ExecutionEngine", CancelBeforeRegistration)
-    assert CLI().run(["--without-nix", "--no-color", ":hello"]) == 1
-    assert not marker.exists()
+            return process
+        with patch.object(engine.subprocess, "Popen", create):
+            return super()._execute_subprocess(prepared, logger)
+    def _kill_process_tree(self, process):
+        if sys.argv[1] == "helper":
+            engine.subprocess.run([sys.executable, "-c", "pass"], check=True, timeout=2)
+        return super()._kill_process_tree(process)
+cli.ExecutionEngine = CancelBeforeRegistration
+raise SystemExit(cli.CLI().run(["--without-nix", "--no-color", ":hello"]))
+''', encoding="utf-8")
+    try:
+        result = subprocess.run([sys.executable, str(wrapper), "helper" if helper_process else "native"],
+                                cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+                                capture_output=True, text=True, timeout=10)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Execution failed!" in result.stdout and "Traceback" not in result.stderr, result.stdout + result.stderr
+        assert not marker.exists()
+    finally:
+        release.touch()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGINT and process groups")

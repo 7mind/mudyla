@@ -100,8 +100,9 @@ def test_teamcity_unicode_native_events_and_failures_preserve_capture(tmp_path, 
         assert result.stderr == ""
     assert result.stdout.count("##teamcity[testStarted ") == 1
     stdout = next((tmp_path / ".mdl" / "runs").rglob("stdout.log"))
-    assert native in stdout.read_text() and error in stdout.read_text()
-    assert stdout.with_name("stderr.log").read_text() == error
+    captured = stdout.read_text(encoding="utf-8")
+    assert native in captured and error in captured
+    assert stdout.with_name("stderr.log").read_text(encoding="utf-8") == error
     assert result.stdout.index("Failed (") < result.stdout.index("##teamcity[blockClosed ")
 
 
@@ -400,13 +401,16 @@ def test_merged_redirected_stderr_keeps_service_record_on_a_separate_line(tmp_pa
 
 
 def test_identical_memory_stream_keeps_service_record_on_a_separate_line():
-    from io import StringIO
+    from io import BytesIO, TextIOWrapper
     from mudyla.logging.teamcity import TeamCityWriter
-    stream = StringIO()
+    capture = BytesIO()
+    stream = TextIOWrapper(capture, encoding="ascii", newline="\r\n")
     writer = TeamCityWriter(stream, stream)
     writer.forward("ERROR_FRAGMENT", "stderr")
     writer.message("finished", None)
-    assert stream.getvalue().startswith("ERROR_FRAGMENT\n##teamcity[message")
+    assert capture.getvalue().startswith(b"ERROR_FRAGMENT\n##teamcity[message")
+    writer.forward("界🙂\r\n", "stdout")
+    assert capture.getvalue().endswith("界🙂\r\n".encode("utf-8"))
 
 
 @pytest.mark.parametrize("legacy,codepoint", [("x", "0085"), ("l", "2028"), ("p", "2029")])

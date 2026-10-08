@@ -59,7 +59,8 @@ trap 'mudyla_write_outputs' EXIT
 mudyla_write_outputs() {
     echo "{" > "$MDL_OUTPUT_JSON"
     local first=true
-    for line in "${MDL_OUTPUT_LINES[@]}"; do
+    # Bash 3.2 treats an empty array as unset under nounset.
+    for line in ${MDL_OUTPUT_LINES[@]+"${MDL_OUTPUT_LINES[@]}"}; do
         local name="${line%%:*}"
         local rest="${line#*:}"
         local type="${rest%%:*}"

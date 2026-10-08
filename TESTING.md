@@ -42,6 +42,14 @@ tests/
 
 ## Writing Tests
 
+- Cover independent behavior branches without multiplying unrelated parameters.
+- Give subprocess tests finite timeouts; terminate and reap children on every exit path.
+- Coordinate concurrency with events or explicit handshakes instead of fixed sleeps.
+- Scope fault injection to the intended operation so cleanup commands retain their normal behavior.
+- Exercise native default shells and tools alongside the Nix environment.
+- Check duplicated CI work and record test counts and runtime before expanding coverage.
+- Reproduce failures before fixing them; distinguish native platform verification from simulated checks.
+
 ### Integration Tests
 
 Integration tests use the `MudylaRunner` fixture to execute mudyla commands:
@@ -183,6 +191,22 @@ open htmlcov/index.html
 ## CI Integration
 
 ### GitHub Actions
+
+The complete pytest suite runs on Ubuntu. The terminal workflow runs on
+Ubuntu, macOS and Windows with Python 3.12, plus Ubuntu with Python 3.14.
+macOS also retains the Nix package checks and build. Output-selection variants
+run under pure, with separate cases for each append-only logger transport.
+Bash runtime checks use `/bin/bash` on macOS, including scripts that return
+no output values.
+Native Windows terminal support requires Windows 10 or Windows Server 2016
+and newer for kernel object handle comparison.
+
+Terminal jobs stop after the first failure, print each test name, report the
+slowest tests, dump thread stacks after 60 seconds within a test, and have
+a 15-minute job limit.
+The cancellation regression runs in a separate process with a 10-second
+timeout, including a helper subprocess to exercise Windows cancellation's
+nested process creation on every platform.
 
 The CI workflow automatically:
 - Generates JUnit XML test reports (`test-reports/junit.xml`)

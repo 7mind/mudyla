@@ -63,6 +63,8 @@ def test_append_only_modes_share_compact_sections_and_one_initial_plan(tmp_path,
     assert result.stdout.index("Run info:") < result.stdout.index("Contexts:") < result.stdout.index("Goals:") < result.stdout.index("Plan:")
     assert "\x1b" not in result.stdout
     if not dry:
+        if options == ["--logger", "raw"]:
+            assert "Running command" in result.stdout and "Finished" in result.stdout
         assert result.stdout.index("Plan:") < result.stdout.index("Result:") < result.stdout.index("Outputs:")
         assert "count:" in result.stdout and "enabled:" in result.stdout
         data = json.loads((tmp_path / "result.json").read_text())
@@ -218,12 +220,42 @@ def test_stream_modes_share_sections_and_exact_action_markers(tmp_path, mode):
     assert "Command:" not in result.stdout and "RUN " not in result.stdout
 
 
-def test_parallel_verbose_prefixes_one_active_action_without_changing_capture(tmp_path):
+def test_parallel_verbose_prefixes_one_active_action_without_changing_capture(tmp_path, monkeypatch):
+    startup = tmp_path / "startup"
+    startup.mkdir()
+    (startup / "sitecustomize.py").write_text('''import builtins, sys
+from pathlib import Path
+for stream in (sys.stdout, sys.stderr):
+    stream.reconfigure(newline="\\r\\n")
+original_open = builtins.open
+def windows_open(*args, **kwargs):
+    mode = args[1] if len(args) > 1 else kwargs.get("mode", "r")
+    if (str(args[0]).endswith(("stdout.log", "stderr.log")) and "b" not in mode
+            and any(flag in mode for flag in "wax+") and len(args) < 6 and kwargs.get("newline") is None):
+        kwargs["newline"] = "\\r\\n"
+    return original_open(*args, **kwargs)
+builtins.open = windows_open
+original_write = Path.write_text
+def windows_write(path, *args, **kwargs):
+    if path.name == "script.py" and len(args) < 4 and kwargs.get("newline") is None:
+        kwargs["newline"] = "\\r\\n"
+    return original_write(path, *args, **kwargs)
+Path.write_text = windows_write
+''', encoding="utf-8")
+    original_popen = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        env = kwargs["env"].copy()
+        env["PYTHONPATH"] = str(startup) + os.pathsep + env["PYTHONPATH"]
+        return original_popen(*args, **{**kwargs, "env": env})
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
     result = run_project(tmp_path, ["--logger", "verbose", "--par", "--keep-run-dir"],
         'import sys\nsys.stdout.write("FIRST_FRAGMENT\\nLAST"); sys.stdout.flush()')
     assert result.returncode == 0, result.stdout + result.stderr
     assert "work@global: FIRST_FRAGMENT\nwork@global: LAST\n" in result.stdout, result.stdout
     assert any(path.read_text() == "FIRST_FRAGMENT\nLAST" for path in (tmp_path / ".mdl" / "runs").rglob("stdout.log"))
+    assert b"\r\n" not in next((tmp_path / ".mdl" / "runs").rglob("script.py")).read_bytes()
 
 
 def test_action_marker_phrases_have_explicit_normal_intensity_colors():
@@ -406,8 +438,10 @@ def test_failure_replay_restores_terminal_text_before_result(tmp_path, mode, ter
         assert "\x18" not in displayed
 
 
-@pytest.mark.parametrize("mode", ["pure", "table", "simple", "verbose", "github"])
-@pytest.mark.parametrize("encoding", ["utf-8", "ascii", "cp1252"])
+@pytest.mark.parametrize("mode,encoding", [
+    ("pure", "utf-8"), ("table", "utf-8"), ("simple", "utf-8"), ("verbose", "utf-8"), ("github", "utf-8"),
+    ("pure", "ascii"), ("pure", "cp1252"), ("table", "ascii"), ("table", "cp1252"),
+])
 @pytest.mark.parametrize("case", ["unknown-goal", "missing-defs"])
 def test_unicode_preparation_errors_preserve_diagnostics_before_logger_start(tmp_path, mode, encoding, case):
     (tmp_path / ".git").mkdir()

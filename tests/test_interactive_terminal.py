@@ -19,8 +19,10 @@ def action_keys(count: int) -> list[ActionKey]:
     return [ActionKey(ActionId(f"task{index:02d}"), ContextId(())) for index in range(count)]
 
 
-@pytest.mark.parametrize("width", [40, 120, 160])
-@pytest.mark.parametrize("view", list(ViewState))
+@pytest.mark.parametrize("width,view", [
+    *((160, view) for view in ViewState),
+    *((width, view) for width in [40, 120] for view in [ViewState.TABLE, ViewState.LOGS_STDOUT]),
+])
 def test_inline_table_footer_advertises_keyboard_controls_only(monkeypatch, width, view):
     logger = ActionLoggerTable(action_keys(1))
     logger.state = view

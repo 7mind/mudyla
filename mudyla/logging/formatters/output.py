@@ -59,7 +59,7 @@ class OutputFormatter:
         """
         for stream in (sys.stdout, sys.stderr):
             if isinstance(stream, TextIOWrapper):
-                stream.reconfigure(errors="replace")
+                stream.reconfigure(errors="replace", newline="")
 
         self.teamcity_writer: Optional[TeamCityWriter] = standard_writer() if teamcity else None
         sink = self.teamcity_writer.sink(None) if self.teamcity_writer is not None else None

@@ -183,7 +183,7 @@ class TeamCityWriter:
             self._streams["stderr"] = self._streams["stdout"]
         for stream in (stdout, stderr):
             if isinstance(stream, TextIOWrapper):
-                stream.reconfigure(encoding="utf-8", errors="replace")
+                stream.reconfigure(encoding="utf-8", errors="replace", newline="")
 
     def record(self, message: ServiceMessage) -> None:
         with self.lock:

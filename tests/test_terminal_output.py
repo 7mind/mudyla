@@ -1,6 +1,8 @@
 """Foreground preservation and proven terminal ownership for verbose prefixes."""
 
 from io import StringIO
+import ctypes
+from ctypes import wintypes
 import os
 import sys
 from types import SimpleNamespace
@@ -14,6 +16,7 @@ from mudyla.dag.context import ContextId
 from mudyla.dag.graph import ActionId, ActionKey
 from mudyla.logging.action_logger_verbose import ActionLoggerVerbose
 from mudyla.logging.formatters import OutputFormatter
+from mudyla.logging import terminal_output
 from mudyla.logging.terminal_output import StreamState, same_terminal
 
 
@@ -125,7 +128,7 @@ def test_terminal_identity_distinguishes_shared_and_separate_ptys():
             os.close(descriptor)
 
 
-def test_windows_distinct_handles_do_not_imply_shared_console(monkeypatch):
+def test_windows_handle_identity_distinguishes_shared_and_separate_objects(monkeypatch):
     class Handle(TerminalCapture):
         def __init__(self, descriptor):
             super().__init__()
@@ -134,8 +137,19 @@ def test_windows_distinct_handles_do_not_imply_shared_console(monkeypatch):
         def fileno(self):
             return self.descriptor
 
-    monkeypatch.setattr(sys, "platform", "win32")
-    handles = {1: 100, 2: 100, 3: 200}
+    monkeypatch.setattr(terminal_output, "sys", SimpleNamespace(platform="win32"))
+    handles = {1: 2**40 + 100, 2: 2**40 + 101, 3: 2**40 + 200}
     monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=handles.__getitem__))
+
+    def compare(first, second):
+        return first in {handles[1], handles[2]} and second in {handles[1], handles[2]}
+
+    def load(name):
+        assert name == "kernelbase"
+        return SimpleNamespace(CompareObjectHandles=compare)
+
+    monkeypatch.setattr(ctypes, "WinDLL", load, raising=False)
     assert same_terminal(Handle(1), Handle(2))
     assert not same_terminal(Handle(1), Handle(3))
+    assert compare.argtypes == [wintypes.HANDLE, wintypes.HANDLE]
+    assert compare.restype == wintypes.BOOL

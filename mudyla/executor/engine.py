@@ -849,7 +849,7 @@ class ExecutionEngine:
 
         script_ext = ".sh" if version.language == "bash" else ".py"
         script_path = action_dir / f"script{script_ext}"
-        script_path.write_text(rendered.content, encoding="utf-8")
+        script_path.write_text(rendered.content, encoding="utf-8", newline="\n")
         script_path.chmod(0o755)
 
         stdout_path = action_dir / "stdout.log"
@@ -955,8 +955,8 @@ class ExecutionEngine:
         stdout_size = 0
         stderr_size = 0
 
-        with open(prepared.stdout_path, "w", encoding="utf-8") as stdout_file, open(
-            prepared.stderr_path, "w", encoding="utf-8"
+        with open(prepared.stdout_path, "w", encoding="utf-8", newline="") as stdout_file, open(
+            prepared.stderr_path, "w", encoding="utf-8", newline=""
         ) as stderr_file:
             # Unix: start_new_session=True creates a new process group, allowing us to
             # kill the entire process tree (including nix develop children) via os.killpg.

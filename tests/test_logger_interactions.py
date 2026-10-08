@@ -22,8 +22,10 @@ from mudyla.logging.formatters import OutputFormatter
 
 
 @pytest.mark.parametrize("mode", ["pure", "table"])
-@pytest.mark.parametrize("view", list(ViewState))
-@pytest.mark.parametrize("status", [TaskStatus.TBD, TaskStatus.RUNNING, TaskStatus.DONE])
+@pytest.mark.parametrize("view,status", [
+    *((view, TaskStatus.RUNNING) for view in ViewState),
+    *((view, status) for view in [ViewState.TABLE, ViewState.LOGS_STDOUT] for status in [TaskStatus.TBD, TaskStatus.DONE]),
+])
 def test_input_hint_and_handler_share_running_stdout_or_overview_eligibility(mode, view, status):
     key = ActionKey.from_name("work")
     output = OutputFormatter(no_color=True, compact=True)
