@@ -480,10 +480,13 @@ when the existing artifact reader parses fresh or restored results; final pure
 reporting therefore keeps types after ordinary run-directory cleanup. This internal
 annotation does not change artifact schemas or the `--out` aggregate.
 The live graph uses the exact pruned execution graph and shared task state.
-Its Sugiyama layout fixes ranks to scheduler order, inserts virtual vertices on long
-edges, reduces crossings with weighted medians and transpositions, and assigns
-coordinates with the [corrected Brandes–Köpf algorithm](https://arxiv.org/abs/2008.01252).
-The CLI solves this geometry and its routing channels once after pruning. Preparation,
+Its [interval channel routing](https://users.eecs.northwestern.edu/~haizhou/357/lec7.pdf)
+assigns each complete dependency to one vertical track in scheduler order. Overlapping
+intervals use separate tracks; markers share one column beside their labels, and
+routes turn only at their endpoints. Bounded track swaps reduce crossing
+edge pairs without claiming a global crossing optimum. Occupied rank cuts receive
+one connector row; unoccupied cuts receive none.
+The CLI solves this geometry and its routing tracks once after pruning. Preparation,
 live views and the final graph share the immutable solution; resizing wraps labels and
 maps cached connector rows without solving again. Narrow terminals list prerequisites
 with their declared strength and retainer instead of drawing overlapping lanes.
