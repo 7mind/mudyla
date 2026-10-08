@@ -106,7 +106,7 @@ def test_selection_background_covers_full_physical_node_row(width):
     assert len(selected_rows) > 1 if width < 100 else len(selected_rows) == 1
     for index, row in enumerate(rows):
         if index in selected_rows:
-            assert sum(segment.cell_length for segment in row) == width
+            assert sum(segment.cell_length for segment in row) == output.console.width
             assert all(segment.style is not None and segment.style.bgcolor is not None
                        and segment.style.bgcolor.get_truecolor() == (242, 242, 242) for segment in row)
             before = Text.assemble(*[(segment.text, segment.style or "") for segment in original_rows[index]])

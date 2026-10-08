@@ -133,13 +133,15 @@ def test_pure_static_table_plan_reuses_prefix_until_terminal_width_changes(monke
         return original()
 
     monkeypatch.setattr(logger, "_plan_section", plan)
+    initial_width = output.console.width
     before = logger._overview_prefix()
     logger.mark_running(keys[0])
     assert logger._overview_prefix() == before
-    assert calls == [100], "A static Plan must not rebuild when action status changes"
+    assert calls == [initial_width], "A static Plan must not rebuild when action status changes"
     output.console.width = 80
+    resized_width = output.console.width
     logger._overview_prefix()
-    assert calls == [100, 80]
+    assert calls == [initial_width, resized_width]
 
 
 @pytest.mark.parametrize("width", [100, 12, 8])

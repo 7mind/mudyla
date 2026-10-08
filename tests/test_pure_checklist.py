@@ -256,16 +256,25 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
 def test_checklist_bounds_active_action_and_latest_output(width, height):
     output = OutputFormatter(no_color=True, compact=True)
     output._console = Console(file=StringIO(), width=width, height=height, force_terminal=True)
-    keys = [ActionKey.from_name(f"task{i:02d}") for i in range(30)]
+    keys = [ActionKey.from_name("live25" if i == 25 else f"task{i:02d}") for i in range(30)]
     logger = ActionLoggerPure(keys, output, True)
     logger.mark_running(keys[25])
     logger.selected_index = 25
     logger.write_output(keys[25], "old\n" + "x" * 10000 + "LATEST", "stdout")
     stream = StringIO()
-    Console(file=stream, width=width, height=height).print(logger._render_checklist())
+    console = Console(file=stream, width=width, height=height)
+    console.print(logger._render_checklist())
     frame = stream.getvalue()
     assert len(frame.splitlines()) <= height
-    assert ("task25" if width >= 24 else "tas") in frame
+    assert all(Text(line).cell_len <= console.width for line in frame.splitlines())
+    selected = [line for line in frame.splitlines() if line.startswith("> ")]
+    assert len(selected) == 1
+    name = selected[0].split()[2]
+    if width >= 24:
+        assert name == keys[25].id.name
+    else:
+        assert name.endswith("…") and len(name[:-1]) >= 2
+        assert keys[25].id.name.startswith(name[:-1])
     assert "q" in frame
     assert "old" not in frame
     assert logger.tasks[keys[25]].latest.endswith("LATEST")
@@ -393,21 +402,22 @@ def test_dependency_tree_shares_only_exact_action_contexts(encoding):
     assert ("└" if encoding == "utf-8" else "`-") in result
 
 
-@pytest.mark.parametrize("option", ["--dry-run", "--list-actions"])
-def test_pure_information_commands_use_compact_rows(tmp_path, option):
+@pytest.mark.parametrize("option,encoding", [("--dry-run", "cp1252"), ("--list-actions", "utf-8")])
+def test_pure_information_commands_use_compact_rows(tmp_path, option, encoding):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
     definitions.mkdir(parents=True)
     (definitions / "actions.md").write_text("# action: shared\n\n```bash\ntrue\n```\n\n# action: build\n\nBuild the package.\n\n```bash\ndep action.shared\ntrue\n```\n")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONIOENCODING"] = encoding
     result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--no-color", option, ":build"],
-                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=5)
+                            cwd=tmp_path, env=env, capture_output=True, text=True, encoding=encoding, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "build" in result.stdout and "shared" in result.stdout
     assert not any(char in result.stdout for char in "┏┓┗┛┃━")
     if option == "--dry-run":
-        assert "goal" in result.stdout and "│" in result.stdout
+        assert "goal" in result.stdout and ("│" if encoding == "utf-8" else "|") in result.stdout
     else:
         assert "Build the package." in result.stdout
 
@@ -485,9 +495,9 @@ def test_parallel_edges_have_stable_strength_order_and_shared_context_identity()
     assert all(row.get_style_at_offset(output.console, row.plain.index("goal")).bold for row in goal_rows)
 
 
-@pytest.mark.parametrize("retain,strong", [(True, False), (False, False), (False, True)])
+@pytest.mark.parametrize("retain,strong,encoding", [(True, False, "utf-8"), (False, False, "utf-8"), (False, True, "cp1252")])
 @pytest.mark.parametrize("plan_options", [["--plan-tree"], ["--plan-dag"]])
-def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_path, retain, strong, plan_options):
+def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_path, retain, strong, encoding, plan_options):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
     definitions.mkdir(parents=True)
@@ -497,14 +507,18 @@ def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_pa
         ('mdl.retain()' if retain else 'pass') + '\n```\n\n'
         '# action: build\n\n```python\nmdl.soft("action.cache", "action.keep")\n' +
         ('mdl.dep("action.cache")\n' if strong else '') + 'print("BUILD_DONE")\n```\n')
-    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="160")
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="160",
+               PYTHONIOENCODING=encoding)
     result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--simple-log", *plan_options, ":build"],
-        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
+        cwd=tmp_path, env=env, capture_output=True, text=True, encoding=encoding, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     plan = result.stdout.split("Plan:", 1)[1].split("Actions:", 1)[0]
     assert ("cache (@global" in plan) == (retain or strong)
+    unicode = encoding == "utf-8"
     if retain or strong:
-        assert ("╎" if plan_options == ["--plan-dag"] else "╌") in plan.split("deps ready", 1)[0] and "soft" in plan
+        soft_edge = ("╎" if unicode else ":") if plan_options == ["--plan-dag"] else ("╌" if unicode else ".")
+        assert soft_edge in plan.split("deps ready", 1)[0] and "soft" in plan
     if strong:
-        assert ("│" if plan_options == ["--plan-dag"] else "├─") in plan.split("deps ready", 1)[0]
+        strong_edge = ("│" if unicode else "|") if plan_options == ["--plan-dag"] else ("├─" if unicode else "+-")
+        assert strong_edge in plan.split("deps ready", 1)[0]
     assert (tmp_path / "retainer-ran").exists() == (not strong)
