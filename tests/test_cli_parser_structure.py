@@ -174,9 +174,7 @@ class TestLoggerTerminalDetection:
 def test_explicit_dag_solver_rejects_non_dag_plans_before_discovery(plan, monkeypatch, capsys):
     cli = CLI()
     monkeypatch.setattr(cli, '_discover_markdown_files', lambda *args: pytest.fail('Conflicting plan reached discovery'))
-    with pytest.raises(SystemExit) as failure:
-        cli.run(['--plan', plan, '--plan-dag-solver', 'grid-auto', ':goal'])
-    assert failure.value.code == 2
+    assert cli.run(['--plan', plan, '--plan-dag-solver', 'grid-auto', ':goal']) == 2
     assert '--plan-dag-solver requires --plan dag' in capsys.readouterr().err
 
 

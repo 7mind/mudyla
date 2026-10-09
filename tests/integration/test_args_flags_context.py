@@ -22,7 +22,7 @@ class TestArgsFlagsContext:
             mdl.assert_goal_context(result, "build", f'at (none) with mode="{mode}", target=""')
         
         # compile (shared) + 2 builds = 3 actions
-        mdl.assert_in_output(result, "3 required action(s)")
+        mdl.assert_in_output(result, "3 actions with 0 retained, planned in")
 
     def test_flag_context_differentiation(self, mdl: MudylaRunner, clean_test_output):
         """Test that invocations with different flags are distinct contexts."""
@@ -42,7 +42,7 @@ class TestArgsFlagsContext:
         
         # Shared compile -> Shared build -> 2 tests
         # Actions: compile, build, test(true), test(false/default) = 4 actions
-        mdl.assert_in_output(result, "4 required action(s)")
+        mdl.assert_in_output(result, "4 actions with 0 retained, planned in")
 
     def test_independent_action_sharing(self, mdl: MudylaRunner, clean_test_output):
         """Test that actions not using args/flags are shared."""
@@ -58,7 +58,7 @@ class TestArgsFlagsContext:
         # And "independent" also doesn't use mode, so it's 1 action.
         # Total 2 actions.
         
-        mdl.assert_in_output(result, "2 required action(s)")
+        mdl.assert_in_output(result, "2 actions with 0 retained, planned in")
 
     def test_context_reporting(self, mdl: MudylaRunner, clean_test_output):
         """Test that context strings in output include args and flags."""

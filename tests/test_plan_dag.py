@@ -1,5 +1,7 @@
 """Explicit Plan presentation and connected dependency layout."""
 
+from tests.logger_fixtures import prepared_logger
+
 import os
 from io import BytesIO, StringIO, TextIOWrapper
 from itertools import combinations
@@ -19,8 +21,8 @@ from mudyla.cli import CLI
 from mudyla.dag.context import ContextId
 from mudyla.dag.display import build_display_edges
 from mudyla.dag.graph import ActionGraph, ActionKey, ActionNode, Dependency
-from mudyla.logging.action_logger_pure import ActionLoggerPure
-from mudyla.logging.action_logger_table import TaskStatus
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+from mudyla.logging.terminal_logger_table import TaskStatus
 from mudyla.logging.formatters import OutputFormatter
 from mudyla.logging.formatters.branches import BranchTheme
 from mudyla.logging.formatters.dag import DagLayout, build_dag_layout, execution_dag
@@ -34,9 +36,7 @@ def test_plan_options_are_builtin_flags(plan):
 
 
 def test_plan_rejects_unknown_presentation(capsys):
-    with pytest.raises(SystemExit) as error:
-        CLI().parser.parse_args(["--plan", "other"])
-    assert error.value.code == 2
+    assert CLI().run(["--plan", "other"]) == 2
     assert "invalid choice" in capsys.readouterr().err
 
 
@@ -151,7 +151,7 @@ def assert_independent_routes(layout: DagLayout) -> None:
 
 
 def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
-    import mudyla.cli as cli_module
+    import mudyla.logging.terminal_logger as logger_module
 
     definitions = Path(__file__).resolve().parents[1] / ".mdl" / "defs" / "interactive-demo.md"
     (tmp_path / ".git").mkdir()
@@ -160,14 +160,14 @@ def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
     (destination / "actions.md").write_text(definitions.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     layouts = []
-    original = cli_module.build_dag_layout
+    original = logger_module.build_dag_layout
 
     def capture(*args, **kwargs):
         layout = original(*args, **kwargs)
         layouts.append(layout)
         return layout
 
-    monkeypatch.setattr(cli_module, "build_dag_layout", capture)
+    monkeypatch.setattr(logger_module, "build_dag_layout", capture)
     assert CLI().run(["--without-nix", "--simple-log", "--dry-run", ":demo-interactive"]) == 0
     assert len(layouts) == 1
     layout = layouts[0]
@@ -197,7 +197,7 @@ def test_disconnected_components_group_navigation_without_changing_execution_ord
         lines, anchors = dag.visual_lines(console, console.options, lambda key, width: dag._label(key))
         assert "".join(segment.text for segment in lines[anchors[keys[1]].start - 1]).strip() == ""
         assert list(anchors) == presentation
-    logger = ActionLoggerPure(keys, output, False, graph=graph, dag_layout=layout, force_interactive=True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, False, graph=graph, dag_layout=layout, force_interactive=True)
     assert logger.action_keys == presentation
     logger.selected_index = 2
     assert logger._get_selected_action_key() == keys[1]
@@ -355,7 +355,7 @@ def test_explicit_table_plan_is_rendered_by_cli_modes(tmp_path, mode, dry):
 def test_pure_explicit_table_plan_remains_a_table_in_live_and_final_views(completed):
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=40))
-    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="table")
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_style="table")
     if completed:
         logger.stop_flag = True
         output.console.print(logger._build_renderable())
@@ -370,7 +370,7 @@ def test_pure_explicit_table_plan_remains_a_table_in_live_and_final_views(comple
 def test_pure_static_table_plan_reuses_prefix_until_terminal_width_changes(monkeypatch):
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=40))
-    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="table")
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_style="table")
     calls = []
     original = logger._plan_section
 
@@ -502,8 +502,8 @@ def test_complex_execution_plan_bounds_connector_rows_and_keeps_each_action_once
 
 
 def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(tmp_path, monkeypatch):
-    import mudyla.cli as cli_module
-    import mudyla.logging.action_logger_pure as pure_module
+    import mudyla.logging.terminal_logger as logger_module
+    import mudyla.logging.terminal_logger_pure as pure_module
 
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
@@ -527,9 +527,9 @@ def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(
         layouts.append(kwargs["layout"])
         return original_render(*args, **kwargs)
 
-    monkeypatch.setattr(cli_module, "execution_dag", render)
+    monkeypatch.setattr(logger_module, "execution_dag", render)
     monkeypatch.setattr(pure_module, "execution_dag", render)
-    original_start = ActionLoggerPure.start
+    original_start = PureTerminalLogger.start
 
     def start(logger):
         original_start(logger)
@@ -538,7 +538,7 @@ def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(
             logger.tasks[logger.action_keys[0]].status = status
             logger._action_lines()
 
-    monkeypatch.setattr(ActionLoggerPure, "start", start)
+    monkeypatch.setattr(PureTerminalLogger, "start", start)
     assert CLI().run(["--without-nix", ":work"]) == 0
     assert len(layouts) == 2 and layouts[0] is layouts[1]
     assert calls == {name: 1 for name in ["_allocate_routing", "_rasterize_routes"]}
@@ -605,11 +605,11 @@ def test_dag_width_encoding_and_status_updates_preserve_geometry_and_references(
 def test_live_dag_keeps_geometry_and_styles_edges_by_dependent_status(status):
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=100, force_terminal=True, color_system="standard"))
-    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="dag")
-    before = logger._plan_section().renderables[1]
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_style="dag")
+    before = logger._dag
     logger.tasks[keys[1]].status = status
     logger.tasks[keys[0]].status = TaskStatus.DONE
-    after = logger._plan_section().renderables[1]
+    after = logger._dag
     assert before.layout is after.layout
     expected_ready = status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}
     assert logger._plan_edge_style(keys[3]) == ("not dim" if expected_ready else "dim")
@@ -627,9 +627,11 @@ def test_unspecified_plan_matches_explicit_dag_and_retains_tree_alternative(comp
     frames = []
     for selection in [None, "dag", "tree"]:
         output = OutputFormatter(no_color=True, compact=compact, console=Console(file=StringIO(), width=100))
-        CLI()._visualize_execution_plan(graph, keys, ["package"], output, True, build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)),
-                                        display=build_display_edges(graph, tuple(keys), full=True),
-                                        **({"plan_style": selection} if selection else {}))
+        logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph,
+            plan_style=selection if selection is not None else "dag",
+            dag_layout=build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)))
+        plan = logger.static_plan
+        output.print(plan)
         frames.append(output.console.file.getvalue())
     cli = CLI()
     args = cli.parser.parse_args([])

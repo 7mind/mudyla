@@ -1,5 +1,7 @@
 """Execution-order display reduction preserves authoritative typed dependencies."""
 
+from tests.logger_fixtures import prepared_logger
+
 import pytest
 
 from mudyla.cli import CLI
@@ -25,9 +27,7 @@ def test_plan_display_defaults_to_minimized():
 
 @pytest.mark.parametrize('value', ['yes', '1', 'True', 'FALSE'])
 def test_plan_minimize_rejects_non_boolean_tokens(value, capsys):
-    with pytest.raises(SystemExit) as failure:
-        CLI().parser.parse_args(['--plan-minimize', value])
-    assert failure.value.code == 2
+    assert CLI().run(['--plan-minimize', value]) == 2
     assert 'expected true or false' in capsys.readouterr().err
 
 
@@ -124,14 +124,14 @@ def test_native_and_default_share_frozen_selection_and_original_ids():
 def test_narrow_minimized_references_keep_hidden_dependencies_and_readiness_uses_original_graph():
     from io import StringIO
     from rich.console import Console
-    from mudyla.logging.action_logger_pure import ActionLoggerPure
-    from mudyla.logging.action_logger_table import TaskStatus
+    from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+    from mudyla.logging.terminal_logger_table import TaskStatus
     from mudyla.logging.formatters import OutputFormatter
     keys = [ActionKey.from_name(name) for name in ('source', 'middle', 'goal')]
     sample = fixture('hidden-prerequisite', keys, [(1, Dependency(keys[0])), (2, Dependency(keys[0], soft=True, retainer_action=keys[1])),
                                                 (2, Dependency(keys[1]))], [2], 120)
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=8, no_color=True))
-    logger = ActionLoggerPure(keys, output, False, graph=sample.graph)
+    logger = prepared_logger(PureTerminalLogger, keys, output, False, graph=sample.graph, plan_minimize=True)
     logger.tasks[keys[1]].status = TaskStatus.RESTORED
     assert len(logger._dag.edges) == 2
     assert logger._tree_status(keys[2]).plain.strip() == '◌'
@@ -430,7 +430,7 @@ def test_auto_objective_failure_preserves_completed_attempts_without_launching_l
 
 @pytest.mark.parametrize('plan', ['tree', 'table'])
 def test_tree_minimization_and_full_table_bypass_dag_solver(tmp_path, monkeypatch, capsys, plan):
-    import mudyla.cli as cli_module
+    import mudyla.logging.terminal_logger as logger_module
     (tmp_path / '.git').mkdir()
     definitions = tmp_path / '.mdl' / 'defs'
     definitions.mkdir(parents=True)
@@ -459,14 +459,14 @@ pass
     from mudyla.logging.formatters import dag as dag_module
     monkeypatch.setattr(dag_module, 'create_solver', lambda *args, **kwargs: pytest.fail('Non-DAG plan invoked a solver'))
     selections = []
-    original = cli_module.build_display_edges
+    original = logger_module.build_display_edges
 
     def select(*args, **kwargs):
         value = original(*args, **kwargs)
         selections.append(value)
         return value
 
-    monkeypatch.setattr(cli_module, 'build_display_edges', select)
+    monkeypatch.setattr(logger_module, 'build_display_edges', select)
     plans = []
     for minimize in ('true', 'false'):
         assert CLI().run(['--without-nix', '--no-color', '--dry-run', '--plan', plan,

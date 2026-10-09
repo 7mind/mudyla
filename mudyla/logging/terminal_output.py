@@ -11,6 +11,59 @@ from ..dag.graph import ActionKey
 ControlState = Literal["text", "escape", "csi", "osc", "osc_escape", "string", "string_escape"]
 MAX_SGR_PARAMETER = 65535
 MAX_COLOR_FIELDS = 6
+MAX_LOG_CHARS = 4096
+
+
+@dataclass
+class LatestLine:
+    partial: str = ""
+    control: ControlState = "text"
+
+    def plain(self, value: str) -> str:
+        result = []
+        for char in value:
+            if self.control == "text":
+                if char == "\x1b":
+                    self.control = "escape"
+                elif char == "\x9b":
+                    self.control = "csi"
+                elif char == "\x9d":
+                    self.control = "osc"
+                elif char in "\x90\x98\x9e\x9f":
+                    self.control = "string"
+                else:
+                    result.append(char)
+            elif self.control == "escape":
+                if char == "[":
+                    self.control = "csi"
+                elif char == "]":
+                    self.control = "osc"
+                elif char in "PX^_":
+                    self.control = "string"
+                elif char != "\x1b" and not " " <= char <= "/":
+                    self.control = "text"
+            elif self.control == "csi":
+                if char == "\x1b":
+                    self.control = "escape"
+                elif "@" <= char <= "~":
+                    self.control = "text"
+            elif self.control in {"osc", "string"}:
+                if char == "\x9c" or (self.control == "osc" and char == "\x07"):
+                    self.control = "text"
+                elif char == "\x1b":
+                    self.control = "osc_escape" if self.control == "osc" else "string_escape"
+            elif char in "\\\x9c" or (self.control == "osc_escape" and char == "\x07"):
+                self.control = "text"
+            elif char != "\x1b":
+                self.control = "osc" if self.control == "osc_escape" else "string"
+        return "".join(result)
+
+    def consume(self, value: str) -> str | None:
+        parts = value.replace("\r", "\n").split("\n")
+        parts[0] = self.partial + parts[0]
+        latest = next((part[-MAX_LOG_CHARS:] for part in reversed(parts) if part), None)
+        self.partial = parts[-1][-MAX_LOG_CHARS:]
+        return latest
 
 
 def same_terminal(first: TextIO, second: TextIO) -> bool:

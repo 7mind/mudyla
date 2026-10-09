@@ -47,13 +47,15 @@ def summary_field(name: str, value: Text) -> KeyValueRow:
 class KeyValueView:
     rows: list[KeyValueRow]
     left_padding: int = 0
+    key_width: Optional[int] = None
 
     def visual_lines(self, console: Console, width: int) -> tuple[list[Text], list[tuple[int, int]]]:
         """Return wrapped rows and source positions for the shared detail scroller."""
         lines: list[Text] = []
         anchors: list[tuple[int, int]] = []
-        key_width = min(MAX_KEY_CELLS, max(1, width // 3),
-                        max((row.key.cell_len + 1 for row in self.rows if row.value is not None), default=0))
+        key_width = (min(self.key_width, max(1, width // 3)) if self.key_width is not None else
+                     min(MAX_KEY_CELLS, max(1, width // 3),
+                         max((row.key.cell_len + 1 for row in self.rows if row.value is not None), default=0)))
         type_width = max((row.type_name.cell_len for row in self.rows if row.type_name is not None), default=0)
 
         def encoded(text: Text) -> Text:
@@ -84,7 +86,8 @@ class KeyValueView:
             value = encoded(row.value)
             if key.cell_len > key_width:
                 append_parts(index, key, indent, 0)
-                prefix = indent + Text(" " * min(INDENT_CELLS, max(0, width - indent.cell_len - 1)))
+                padding = key_width + INDENT_CELLS if self.key_width is not None else INDENT_CELLS
+                prefix = indent + Text(" " * min(padding, max(0, width - indent.cell_len - 1)))
             else:
                 prefix = indent + key
                 prefix.pad_right(key_width - key.cell_len + INDENT_CELLS)
@@ -187,7 +190,7 @@ class ContextsView:
                 for name, axis_value in context.axis_values:
                     axes.append(axis_field(name, axis_value))
             else:
-                axes.append(Text("(none)"))
+                axes.append(Text("global", style="dim"))
             arguments: list[Text] = []
             if context.args:
                 for name, value in context.args:

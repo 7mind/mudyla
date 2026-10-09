@@ -1,5 +1,7 @@
 """Shared action controls exercised through native terminal sessions."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import StringIO
 import os
 import json
@@ -16,8 +18,8 @@ from rich.text import Text
 from tests.terminal_capture import terminal_text
 
 from mudyla.dag.graph import ActionKey
-from mudyla.logging.action_logger_table import ActionLoggerTable, TaskStatus, ViewState
-from mudyla.logging.action_logger_pure import ActionLoggerPure
+from mudyla.logging.terminal_logger_table import TableTerminalLogger, TaskStatus, ViewState
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
 from mudyla.logging.formatters import OutputFormatter
 
 
@@ -30,7 +32,7 @@ def test_input_hint_and_handler_share_running_stdout_or_overview_eligibility(mod
     key = ActionKey.from_name("work")
     console = Console(file=StringIO(), width=160, height=24, force_terminal=True, no_color=True)
     output = OutputFormatter(no_color=True, compact=True, console=console)
-    logger = ActionLoggerPure([key], output, True) if mode == "pure" else ActionLoggerTable([key], no_color=True, console=console)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True) if mode == "pure" else prepared_logger(TableTerminalLogger, [key], no_color=True, console=console)
     logger.state = view
     logger.tasks[key].status = status
     eligible = status == TaskStatus.RUNNING and view in {ViewState.TABLE, ViewState.LOGS_STDOUT}
@@ -46,7 +48,7 @@ def test_input_completion_feedback_preserves_ordinary_navigation(mode, view, end
     key = ActionKey.from_name("work")
     console = Console(file=StringIO(), width=120, force_terminal=True, no_color=True)
     output = OutputFormatter(no_color=True, compact=True, console=console)
-    logger = ActionLoggerPure([key], output, True) if mode == "pure" else ActionLoggerTable([key], no_color=True, console=console)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True) if mode == "pure" else prepared_logger(TableTerminalLogger, [key], no_color=True, console=console)
     logger.mark_done(key, .1)
     logger.mark_execution_complete()
     logger.state = view
@@ -112,7 +114,7 @@ def test_nonstdout_input_shortcut_does_not_capture_navigation(terminal_project, 
 def test_pure_json_long_values_remain_reachable_at_five_rows(tmp_path, no_color, view):
     output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True, no_color=no_color))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     logger.mark_done(key, .1)
     (tmp_path / "output.json").write_text(json.dumps({"description": {
@@ -133,7 +135,7 @@ def test_pure_json_long_values_remain_reachable_at_five_rows(tmp_path, no_color,
 def test_failed_metadata_prioritizes_diagnosis_in_five_rows(tmp_path):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True, no_color=True))
     key = ActionKey.from_name("failed")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     logger.mark_failed(key, .1)
     (tmp_path / "meta.json").write_text(json.dumps({"action_name": "failed", "success": False,
@@ -176,7 +178,7 @@ def test_large_metadata_values_keep_live_navigation_and_original_json(terminal_p
 def test_pure_json_toggle_preserves_original_text_and_independent_positions(tmp_path, view, filename):
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     logger.mark_done(key, .1)
     original = '{\n "lexical": 1.2300,\n "escaped": "\\u69cb\\u7bc9",\n' + ',\n'.join(
@@ -211,7 +213,7 @@ def test_pure_json_toggle_preserves_original_text_and_independent_positions(tmp_
 def test_pure_incomplete_json_preserves_raw_text_until_refresh(tmp_path):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=60, height=10, force_terminal=True))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     path = tmp_path / "output.json"
     path.write_text('{"partial":')
@@ -229,7 +231,7 @@ def test_pure_incomplete_json_preserves_raw_text_until_refresh(tmp_path):
 def test_pure_sections_keep_keyboard_help_last_and_selectors_under_heading(tmp_path, view):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=12, force_terminal=True, no_color=True))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     (tmp_path / "stdout.log").write_text("LOG_CONTENT\n")
     (tmp_path / "output.json").write_text('{"value": {"type":"int", "value":42}}')
@@ -294,14 +296,15 @@ def test_force_interactive_overrides_terminal_capability(terminal_project, mode,
 @pytest.mark.parametrize("view", [ViewState.TABLE, ViewState.LOGS_STDOUT])
 def test_table_small_frames_do_not_fill_the_terminal(tmp_path, monkeypatch, view):
     keys = [ActionKey.from_name(name) for name in ["base", "work"]]
-    logger = ActionLoggerTable(keys, no_color=True,
+    logger = prepared_logger(TableTerminalLogger, keys, no_color=True,
                                console=Console(file=StringIO(), width=120, height=60, force_terminal=True, no_color=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (120, 60))
     logger.mark_running(keys[0], tmp_path)
     (tmp_path / "stdout.log").write_text("FIRST_LOG_LINE\nSECOND_LOG_LINE\n")
     logger.state = view
     lines = logger.console.render_lines(logger._build_renderable(), pad=False)
-    assert len(lines) <= 9, "Short table/detail frames must leave preceding run information visible"
+    summary_rows = len(logger.console.render_lines(logger.planning_summary, pad=False)) if view == ViewState.TABLE else 0
+    assert len(lines) <= 9 + summary_rows, "Short table/detail frames must leave preceding run information visible"
     text = "\n".join("".join(segment.text for segment in line) for line in lines)
     assert "base" in text and ("work" in text if view == ViewState.TABLE else "SECOND_LOG_LINE" in text)
 
@@ -500,7 +503,7 @@ def test_pure_overview_contains_the_complete_cli_run_information(terminal_projec
     markers = ["Using Nix: No (disabled with --without-nix)", str(tmp_path),
                "Using default axes:", "platform:local", "definition file(s)",
                "Goal should start with ':'", "Contexts:", "@global", 'message="CONTEXT_ONE"',
-               'message="CONTEXT_TWO"', "with", "Goals:", "Execution mode:", "Built plan graph",
+               'message="CONTEXT_TWO"', "with", "Goals:", "Execution mode:",
                "Continuing from previous run:", "previous-run", "Run ID:", run_id]
     assert all("".join(marker.split()) in "".join(prelude.split()) for marker in markers), prelude
     missing = [marker for marker in markers if "".join(marker.split()) not in "".join(overview.split())]
@@ -650,7 +653,7 @@ def test_closed_child_stdin_reports_delivery_error_without_failing_action(termin
 def test_tiny_detail_input_editor_remains_visible(tmp_path):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     (tmp_path / "stdout.log").write_text("\n".join(f"LINE_{n:03d}" for n in range(20)))
     logger.state = ViewState.LOGS_STDOUT
@@ -667,7 +670,7 @@ def test_tiny_detail_input_editor_remains_visible(tmp_path):
 def test_input_footer_scrolls_to_cursor_without_changing_delivery(width, text):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=5, force_terminal=True))
     key = ActionKey.from_name("long-action-name")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key)
     logger._handle_key_table("i")
     for char in text:
@@ -696,7 +699,7 @@ def test_blocked_child_input_writer_does_not_block_controls():
     engine._running_processes = {key: running}
     engine._processes_lock = threading.Lock()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO()))
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     engine._current_logger = logger
     try:
         assert engine._send_action_input(key, "x" * 1000000) is None
@@ -742,7 +745,7 @@ def test_input_delivery_stops_when_parent_exits_with_descendant_holding_pipe(tmp
     engine._running_processes = {key: running}
     engine._processes_lock = threading.Lock()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO()))
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     engine._current_logger = logger
     try:
         deadline = time.monotonic() + 3
@@ -845,7 +848,7 @@ def test_forced_rendering_with_redirected_stdin_does_not_keep_open(tmp_path, mod
 def test_pure_detail_fills_resized_viewport_and_keeps_following(tmp_path):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=30, force_terminal=True))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     (tmp_path / "stdout.log").write_text("\n".join(f"LINE_{n:03d}" for n in range(100)))
     logger.state = ViewState.LOGS_STDOUT
@@ -866,7 +869,7 @@ def test_pure_detail_fills_resized_viewport_and_keeps_following(tmp_path):
 def test_paused_log_position_survives_rewrap_and_new_output(tmp_path):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=24, force_terminal=True))
     key = ActionKey.from_name("work")
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     logger.mark_running(key, tmp_path)
     log_path = tmp_path / "stdout.log"
     log_path.write_text("\n".join(f"LOG_{n:03d} " + "0123456789" * 16 for n in range(180)))

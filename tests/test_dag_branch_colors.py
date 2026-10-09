@@ -1,13 +1,15 @@
 """Branch hue identity and execution-state intensity."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import StringIO
 
 from rich.console import Console
 from rich.style import Style
 
 from mudyla.dag.graph import ActionKey, Dependency
-from mudyla.logging.action_logger_pure import ActionLoggerPure
-from mudyla.logging.action_logger_table import TaskStatus
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+from mudyla.logging.terminal_logger_table import TaskStatus
 from mudyla.logging.formatters import OutputFormatter
 from mudyla.logging.terminal_background import BackgroundProbe
 from layout_graphs import fixture
@@ -20,7 +22,7 @@ def branch_logger():
         [(target, Dependency(keys[source])) for source, target in endpoints], [6], 120)
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=120, height=30, force_terminal=True,
                               color_system='truecolor', no_color=False))
-    logger = ActionLoggerPure(keys, output, True, graph=sample.graph)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=sample.graph)
     logger._background_probe = BackgroundProbe(0)
     logger._background_probe.background = (20, 20, 20)
     return logger, keys

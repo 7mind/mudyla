@@ -4,7 +4,6 @@ from pathlib import Path
 import json
 import time
 from typing import TYPE_CHECKING, Literal, Optional, cast
-import unicodedata
 
 from rich.align import Align
 from rich.console import Group, RenderableType
@@ -13,86 +12,63 @@ from rich.syntax import Syntax
 from rich.style import Style
 from rich.text import Text
 
-from ..dag.graph import ActionGraph, ActionKey
-from ..dag.display import build_display_edges
-from ..dag.solver.model import DisplayEdges
-from .formatters import OutputFormatter
+from ..dag.graph import ActionKey
 from .formatters.details import JsonValue, KeyValueRow, KeyValueView, action_label, context_label, literal_text, metadata_view, output_view
-from .formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
-from .formatters.dag import DagLayout, build_dag_layout, dag_section, execution_dag
+from .formatters.plan import execution_table, execution_tree, sharing_counts, tree_section
+from .formatters.dag import dag_section, execution_dag
 from .formatters.branches import BranchTheme
 from .terminal_background import LIGHT_BACKGROUND_THRESHOLD, luminance
 from .formatters.sections import heading, section
-from .action_logger_table import ActionLoggerTable, ScrollState, TaskStatus, ViewState
+from .terminal_logger_table import TableTerminalLogger, ScrollState, TaskStatus, ViewState
+from .terminal_logger import LoggerMode
 from .formatters.failure import legacy_failure
 from .formatters.symbols import StatusSymbol
+from .terminal_output import LatestLine
 
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult
 
-AnsiState = Literal["text", "escape", "csi", "osc", "osc_escape", "string", "string_escape"]
-MAX_LOG_CHARS = 4096
 TIME_COLUMN_WIDTH = 9
 CURSOR_WIDTH = 2
 
 
-class ActionLoggerPure(ActionLoggerTable):
+class PureTerminalLogger(TableTerminalLogger):
     """Shared action navigation with a borderless checklist and detail views."""
 
     OVERVIEW_BOTTOM_ROWS = 0
     CONTENT_HORIZONTAL_PADDING = 0
     WRAP_HIGHLIGHTED_CONTENT = True
+    MODE = LoggerMode.PURE
 
-    def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool,
-                 *, keep_running: bool = False, fullscreen: bool = False, show_dirs: bool = False,
-                 action_dirs: Optional[dict[str, str]] = None, run_directory: Optional[Path] = None,
-                 force_interactive: bool = False, run_info: Optional[RenderableType] = None,
-                 graph: Optional[ActionGraph] = None, plan_style: PlanStyle = "dag",
-                 dag_layout: Optional[DagLayout] = None, plan_display: Optional[DisplayEdges] = None) -> None:
-        display_keys = action_keys
-        if graph is not None and plan_style == "dag":
-            if dag_layout is None:
-                dag_layout = build_dag_layout(graph, action_keys, display=plan_display)
-            if plan_display is None:
-                plan_display = dag_layout.display
-            assert dag_layout.display is plan_display
-            display_keys = list(dag_layout.keys)
-        elif graph is not None and plan_style == "tree" and plan_display is None:
-            plan_display = build_display_edges(graph, tuple(action_keys), full=False)
-        super().__init__(display_keys, no_color=output.no_color, use_short_ids=use_short_ids,
-                         keep_running=keep_running, fullscreen=fullscreen, show_dirs=show_dirs, action_dirs=action_dirs,
-                         run_directory=run_directory, run_info=run_info, console=output.console,
-                         force_interactive=force_interactive)
-        if self.console is not output.console:
-            self._output = OutputFormatter(no_color=output.no_color, compact=output.compact, console=self.console)
-        else:
-            self.console = output.console
-            self._output = output
-        self._action_formatter = self._output.action
-        self._context_formatter = self._output.context
+    def _action_order(self) -> list[ActionKey]:
+        assert self.execution_order is not None
+        if self.plan_style == "dag":
+            assert self.layout is not None and self.layout.display is self.display
+            return list(self.layout.keys)
+        return self.execution_order
+
+    def _initialize_actions(self) -> None:
+        assert self.execution_order is not None and self.graph is not None
+        super()._initialize_actions()
         self._completed = 0
         self._open_line: Optional[tuple[ActionKey, str]] = None
-        self._escape_states: dict[tuple[ActionKey, str], AnsiState] = {}
-        self._partial_lines: dict[tuple[ActionKey, str], str] = {}
-        self._interactive = force_interactive or (self.console.is_terminal and not self.console.is_dumb_terminal)
-        self._graph = graph
-        self._plan_style = plan_style
-        self._plan_display = plan_display
+        self._latest_lines: dict[tuple[ActionKey, str], LatestLine] = {}
+        self._interactive = self.force_interactive or (self.console.is_terminal and not self.console.is_dumb_terminal)
+        self._graph = self.graph
+        self._plan_style = self.plan_style
+        self._plan_display = self.display
         self._tree_frame_time = time.time()
-        self._sharing_counts = sharing_counts(graph, action_keys, [key.id.name for key in graph.goals]) if graph is not None else {}
+        self._sharing_counts = sharing_counts(self.graph, self.execution_order, [key.id.name for key in self.graph.goals])
         self._dag = None
-        if graph is not None and plan_style == "dag":
-            assert dag_layout is not None
-            self._dag = execution_dag(graph, action_keys, self._output.context, use_short_ids, self._sharing_counts,
-                                      self._tree_status, self._plan_edge_style, self._branch_theme, layout=dag_layout)
+        if self.plan_style == "dag":
+            assert self.layout is not None
+            self._dag = execution_dag(self.graph, self.execution_order, self.output.context, self.use_short_ids, self._sharing_counts,
+                                      self._tree_status, self._plan_edge_style, self._branch_theme, layout=self.layout)
         self._raw_json_views: set[tuple[ActionKey, ViewState]] = set()
         self._static_snapshot_printed = False
 
     def _text(self, value: str, style: str) -> Text:
-        plain = Text.from_ansi(value).plain
-        plain = "".join(char for char in plain if char in "\n\t" or unicodedata.category(char) not in {"Cc", "Cs"})
-        plain = plain.encode(self.console.encoding, errors="replace").decode(self.console.encoding)
-        return Text(plain, style=style)
+        return self._output.display_text(value, style)
 
     def _label(self, action_key: ActionKey) -> str:
         return self._label_text(action_key).plain
@@ -211,48 +187,7 @@ class ActionLoggerPure(ActionLoggerTable):
         return self._render_visual_lines(task, [(None, line) for line in lines], anchors, 0, False)
 
     def _stream_text(self, owner: tuple[ActionKey, str], value: str) -> str:
-        state = self._escape_states.get(owner, "text")
-        result = []
-        for char in value:
-            if state == "text":
-                if char == "\x1b":
-                    state = "escape"
-                elif char == "\x9b":
-                    state = "csi"
-                elif char == "\x9d":
-                    state = "osc"
-                elif char in "\x90\x98\x9e\x9f":
-                    state = "string"
-                else:
-                    result.append(char)
-            elif state == "escape":
-                if char == "[":
-                    state = "csi"
-                elif char == "]":
-                    state = "osc"
-                elif char in "PX^_":
-                    state = "string"
-                elif char != "\x1b" and not " " <= char <= "/":
-                    state = "text"
-            elif state == "csi":
-                if char == "\x1b":
-                    state = "escape"
-                elif "@" <= char <= "~":
-                    state = "text"
-            elif state in {"osc", "string"}:
-                if char == "\x9c" or (state == "osc" and char == "\x07"):
-                    state = "text"
-                elif char == "\x1b":
-                    state = "osc_escape" if state == "osc" else "string_escape"
-            elif char in "\\\x9c" or (state == "osc_escape" and char == "\x07"):
-                state = "text"
-            elif char != "\x1b":
-                state = "osc" if state == "osc_escape" else "string"
-        if state == "text":
-            self._escape_states.pop(owner, None)
-        else:
-            self._escape_states[owner] = state
-        return "".join(result)
+        return self._latest_lines.setdefault(owner, LatestLine()).plain(value)
 
     def show_failure(self, action_key: ActionKey, result: "ActionResult", run_directory: Path, suppress_output: bool) -> None:
         legacy_failure(self._output, result, run_directory, suppress_output, True)
@@ -308,10 +243,7 @@ class ActionLoggerPure(ActionLoggerTable):
             duration = state.duration if state.duration is not None else now - state.start_time if state.start_time is not None else None
             elapsed = self._format_duration(duration) if duration is not None else "-"
             line.append(f" {elapsed:>{time_width}}: ", style="dim")
-            if state.latest:
-                line.append_text(self._text(state.latest, "red" if state.stream == "stderr" else ""))
-            else:
-                line.append("<empty>", style="dim")
+            line.append_text(self._output.latest_message(state.latest, state.stream))
             line.truncate(max(1, width - 1), overflow=overflow)
             lines.append(line)
         return lines
@@ -366,8 +298,8 @@ class ActionLoggerPure(ActionLoggerTable):
             available = width - label.cell_len - 1
             task = self.tasks[key]
             if available > 0:
-                preview = (self._text(task.latest, "red not bold" if task.stream == "stderr" else "not bold")
-                           if task.latest else self._text("<empty>", "dim not bold"))
+                preview = self._output.latest_message(task.latest, task.stream)
+                preview.stylize("not bold")
                 preview.truncate(available, overflow="crop" if options.ascii_only else "ellipsis")
                 label.append(" ")
                 label.append_text(preview)
@@ -436,14 +368,15 @@ class ActionLoggerPure(ActionLoggerTable):
         self._tree_frame_time = time.time()
         if self._plan_style == "dag":
             assert self._dag is not None
-            return dag_section(self._dag, self._output.symbols)
+            return dag_section(self._dag, self._output.symbols, toolbar=self.planning_summary)
         if self._plan_style == "table":
             return section("Plan:", execution_table(self._graph, self.action_keys, self._output.context,
                            self.use_short_ids, self._sharing_counts, self.console.options.ascii_only), None, None)
         assert self._plan_style == "tree"
         assert self._plan_display is not None
         return tree_section(execution_tree(self._graph, self.action_keys, self._output.context, self.use_short_ids,
-                                           self._sharing_counts, self._tree_status, display=self._plan_display), self._output.symbols)
+                                          self._sharing_counts, self._tree_status, display=self._plan_display), self._output.symbols,
+                            toolbar=self.planning_summary)
 
     def _preparation_renderable(self) -> RenderableType:
         prefix = super()._preparation_renderable() if self.fullscreen else Group()
@@ -459,6 +392,8 @@ class ActionLoggerPure(ActionLoggerTable):
         if self._graph is not None and self._plan_style == "tree":
             dynamic.extend([self._plan_section(), Text("")])
         dynamic.append(heading("Actions:"))
+        if self.planning_summary is not None:
+            dynamic.append(self.planning_summary)
         lines = self.console.render_lines(Group(*dynamic), self.console.options.update(width=width), pad=False)
         rendered = prefix + [[Segment(segment.text.encode(self.console.encoding, errors="replace").decode(self.console.encoding), segment.style, segment.control)
                                           for segment in line] for line in lines]
@@ -498,8 +433,8 @@ class ActionLoggerPure(ActionLoggerTable):
                     if self._dag is not None:
                         rows, _ = self._action_lines()
                         dag_actions = Segments([segment for row in rows for segment in [*row, Segment.line()]])
-                        return section("Actions:", dag_actions, None, summary)
-                    actions = section("Actions:", Group(*self._action_rows()), None, summary)
+                        return section("Actions:", dag_actions, self.planning_summary, summary)
+                    actions = section("Actions:", Group(*self._action_rows()), self.planning_summary, summary)
                     return Group(self._plan_section(), Text(""), actions) if self._graph is not None else actions
                 content = self._overview_content()
                 directory_path = self._overview_directory()
@@ -535,8 +470,7 @@ class ActionLoggerPure(ActionLoggerTable):
             self.stop_flag = True
             self.mark_execution_complete()
             self._close_output_line()
-            self._escape_states.clear()
-            self._partial_lines.clear()
+            self._latest_lines.clear()
             if not self._interactive and self._graph is not None and not self._static_snapshot_printed:
                 self._static_snapshot_printed = True
                 self.console.print(self._build_renderable())
@@ -545,8 +479,7 @@ class ActionLoggerPure(ActionLoggerTable):
         with self.lock:
             if duration is not None:
                 for stream in ("stdout", "stderr"):
-                    self._escape_states.pop((action_key, stream), None)
-                    self._partial_lines.pop((action_key, stream), None)
+                    self._latest_lines.pop((action_key, stream), None)
             if self._interactive:
                 return
             self._close_output_line()
@@ -555,8 +488,8 @@ class ActionLoggerPure(ActionLoggerTable):
             text.append_text(self._label_text(action_key))
             if duration is not None:
                 self._completed += 1
-                self._escape_states.pop((action_key, "stdout"), None)
-                self._escape_states.pop((action_key, "stderr"), None)
+                self._latest_lines.pop((action_key, "stdout"), None)
+                self._latest_lines.pop((action_key, "stderr"), None)
                 text.append(f"  {self._format_duration(duration)}  [{self._completed}/{len(self.action_keys)}]", style="dim")
             self.console.print(text)
 
@@ -580,13 +513,11 @@ class ActionLoggerPure(ActionLoggerTable):
         with self.lock:
             owner = (action_key, stream)
             decoded = self._stream_text(owner, text)
-            if self._interactive:
-                parts = decoded.replace("\r", "\n").split("\n")
-                parts[0] = self._partial_lines.get(owner, "") + parts[0]
-                latest = next((part[-MAX_LOG_CHARS:] for part in reversed(parts) if part), self.tasks[action_key].latest)
-                self._partial_lines[owner] = parts[-1][-MAX_LOG_CHARS:]
+            latest = self._latest_lines[owner].consume(decoded)
+            if latest is not None:
                 self.tasks[action_key].latest = latest
-                self.tasks[action_key].stream = stream
+            self.tasks[action_key].stream = stream
+            if self._interactive:
                 return
             for part in decoded.splitlines(keepends=True):
                 complete = part.endswith("\n")

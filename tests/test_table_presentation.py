@@ -1,5 +1,7 @@
 """Table presentation preserves preparation, compact columns, and terminal colors."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import StringIO
 import re
 
@@ -9,13 +11,34 @@ from rich.text import Text
 
 from mudyla.cli import CLI
 from mudyla.dag.graph import ActionKey
-from mudyla.logging.action_logger_table import ActionLoggerTable
+from mudyla.logging.terminal_logger_table import TableTerminalLogger
 from mudyla.logging.terminal_background import BackgroundProbe
+from mudyla.logging.retainer_display import PlanningFacts
+
+
+@pytest.mark.parametrize("width,height,show_dirs", [(40, 12, False), (40, 12, True),
+    (80, 24, False), (120, 30, False)])
+def test_table_reserves_all_wrapped_planning_summary_rows(monkeypatch, width, height, show_dirs):
+    keys = [ActionKey.from_name(f"task{index}") for index in range(60)]
+    logger = prepared_logger(TableTerminalLogger, keys, show_dirs=show_dirs,
+        console=Console(file=StringIO(), width=width, height=height, force_terminal=True))
+    logger.planning_summary = PlanningFacts(12.8, frozenset(), len(keys)).summary()
+    monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, height))
+    logger.selected_index = 45
+    summary_rows = logger.console.render_lines(logger.planning_summary, pad=False)
+    assert len(summary_rows) == (2 if width == 40 else 1)
+    lines = rendered_lines(logger)
+    assert len(lines) <= height
+    text = "\n".join(line.plain for line in lines)
+    assert "task45" in text
+    assert "q kill" in lines[-1].plain
+    start, end = logger._table_window()
+    assert end - start == height - logger.TABLE_FRAME_ROWS - len(summary_rows) - int(show_dirs and width < 100)
 
 
 def table_logger(monkeypatch, width):
     keys = [ActionKey.from_name(name) for name in ["demo-prepare", "demo-build", "demo-check"]]
-    logger = ActionLoggerTable(keys, console=Console(file=StringIO(), width=width, height=24, force_terminal=True,
+    logger = prepared_logger(TableTerminalLogger, keys, console=Console(file=StringIO(), width=width, height=24, force_terminal=True,
                                                     color_system="truecolor", no_color=False, highlight=False))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, 24))
     for key in keys:
@@ -128,7 +151,7 @@ def test_static_table_keeps_contextual_goals_and_dependency_kinds():
 @pytest.mark.parametrize("height", [6, 8, 12])
 def test_table_directory_and_controls_fit_in_viewport(monkeypatch, height):
     keys = [ActionKey.from_name(f"action-{index:03d}") for index in range(100)]
-    logger = ActionLoggerTable(keys, show_dirs=True,
+    logger = prepared_logger(TableTerminalLogger, keys, show_dirs=True,
                                console=Console(file=StringIO(), width=40, height=height, force_terminal=True, no_color=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (40, height))
     logger.selected_index = 50
@@ -144,7 +167,7 @@ def test_live_table_distinguishes_same_action_in_different_contexts(monkeypatch)
     from mudyla.logging.formatters.details import context_label
 
     keys = [ActionKey(ActionId("work"), ContextId(axis_values=(("mode", value),))) for value in ["fast", "slow"]]
-    logger = ActionLoggerTable(keys,
+    logger = prepared_logger(TableTerminalLogger, keys,
                                console=Console(file=StringIO(), width=120, height=24, force_terminal=True, no_color=False))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (120, 24))
     lines = rendered_lines(logger)
@@ -166,7 +189,7 @@ def test_long_action_labels_preserve_status_metrics_and_context(monkeypatch, wid
 
     keys = [ActionKey(ActionId("compile-library-with-a-deliberately-long-action-identifier"),
                       ContextId(axis_values=(("flavor", value),))) for value in ["alpha", "beta"]]
-    logger = ActionLoggerTable(keys, show_dirs=show_dirs, use_short_ids=False,
+    logger = prepared_logger(TableTerminalLogger, keys, show_dirs=show_dirs, use_short_ids=False,
                                console=Console(file=StringIO(), width=width, height=24, force_terminal=True, no_color=False))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, 24))
     for key in keys:

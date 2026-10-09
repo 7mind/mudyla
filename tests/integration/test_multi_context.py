@@ -31,7 +31,7 @@ class TestMultiContext:
         mdl.assert_in_output(result, "create-directory")
 
         # Verify 3 actions (1 shared create-directory + 2 conditional-build)
-        mdl.assert_in_output(result, "3 required action(s)")
+        mdl.assert_in_output(result, "3 actions with 0 retained, planned in")
 
     def test_context_inheritance_for_dependencies(self, mdl: MudylaRunner, clean_test_output):
         """Test that dependencies get their own reduced context.
@@ -86,7 +86,7 @@ class TestMultiContext:
 
         # Verify unification occurred - should only have 2 actions
         # (1 shared create-directory with default context + 1 conditional-build)
-        mdl.assert_in_output(result, "2 required action(s)")
+        mdl.assert_in_output(result, "2 actions with 0 retained, planned in")
 
         # conditional-build only cares about build-mode
         mdl.assert_in_output(result, "build-mode:release")
@@ -212,7 +212,7 @@ class TestMultiContextEdgeCases:
 
         # With reduced contexts: 3 actions (1 shared generate-sources + 2 platform-build)
         # generate-sources gets empty/default context since it has no axis conditions
-        mdl.assert_in_output(result, "3 required action(s)")
+        mdl.assert_in_output(result, "3 actions with 0 retained, planned in")
 
         # Both platform-build contexts should appear
         mdl.assert_in_output(result, "cross-platform:jvm")
@@ -254,7 +254,7 @@ class TestTransitiveContextReduction:
         ])
 
         # 12 actions total (saved 2 by sharing)
-        mdl.assert_in_output(result, "12 required action(s)")
+        mdl.assert_in_output(result, "12 actions with 0 retained, planned in")
 
         # Global context for fetch-deps (no axes)
         # fetch-deps is a dependency, not a goal, so it appears in tables without # format
@@ -285,7 +285,7 @@ class TestTransitiveContextReduction:
         ])
 
         # 23 actions total (saved 5 by sharing)
-        mdl.assert_in_output(result, "23 required action(s)")
+        mdl.assert_in_output(result, "23 actions with 0 retained, planned in")
 
         # Global context for fetch-deps (shared by ALL 4 combinations)
         mdl.assert_in_output(result, "global")

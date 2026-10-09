@@ -1,13 +1,15 @@
 """Action markers distinguish readiness and execution outcomes."""
 
+from tests.logger_fixtures import prepared_logger, static_tree
+
 from io import BytesIO, StringIO, TextIOWrapper
 
 import pytest
 from rich.console import Console
 from rich.style import Style
 
-from mudyla.logging.action_logger_pure import ActionLoggerPure
-from mudyla.logging.action_logger_table import TaskStatus
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+from mudyla.logging.terminal_logger_table import TaskStatus
 from mudyla.logging.formatters import OutputFormatter
 from tests.test_plan_dag import crossing_graph
 
@@ -21,7 +23,7 @@ from tests.test_plan_dag import crossing_graph
 def test_pure_node_symbols_follow_readiness_and_outcome(status, ready, expected, color):
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), force_terminal=True, color_system='truecolor', no_color=False))
-    logger = ActionLoggerPure(keys, output, True, graph=graph)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph)
     key = keys[0] if ready else keys[1]
     logger.tasks[key].status = status
     marker = logger._tree_status(key)
@@ -34,7 +36,7 @@ def test_pure_node_symbols_follow_readiness_and_outcome(status, ready, expected,
 def test_pure_running_marker_uses_yellow_half_circle():
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), force_terminal=True, color_system='truecolor', no_color=False))
-    logger = ActionLoggerPure(keys, output, True, graph=graph)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph)
     logger.tasks[keys[0]].status = TaskStatus.RUNNING
     frames = set()
     for tick in range(16):
@@ -52,7 +54,7 @@ def test_pure_running_marker_uses_yellow_half_circle():
 def test_pure_terminal_status_markers_use_circle_symbols(status, glyph, color, dim):
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), force_terminal=True))
     _, keys = crossing_graph()
-    logger = ActionLoggerPure(keys, output, True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True)
     logger.tasks[keys[0]].status = status
     marker = logger._status_marker(keys[0], 0)
     assert marker.plain.strip() == glyph
@@ -68,7 +70,7 @@ def test_status_markers_keep_one_cell_and_survive_output_encoding(encoding, no_c
     output = OutputFormatter(no_color=no_color, compact=True,
                              console=Console(file=stream, force_terminal=True, color_system="truecolor", no_color=no_color))
     _, keys = crossing_graph()
-    logger = ActionLoggerPure(keys, output, True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True)
     for status in TaskStatus:
         logger.tasks[keys[0]].status = status
         marker = logger._status_marker(keys[0], 0)
@@ -83,7 +85,7 @@ def test_status_markers_keep_one_cell_and_survive_output_encoding(encoding, no_c
 def test_flat_rows_share_graph_readiness_and_stop_policy():
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), force_terminal=True, color_system="truecolor", no_color=False))
-    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="tree")
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_style="tree")
     assert logger._status_marker(keys[1], 0).plain == "◌ "
     logger.tasks[keys[0]].status = TaskStatus.RESTORED
     assert logger._status_marker(keys[1], 0).plain == "○ "
@@ -102,7 +104,7 @@ def test_static_plan_markers_and_legend_match_live_readiness():
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=180, force_terminal=True))
     display = build_display_edges(graph, tuple(keys), full=True)
-    tree = CLI()._build_execution_tree(graph, keys, output, True, {}, display=display)
+    tree = static_tree(graph, keys, output, True, {}, display=display)
     with output.console.capture() as capture:
         output.console.print(tree_section(tree, output.symbols))
     plain = Text.from_ansi(capture.get()).plain
@@ -117,7 +119,7 @@ def test_running_marker_holds_each_frame_for_quarter_second(encoding):
     output = OutputFormatter(no_color=False, compact=True,
                              console=Console(file=stream, force_terminal=True, color_system="truecolor", no_color=False))
     _, keys = crossing_graph()
-    logger = ActionLoggerPure(keys, output, True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True)
     logger.tasks[keys[0]].status = TaskStatus.RUNNING
     for start in (0, .25, .5, .75):
         initial = logger._status_marker(keys[0], start).plain
@@ -129,7 +131,7 @@ def test_running_marker_holds_each_frame_for_quarter_second(encoding):
 def test_running_marker_rotates_half_circle_in_order():
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), force_terminal=True, color_system="truecolor", no_color=False))
     _, keys = crossing_graph()
-    logger = ActionLoggerPure(keys, output, True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True)
     logger.tasks[keys[0]].status = TaskStatus.RUNNING
     frames = [logger._status_marker(keys[0], tick / 4) for tick in range(12)]
     assert "".join(frame.plain.strip() for frame in frames) == "◐◓◑◒" * 3

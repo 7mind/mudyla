@@ -5,35 +5,34 @@ import codecs
 import os
 import concurrent.futures
 import shutil
-import signal
-import subprocess
 import time
 import threading
-import sys
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from rich.console import RenderableType
 
 from ..ast.types import ReturnType
 from ..ast.models import ActionDefinition, ActionVersion
 from ..dag.graph import ActionGraph, ActionKey
-from ..logging.formatters import OutputFormatter
 from ..logging.formatters.action import truncate_dirname
 from .runtime_registry import RuntimeRegistry
 from .runtime_bash import BashRuntime
 from .runtime_python import PythonRuntime
 from .language_runtime import ExecutionContext, LanguageRuntime
-from ..logging.action_logger import ActionLogger, LoggerMode
-from ..logging.formatters.plan import PlanStyle
-from ..logging.formatters.dag import DagLayout, build_dag_layout
-from ..dag.display import build_display_edges
-from ..dag.solver.model import DisplayEdges
+from .process import Process, ProcessFactory, StdinMode
+from ..logging.terminal_logger import TerminalLogger
 
 OUTPUT_CHUNK_BYTES = 4096
 INPUT_RETRY_SECONDS = 0.01
+PROCESS_CLEANUP_SECONDS = 1.0
+
+
+def create_run_id() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    nanoseconds = time.time_ns() % 1_000_000_000
+    return f"{timestamp}-{nanoseconds:09d}"
 
 
 @dataclass
@@ -68,7 +67,7 @@ class SubprocessResult:
 
 @dataclass
 class RunningAction:
-    process: subprocess.Popen[str]
+    process: Process
     input_thread: Optional[threading.Thread] = None
     stop_input: threading.Event = field(default_factory=threading.Event)
 
@@ -194,23 +193,15 @@ class ExecutionEngine:
         without_nix: bool = False,
         no_output_on_fail: bool = False,
         keep_run_dir: bool = False,
-        no_color: bool = False,
-        show_dirs: bool = False,
         parallel_execution: bool = True,
-        use_short_context_ids: bool = False,
         keep_running: bool = False,
         timeout_ms: Optional[int] = None,
         *,
-        logger_mode: LoggerMode,
-        fullscreen: bool = False,
-        force_interactive: bool,
-        plan_style: PlanStyle = "dag",
-        run_info: Optional[RenderableType] = None,
-        output: Optional[OutputFormatter] = None,
-        dag_layout: Optional[DagLayout] = None,
-        plan_display: Optional[DisplayEdges] = None,
+        processes: ProcessFactory,
+        logger: TerminalLogger,
     ):
         self.graph = graph
+        self.processes = processes
         self.project_root = project_root
         self.args = args
         self.flags = flags
@@ -220,37 +211,18 @@ class ExecutionEngine:
         self.without_nix = without_nix
         self.no_output_on_fail = no_output_on_fail
         self.keep_run_dir = keep_run_dir
-        self.no_color = no_color
-        self.logger_mode = logger_mode
-        self.plan_style = plan_style
-        self.force_interactive = force_interactive
-        self.run_info = run_info
-        self.dag_layout = dag_layout
-        self.plan_display = plan_display
-        self.show_dirs = show_dirs
+        self.logger = logger
         self.parallel_execution = parallel_execution
-        self.use_short_context_ids = use_short_context_ids
         self.keep_running = keep_running
-        self.fullscreen = fullscreen
         self.timeout_ms = timeout_ms
-
-        # Create output formatter (includes all sub-formatters)
-        self.output = output if output is not None else OutputFormatter(
-            no_color=no_color, plain=logger_mode in {LoggerMode.GITHUB, LoggerMode.TEAMCITY},
-            compact=logger_mode.compact, teamcity=logger_mode == LoggerMode.TEAMCITY)
 
         # Register built-in runtimes once.
         for runtime_cls in (BashRuntime, PythonRuntime):
             RuntimeRegistry.ensure_registered(runtime_cls)
 
-        # Generate run directory with nanosecond-grained timestamp
         if run_directory is None:
-            # Use nanosecond timestamp for ordering
-            now = datetime.now()
-            timestamp = now.strftime("%Y%m%d-%H%M%S")
-            nanoseconds = time.time_ns() % 1_000_000_000  # Get nanoseconds within current second
-            run_id = f"{timestamp}-{nanoseconds:09d}"
-            self.run_directory = project_root / ".mdl" / "runs" / run_id
+            assert logger.run_id is not None, "Run identity not reported"
+            self.run_directory = project_root / ".mdl" / "runs" / logger.run_id
         else:
             self.run_directory = run_directory
 
@@ -258,7 +230,7 @@ class ExecutionEngine:
 
         # Kill signal for graceful termination from interactive table
         self._kill_event = threading.Event()
-        self._current_logger: Optional["ActionLogger"] = None
+        self._current_logger: Optional["TerminalLogger"] = None
         self._current_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._running_processes: dict[ActionKey, RunningAction] = {}
         self._processes_lock = threading.Lock()
@@ -277,7 +249,7 @@ class ExecutionEngine:
         def on_timeout() -> None:
             if self._current_logger:
                 self._current_logger.stop()
-            self.output.print_warning(f"Timeout of {self.timeout_ms}ms exceeded, killing all processes")
+            self.logger.report_warning(f"Timeout of {self.timeout_ms}ms exceeded, killing all processes")
             self._request_kill()
 
         self._timeout_timer = threading.Timer(timeout_seconds, on_timeout)
@@ -290,56 +262,18 @@ class ExecutionEngine:
             self._timeout_timer.cancel()
             self._timeout_timer = None
 
-    def _kill_process_tree(self, process: subprocess.Popen) -> None:
+    def _kill_process_tree(self, process: Process) -> None:
         """Kill a process and all its children.
-
-        On Unix: Uses process groups (SIGKILL to pgid) for reliable child termination.
-        On Windows: Uses taskkill /T /F for process tree termination.
 
         Args:
             process: The subprocess to kill
         """
-        pid = process.pid
-
-        if sys.platform == "win32":
-            if process.poll() is not None:
-                return
-            # Windows: taskkill /T kills the process tree, /F forces termination
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    capture_output=True,
-                    timeout=5,
-                )
-            except Exception:
-                # Fallback to basic terminate
-                try:
-                    process.terminate()
-                except Exception:
-                    pass
-        else:
-            # Unix: Kill the entire process group
-            # This is necessary because nix develop spawns child processes that
-            # don't receive signals when we only terminate the parent
-            try:
-                # start_new_session makes the group ID independent of the leader's lifetime.
-                os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                # Process or group already terminated
-                pass
-            except Exception:
-                # Fallback: try regular kill on the process itself
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+        process.terminate_tree()
 
     def _request_kill(self) -> None:
         """Request immediate termination of all running processes.
 
         Called by logger when user presses 'q' in main view.
-        Uses SIGKILL/taskkill for immediate termination since user explicitly
-        requested to quit.
         """
         self._kill_event.set()
 
@@ -355,17 +289,6 @@ class ExecutionEngine:
                 self._current_executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
-
-    def _format_action_key(self, action_key: ActionKey) -> str:
-        """Format an action key for display.
-
-        Args:
-            action_key: Action key to format
-
-        Returns:
-            Formatted string (short ID with symbol/emoji or full context)
-        """
-        return self.output.action.format_label_plain(action_key, self.use_short_context_ids)
 
     def _send_action_input(self, action_key: ActionKey, text: Optional[str]) -> Optional[str]:
         with self._processes_lock:
@@ -436,88 +359,16 @@ class ExecutionEngine:
         """
         return self.run_directory / self._get_action_dirname(action_key)
 
-    def _build_action_dir_mapping(self, action_keys: list[ActionKey]) -> dict[str, str]:
-        """Build mapping of display names to relative action directory paths.
-
-        Args:
-            action_keys: List of action keys in execution order
-
-        Returns:
-            Dictionary mapping display names to relative directory paths
-        """
-        result = {}
-        for action_key in action_keys:
-            display_name = self._format_action_key(action_key)
-            action_dirname = self._get_action_dirname(action_key)
-            relative_path = f".mdl/runs/{self.run_directory.name}/{action_dirname}"
-            result[display_name] = relative_path
-
-        return result
-
-    def _create_action_logger(self, execution_order: list[ActionKey]) -> ActionLogger:
-        """Select the presentation backend; execution ownership remains in the engine."""
-        from ..logging.action_logger_simple import ActionLoggerSimple
-        from ..logging.action_logger_verbose import ActionLoggerVerbose
-        from ..logging.action_logger_github import ActionLoggerGitHub
-        from ..logging.action_logger_teamcity import ActionLoggerTeamCity
-        from ..logging.action_logger_table import ActionLoggerTable
-        from ..logging.action_logger_pure import ActionLoggerPure
-
-        logger: ActionLogger
-        if self.logger_mode == LoggerMode.SIMPLE:
-            logger = ActionLoggerSimple(execution_order, self.output, self.use_short_context_ids)
-        elif self.logger_mode == LoggerMode.VERBOSE:
-            logger = ActionLoggerVerbose(execution_order, self.output, self.use_short_context_ids,
-                                         parallel=self.parallel_execution)
-        elif self.logger_mode == LoggerMode.GITHUB:
-            logger = ActionLoggerGitHub(execution_order, self.output, self.use_short_context_ids)
-        elif self.logger_mode == LoggerMode.TEAMCITY:
-            logger = ActionLoggerTeamCity(execution_order, self.output, self.use_short_context_ids,
-                                          parallel=self.parallel_execution)
-        elif self.logger_mode == LoggerMode.TABLE:
-            logger = ActionLoggerTable(
-                execution_order,
-                no_color=self.no_color,
-                action_dirs=self._build_action_dir_mapping(execution_order),
-                show_dirs=self.show_dirs,
-                run_directory=self.run_directory,
-                keep_running=self.keep_running,
-                fullscreen=self.fullscreen,
-                use_short_ids=self.use_short_context_ids,
-                run_info=self.run_info,
-            )
-        else:
-            if self.plan_style == "dag" and self.dag_layout is None:
-                self.dag_layout = build_dag_layout(self.graph, execution_order,
-                    display=self.plan_display)
-            if self.plan_style == "dag":
-                assert self.dag_layout is not None
-                self.plan_display = self.dag_layout.display
-            elif self.plan_style == "tree" and self.plan_display is None:
-                self.plan_display = build_display_edges(self.graph, tuple(execution_order), full=False)
-            logger = ActionLoggerPure(execution_order, self.output, self.use_short_context_ids,
-                                      keep_running=self.keep_running, fullscreen=self.fullscreen, show_dirs=self.show_dirs,
-                                      action_dirs=self._build_action_dir_mapping(execution_order),
-                                      run_directory=self.run_directory, force_interactive=self.force_interactive,
-                                      run_info=self.run_info, graph=self.graph, plan_style=self.plan_style,
-                                      dag_layout=self.dag_layout, plan_display=self.plan_display)
-    
-        logger.set_kill_callback(self._request_kill)
-        logger.set_input_callback(self._send_action_input)
-        self._current_logger = logger
-        logger.start()
-        return logger
-
     def _notify_action_start(
         self,
-        logger: ActionLogger,
+        logger: TerminalLogger,
         action_key: ActionKey,
         action_dir: Path,
     ) -> None:
         """Notify that an action is starting.
 
         Args:
-            logger: ActionLogger instance
+            logger: TerminalLogger instance
             action_key: Action key being started
             action_dir: Action directory path
         """
@@ -525,7 +376,7 @@ class ExecutionEngine:
 
     def _notify_action_result(
         self,
-        logger: ActionLogger,
+        logger: TerminalLogger,
         action_key: ActionKey,
         action_dir: Path,
         result: ActionResult,
@@ -533,7 +384,7 @@ class ExecutionEngine:
         """Notify that an action has completed.
 
         Args:
-            logger: ActionLogger instance
+            logger: TerminalLogger instance
             action_key: Action key that completed
             action_dir: Action directory path
             result: Action execution result
@@ -572,7 +423,10 @@ class ExecutionEngine:
             )
 
         # Create action logger (interactive table or raw text output)
-        logger = self._create_action_logger(execution_order)
+        logger = self.logger
+        logger.start_actions(self.run_directory,
+            {key: self._get_action_dir(key) for key in execution_order},
+            kill_callback=self._request_kill, input_callback=self._send_action_input)
         self._current_logger = logger  # Keep for subprocess access
 
         self._start_timeout_timer()
@@ -657,7 +511,10 @@ class ExecutionEngine:
 
         # Create action logger
         execution_order = self.graph.get_execution_order()
-        logger = self._create_action_logger(execution_order)
+        logger = self.logger
+        logger.start_actions(self.run_directory,
+            {key: self._get_action_dir(key) for key in execution_order},
+            kill_callback=self._request_kill, input_callback=self._send_action_input)
         self._current_logger = logger  # Keep for subprocess access
 
         restored_actions: list[ActionKey] = []
@@ -960,7 +817,7 @@ class ExecutionEngine:
     def _execute_subprocess(
         self,
         prepared: PreparedAction,
-        logger: Optional[ActionLogger],
+        logger: Optional[TerminalLogger],
     ) -> SubprocessResult:
         """Execute subprocess and stream output to files.
 
@@ -977,24 +834,13 @@ class ExecutionEngine:
         with open(prepared.stdout_path, "w", encoding="utf-8", newline="") as stdout_file, open(
             prepared.stderr_path, "w", encoding="utf-8", newline=""
         ) as stderr_file:
-            # Unix: start_new_session=True creates a new process group, allowing us to
-            # kill the entire process tree (including nix develop children) via os.killpg.
-            # Windows: Not needed - we use taskkill /T which traverses parent-child tree.
-            process = subprocess.Popen(
-                prepared.exec_cmd,
-                cwd=str(self.project_root),
-                stdin=subprocess.PIPE if logger is not None and logger.uses_terminal_input() else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=os.environ.copy(),
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                start_new_session=(sys.platform != "win32"),
-            )
+            process = self.processes.start(prepared.exec_cmd, cwd=self.project_root,
+                environment=os.environ.copy(),
+                stdin_mode=StdinMode.PIPE if logger is not None and logger.uses_terminal_input() else StdinMode.INHERIT)
 
             running_action = RunningAction(process)
+            completed = False
+            readers: list[threading.Thread] = []
             try:
                 with self._processes_lock:
                     self._running_processes[prepared.action_key] = running_action
@@ -1016,7 +862,7 @@ class ExecutionEngine:
                         return
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     while True:
-                        chunk = pipe.buffer.read1(OUTPUT_CHUNK_BYTES)
+                        chunk = pipe.read1(OUTPUT_CHUNK_BYTES)
                         line = decoder.decode(chunk, final=not chunk)
                         if not chunk and not line:
                             break
@@ -1060,31 +906,31 @@ class ExecutionEngine:
                     args=(process.stderr, stderr_file, stdout_file, False),
                 )
 
+                readers.append(stdout_thread)
                 stdout_thread.start()
+                readers.append(stderr_thread)
                 stderr_thread.start()
-                try:
-                    returncode = process.wait()
-                    stdout_thread.join()
-                    stderr_thread.join()
-                    if output_errors:
-                        raise output_errors[0]
-                except KeyboardInterrupt:
-                    self._kill_process_tree(process)
-                    process.wait()
-                    stdout_thread.join()
-                    stderr_thread.join()
-                    raise
+                returncode = process.wait(None)
+                stdout_thread.join()
+                stderr_thread.join()
+                if output_errors:
+                    raise output_errors[0]
+                completed = True
             finally:
                 running_action.stop_input.set()
-                if process.poll() is None or running_action.input_thread is not None:
+                if not completed:
                     self._kill_process_tree(process)
-                    process.wait()
+                    process.wait(PROCESS_CLEANUP_SECONDS)
+                    for reader in readers:
+                        if reader.ident is not None:
+                            reader.join(PROCESS_CLEANUP_SECONDS)
+                    if any(reader.is_alive() for reader in readers):
+                        raise RuntimeError(f"Action {process.pid} output readers survived cleanup")
                 if running_action.input_thread is not None:
                     running_action.input_thread.join()
-                if process.stdin is not None:
-                    process.stdin.close()
                 with self._processes_lock:
                     self._running_processes.pop(prepared.action_key, None)
+                process.close()
 
         # Get final file sizes
         if prepared.stdout_path.exists():
@@ -1353,20 +1199,13 @@ class ExecutionEngine:
         graph_start_time: float,
     ) -> ExecutionResult:
         graph_duration = time.time() - graph_start_time
-        sym = self.output.symbols
-
-        if restored_actions and self.logger_mode != LoggerMode.GITHUB and not self.output.compact:
-            restored_list = ", ".join(self.output.escape(str(key)) for key in restored_actions)
-            self.output.print(f"\n{sym.Recycle} [dim]restored from previous run:[/dim] [bold cyan]{restored_list}[/bold cyan]")
-
         if not self.keep_run_dir:
             try:
                 shutil.rmtree(self.run_directory)
             except Exception as e:
-                self.output.print(f"{sym.Warning} [bold yellow]Warning:[/bold yellow] Failed to clean up run directory: {self.output.escape(str(e))}")
+                self.logger.report_warning(f"Failed to clean up run directory: {e}")
 
-        if self.logger_mode != LoggerMode.GITHUB and not self.output.compact:
-            self.output.print(f"\n[dim]Total wall time:[/dim] [bold cyan]{graph_duration:.1f}s[/bold cyan]")
+        self.logger.report_execution_time(graph_duration, restored_actions)
 
         return ExecutionResult(
             success=True,
@@ -1489,4 +1328,4 @@ class ExecutionEngine:
             output_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as e:
             # Don't fail if we can't add success field
-            self.output.print_warning(f"Failed to add success field to output.json: {e}")
+            self.logger.report_warning(f"Failed to add success field to output.json: {e}")

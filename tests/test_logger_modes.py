@@ -1,5 +1,7 @@
 """Logger selection and append-only output through the real CLI."""
 
+from tests.logger_fixtures import prepared_logger
+
 import os
 import json
 from io import StringIO
@@ -42,11 +44,7 @@ def test_logger_selection(options, expected):
     ["--logger", "verbose", "--github-actions"],
 ])
 def test_contradictory_logger_options_fail_before_execution(options):
-    cli = CLI()
-    with pytest.raises(SystemExit) as error:
-        args = cli.parser.parse_args(options)
-        cli._apply_platform_defaults(args, True)
-    assert error.value.code == 2
+    assert CLI().run(options) == 2
 
 
 def run_project(tmp_path: Path, options: list[str], script: str) -> subprocess.CompletedProcess[str]:
@@ -132,7 +130,11 @@ def test_default_and_context_axes_use_the_same_foreground_colors(tmp_path, monke
     output = OutputFormatter(no_color=False, compact=True,
                              console=Console(file=stream, width=160, force_terminal=True,
                                              color_system="truecolor", no_color=False))
-    monkeypatch.setattr(CLI, "_build_formatters", lambda *args: output)
+    from mudyla.logging.terminal_logger import create_terminal_logger
+    def create(mode, **configuration):
+        configuration["console"] = output.console
+        return create_terminal_logger(mode, **configuration)
+    monkeypatch.setattr("mudyla.cli.create_terminal_logger", create)
     assert CLI().run(["--without-nix", "--dry-run", ":work"]) == 0
     rendered = Text.from_ansi(stream.getvalue())
     occurrences = [match.start() for match in re.finditer("version:2.13", rendered.plain)]
@@ -171,29 +173,35 @@ def test_pure_run_information_emphasizes_quantities_without_restyling_identifier
     console_options = dict(width=width, force_terminal=color_system is not None,
                            color_system=color_system, no_color=no_color, highlight=False)
     output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=stream, **console_options))
-    monkeypatch.setattr(CLI, "_build_formatters", lambda *args: output)
+    from mudyla.logging.terminal_logger import create_terminal_logger
+    def create(mode, **configuration):
+        configuration["console"] = output.console
+        return create_terminal_logger(mode, **configuration)
+    monkeypatch.setattr("mudyla.cli.create_terminal_logger", create)
     execute = ExecutionEngine.execute_all
     snapshots = []
 
     def capture_run_info(engine):
         snapshot = StringIO()
-        Console(file=snapshot, **console_options).print(engine.run_info, highlight=False)
+        Console(file=snapshot, **console_options).print(engine.logger.output.preparation_snapshot(), highlight=False)
         snapshots.append(snapshot.getvalue())
         return execute(engine)
 
     monkeypatch.setattr(ExecutionEngine, "execute_all", capture_run_info)
     with patch("mudyla.cli.time.perf_counter", side_effect=[1.0, 1.012345]):
         assert CLI().run(["--without-nix", *(["--keep-run-dir"] if keep_run_dir else []), ":work"]) == 0
-    assert len(snapshots) == 1 and stream.getvalue().startswith(snapshots[0])
+    assert len(snapshots) == 1 and Text.from_ansi(stream.getvalue()).plain.startswith("Run info:\n")
+    assert Text.from_ansi(snapshots[0]).plain.count("Run info:") == 1
     rendered = Text.from_ansi(stream.getvalue())
     quantities = [r"Definitions:\s+(2)", r"with\s+(2)\s+actions",
-                  r"graph:\s+(1)\s+required", r"planning\s+took\s+(12ms)",
                   r"wall\s+time:\s+(\d+(?:\.\d+)?\s*(?:ms|s))"]
+    planning_facts = [r"(1) action with", r"with\s+(0) retained", r"planned\s+in\s+(12ms)"]
     labels = [r"(Using Nix:)", r"(Definitions:)", r"(Run ID:)", r"(Logs:)"]
     values = [r"Using Nix:\s+(No)", r"Execution mode:\s+(parallel)", r"Run ID:\s+(\d+)",
               r"(p\s*r\s*o\s*j\s*e\s*c\s*t\s*2\s*0\s*2\s*6)",
-              r"(disabled)\s+with", r"(definition)\s+file", r"(required)\s+action", r"Logs:\s+(\S)"]
-    for patterns, dim, cyan in [(quantities, False, True), (labels, True, False), (values, False, False)]:
+              r"(disabled)\s+with", r"(definition)\s+file", r"Logs:\s+(\S)"]
+    for patterns, dim, cyan in [(quantities, False, True), (planning_facts, True, False),
+                                (labels, True, False), (values, False, False)]:
         for pattern in patterns:
             match = re.search(pattern, rendered.plain)
             assert match, (pattern, rendered.plain)
@@ -236,7 +244,9 @@ def test_pure_parse_error_flushes_available_preparation_once(tmp_path):
     assert result.returncode == 1
     assert result.stdout.startswith("Run info:\n") and result.stdout.count("Run info:") == 1
     assert "Using Nix:" in result.stdout and "Error:" in result.stdout
-    assert "Run ID:" not in result.stdout and "Result:" not in result.stdout
+    assert result.stdout.count("Run ID:") == 1 and "Result:" not in result.stdout
+    assert "Contexts:" not in result.stdout
+    assert not (tmp_path / ".mdl" / "runs").exists()
 
 
 @pytest.mark.parametrize("stage", ["retainer", "validation"])
@@ -260,7 +270,8 @@ def test_pure_preparation_failure_flushes_existing_sections_once(tmp_path, monke
     assert CLI().run(["--without-nix", "--no-color", ":work"]) == 1
     text = capsys.readouterr().out
     assert text.startswith("Run info:\n")
-    assert all(text.count(label) == 1 for label in ["Run info:", "Contexts:", "Goals:", "PREPARATION_FAILURE"])
+    assert all(text.count(label) == 1 for label in ["Run info:", "Contexts:", "PREPARATION_FAILURE"])
+    assert text.count("Goals:") == int(stage == "validation")
     assert "UNREACHABLE_ACTION" not in text and "Result:" not in text
 
 
@@ -480,24 +491,28 @@ def test_cancellation_during_process_registration_stops_new_child(tmp_path, help
         'while not Path("allow-completion").exists(): time.sleep(.01)\n'
         'Path("survived-cancellation").touch()\n```\n', encoding="utf-8")
     wrapper = tmp_path / "cancel_registration.py"
-    wrapper.write_text('''import faulthandler, sys
-from unittest.mock import patch
+    wrapper.write_text('''import faulthandler, subprocess, sys
 import mudyla.cli as cli
 import mudyla.executor.engine as engine
 faulthandler.dump_traceback_later(5)
 class CancelBeforeRegistration(engine.ExecutionEngine):
     def _execute_subprocess(self, prepared, logger):
-        original = engine.subprocess.Popen
-        def create(*args, **kwargs):
-            process = original(*args, **kwargs)
-            if args[0] == prepared.exec_cmd:
-                self._request_kill()
-            return process
-        with patch.object(engine.subprocess, "Popen", create):
+        original = self.processes
+        owner = self
+        class CancelFactory:
+            def start(self, command, **kwargs):
+                process = original.start(command, **kwargs)
+                if command == prepared.exec_cmd:
+                    owner._request_kill()
+                return process
+        self.processes = CancelFactory()
+        try:
             return super()._execute_subprocess(prepared, logger)
+        finally:
+            self.processes = original
     def _kill_process_tree(self, process):
         if sys.argv[1] == "helper":
-            engine.subprocess.run([sys.executable, "-c", "pass"], check=True, timeout=2)
+            subprocess.run([sys.executable, "-c", "pass"], check=True, timeout=2)
         return super()._kill_process_tree(process)
 cli.ExecutionEngine = CancelBeforeRegistration
 raise SystemExit(cli.CLI().run(["--without-nix", "--no-color", ":hello"]))
@@ -544,21 +559,23 @@ class Engine(module.ExecutionEngine):
         super().__init__(*args, **kwargs)
         self._processes_lock = InterruptRegistration()
     def _execute_subprocess(self, prepared, logger):
-        original = module.subprocess.Popen
-        def create(*args, **kwargs):
-            process = original(*args, **kwargs)
-            Path("spawned.pid").write_text(str(process.pid))
-            deadline = time.monotonic() + 2
-            while not Path("started").exists() and time.monotonic() < deadline:
-                time.sleep(.005)
-            assert Path("started").exists()
-            self._processes_lock.armed = True
-            return process
-        module.subprocess.Popen = create
+        original = self.processes
+        owner = self
+        class InterruptFactory:
+            def start(self, command, **kwargs):
+                process = original.start(command, **kwargs)
+                Path("spawned.pid").write_text(str(process.pid))
+                deadline = time.monotonic() + 2
+                while not Path("started").exists() and time.monotonic() < deadline:
+                    time.sleep(.005)
+                assert Path("started").exists()
+                owner._processes_lock.armed = True
+                return process
+        self.processes = InterruptFactory()
         try:
             return super()._execute_subprocess(prepared, logger)
         finally:
-            module.subprocess.Popen = original
+            self.processes = original
 cli.ExecutionEngine = Engine
 raise SystemExit(cli.main())
 ''')
@@ -604,14 +621,14 @@ def test_direct_windows_python_uses_installed_interpreter(tmp_path, monkeypatch)
 def test_pure_decodes_control_sequences_across_output_chunks(chunks, expected):
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_pure import ActionLoggerPure
+    from mudyla.logging.terminal_logger_pure import PureTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     key = ActionKey(ActionId("build"), ContextId(()))
     output = OutputFormatter(no_color=True)
     stream = StringIO()
     output.console.file = stream
-    logger = ActionLoggerPure([key], output, True)
+    logger = prepared_logger(PureTerminalLogger, [key], output, True)
     for chunk in chunks:
         logger.write_output(key, chunk, "stdout")
     assert stream.getvalue() == f"    build @global / stdout  {expected}\n"
@@ -622,7 +639,7 @@ def test_pure_stdout_style_does_not_depend_on_transport_chunks():
     from rich.text import Text
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_pure import ActionLoggerPure
+    from mudyla.logging.terminal_logger_pure import PureTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     key = ActionKey(ActionId("build"), ContextId(()))
@@ -630,7 +647,7 @@ def test_pure_stdout_style_does_not_depend_on_transport_chunks():
     for chunks in [["payload\n"], ["pay", "load\n"]]:
         stream = StringIO()
         output = OutputFormatter(no_color=False, console=Console(file=stream, force_terminal=True))
-        logger = ActionLoggerPure([key], output, True)
+        logger = prepared_logger(PureTerminalLogger, [key], output, True)
         logger._interactive = False
         for chunk in chunks:
             logger.write_output(key, chunk, "stdout")

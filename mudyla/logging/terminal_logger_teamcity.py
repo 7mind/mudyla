@@ -7,8 +7,8 @@ from rich.console import Console
 from rich.text import Text
 
 from ..dag.graph import ActionKey
-from .action_logger_simple import ActionLoggerSimple
-from .formatters import OutputFormatter
+from .terminal_logger_simple import SimpleTerminalLogger
+from .terminal_logger import LoggerMode
 from .formatters.failure import failure_details
 from .teamcity import ChildMessages, ServiceMessage
 
@@ -16,16 +16,17 @@ if TYPE_CHECKING:
     from ..executor.engine import ActionResult
 
 
-class ActionLoggerTeamCity(ActionLoggerSimple):
+class TeamCityTerminalLogger(SimpleTerminalLogger):
     receives_suppressed_output = True
 
-    def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool,
-                 *, parallel: bool):
-        super().__init__(action_keys, output, use_short_ids)
-        assert output.teamcity_writer is not None
-        self._writer = output.teamcity_writer
-        self._parallel = parallel
-        self._flows = {key: f"{self._writer.run_prefix}-{index}" for index, key in enumerate(action_keys)}
+    MODE = LoggerMode.TEAMCITY
+
+    def _initialize_actions(self) -> None:
+        super()._initialize_actions()
+        assert self.output.teamcity_writer is not None
+        self._writer = self.output.teamcity_writer
+        self._parallel = self.parallel_execution
+        self._flows = {key: f"{self._writer.run_prefix}-{index}" for index, key in enumerate(self._action_keys)}
         self._open: dict[ActionKey, str] = {}
         self._children: dict[tuple[ActionKey, str], ChildMessages] = {}
 

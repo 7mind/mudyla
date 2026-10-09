@@ -28,6 +28,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-html>=4.0.0",
     "pytest-xdist>=3.0.0",
+    "pyte>=0.8.2",
     "mypy>=1.0.0",
     "pexpect>=4.9,<5; sys_platform != 'win32'",
 ]

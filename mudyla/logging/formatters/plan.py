@@ -140,10 +140,10 @@ def execution_tree(graph: ActionGraph, execution_order: list[ActionKey], formatt
     return Group(*forest)
 
 
-def tree_section(tree: RenderableType, symbols: SymbolsFormatter) -> Group:
+def tree_section(tree: RenderableType, symbols: SymbolsFormatter, *, toolbar: RenderableType | None = None) -> Group:
     ready, waiting = (symbols.status(symbol, now=0)
                       for symbol in (StatusSymbol.READY, StatusSymbol.WAITING))
     solid, dashed = ("-", ".") if symbols.console.options.ascii_only else ("─", "╌")
-    return section("Plan:", tree, None,
+    return section("Plan:", tree, toolbar,
                    Text(f"{ready} deps ready / {waiting} waiting; {solid} strong / {dashed} weak or soft; "
                         "prerequisites first, branches may overlap", style="dim"))

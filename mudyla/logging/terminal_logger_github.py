@@ -4,18 +4,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..dag.graph import ActionKey
-from .action_logger_verbose import ActionLoggerVerbose
-from .action_logger_simple import ActionLoggerSimple
+from .terminal_logger_verbose import VerboseTerminalLogger
+from .terminal_logger_simple import SimpleTerminalLogger
+from .terminal_logger import LoggerMode
 from .formatters.failure import legacy_failure
-from .formatters import OutputFormatter
 
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult
 
 
-class ActionLoggerGitHub(ActionLoggerVerbose):
-    def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool = True):
-        super().__init__(action_keys, output, use_short_ids, parallel=False)
+class GitHubTerminalLogger(VerboseTerminalLogger):
+    MODE = LoggerMode.GITHUB
+
+    def _initialize_actions(self) -> None:
+        super()._initialize_actions()
+        self._parallel = False
         self._open_groups: set[ActionKey] = set()
 
     def begin_action(self, action_key: ActionKey, command: list[str]) -> None:
@@ -23,7 +26,7 @@ class ActionLoggerGitHub(ActionLoggerVerbose):
             self._finish_lines()
             self._output.print_raw(f"::group::{action_key.id.name}")
             self._open_groups.add(action_key)
-            ActionLoggerSimple.begin_action(self, action_key, command)
+            SimpleTerminalLogger.begin_action(self, action_key, command)
 
     def end_action(self, action_key: ActionKey) -> None:
         with self._stream_lock:

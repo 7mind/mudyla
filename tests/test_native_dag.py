@@ -1,4 +1,6 @@
 """Native solver ownership, exact search and semantic terminal projection."""
+
+from tests.logger_fixtures import prepared_logger
 from io import BytesIO, StringIO, TextIOWrapper
 import os
 from pathlib import Path
@@ -23,8 +25,8 @@ from mudyla.logging.formatters.branches import BranchTheme
 from mudyla.logging.formatters.dag import build_dag_layout, execution_dag
 from mudyla.logging.formatters.layered import Direction, route_supplied_columns
 from mudyla.logging.formatters.details import context_label
-from mudyla.logging.action_logger_pure import ActionLoggerPure
-from mudyla.logging.action_logger_table import TaskStatus
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+from mudyla.logging.terminal_logger_table import TaskStatus
 from layout_graphs import fixture, layered_kinds, nested_forks, repeated_diamonds
 
 GEOMETRY_BUDGET_SECONDS = 5
@@ -56,7 +58,7 @@ def test_native_action_rows_preserve_existing_runtime_columns_and_viewport():
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=180, height=30, force_terminal=True))
     sizes = {key: NodeSize(1, 1) for key in keys}
     result = create_solver('auto', build_solver_input(sample.graph, keys, sizes, display=build_display_edges(sample.graph, tuple(keys), full=True)), objective=NativeObjective(), budget=LayoutBudget(OVERALL_BUDGET_SECONDS)).solve()
-    logger = ActionLoggerPure(keys, output, True, graph=sample.graph, dag_layout=native.build_native_row_layout(result, projection=row_projection(result), preparation_ms=(result).solve_ms))
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=sample.graph, dag_layout=native.build_native_row_layout(result, projection=row_projection(result), preparation_ms=(result).solve_ms))
     for index, key in enumerate(keys):
         logger.tasks[key].status = TaskStatus.DONE
         logger.tasks[key].duration = index + 1.25

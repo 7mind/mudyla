@@ -1,12 +1,11 @@
-"""Execution logging and shared terminal presentation."""
+"""Whole-run terminal loggers."""
+from .terminal_logger import LoggerMode, TerminalLogger, create_terminal_logger
+from .terminal_logger_simple import SimpleTerminalLogger
+from .terminal_logger_verbose import VerboseTerminalLogger
+from .terminal_logger_github import GitHubTerminalLogger
+from .terminal_logger_teamcity import TeamCityTerminalLogger
+from .terminal_logger_table import TableTerminalLogger
+from .terminal_logger_pure import PureTerminalLogger
 
-from .action_logger import ActionLogger, LoggerMode
-from .action_logger_simple import ActionLoggerSimple
-from .action_logger_verbose import ActionLoggerVerbose
-from .action_logger_github import ActionLoggerGitHub
-from .action_logger_teamcity import ActionLoggerTeamCity
-from .action_logger_table import ActionLoggerTable
-from .action_logger_pure import ActionLoggerPure
-
-__all__ = ["ActionLogger", "LoggerMode", "ActionLoggerSimple", "ActionLoggerVerbose",
-           "ActionLoggerGitHub", "ActionLoggerTeamCity", "ActionLoggerTable", "ActionLoggerPure"]
+__all__ = ["TerminalLogger", "LoggerMode", "create_terminal_logger", "SimpleTerminalLogger",
+           "VerboseTerminalLogger", "GitHubTerminalLogger", "TeamCityTerminalLogger", "TableTerminalLogger", "PureTerminalLogger"]

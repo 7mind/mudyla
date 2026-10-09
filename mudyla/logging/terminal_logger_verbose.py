@@ -9,8 +9,8 @@ from rich.color import ColorSystem
 from rich.console import Console
 
 from ..dag.graph import ActionKey
-from .action_logger_simple import ActionLoggerSimple
-from .formatters import OutputFormatter
+from .terminal_logger_simple import SimpleTerminalLogger
+from .terminal_logger import LoggerMode
 from .formatters.failure import failure_summary
 from .terminal_output import StreamState, same_terminal
 
@@ -18,13 +18,14 @@ if TYPE_CHECKING:
     from ..executor.engine import ActionResult
 
 
-class ActionLoggerVerbose(ActionLoggerSimple):
+class VerboseTerminalLogger(SimpleTerminalLogger):
     receives_suppressed_output = True
 
-    def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool = True,
-                 *, parallel: bool):
-        super().__init__(action_keys, output, use_short_ids)
-        self._parallel = parallel
+    MODE = LoggerMode.VERBOSE
+
+    def _initialize_actions(self) -> None:
+        super()._initialize_actions()
+        self._parallel = self.parallel_execution
         self._stream_lock = threading.Lock()
         self._streams: dict[Literal["stdout", "stderr"], StreamState] = {"stdout": StreamState(), "stderr": StreamState()}
         shared = same_terminal(sys.stdout, sys.stderr)

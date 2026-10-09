@@ -236,8 +236,8 @@ rendering is forced. Simple, verbose, GitHub and TeamCity ignore keep-open and f
 
 All Plan renderers follow the compiled execution graph. The DAG renders
 each action/context once. The optional tree marks repeated dependencies as shared references; context identifiers distinguish separate action
-invocations. Retainers, action listings and summaries use compact rows rather than
-bordered tables. Pure uses `@name` (or `@hash` with `--full-ctx-reprs`) consistently;
+invocations. Action listings and summaries use compact rows. Retainer presentation
+uses compact rows in Pure and four columns in Table. Pure uses `@name` (or `@hash` with `--full-ctx-reprs`) consistently;
 `@global` identifies the context with no overrides. Context rows align the identity,
 `at axis:value, ...` and `with argument=value, ...` columns. Wrapped fields align
 under the first axis or argument; flags remain explicit. Argument previews stop at
@@ -249,6 +249,25 @@ dependency-first execution order without moving rows as statuses change.
 In the optional tree, converging branches can refer to the same dependent.
 A tree child inherits its parent's displayed context unless it changes;
 shared references always include their context. The DAG labels every action/context once.
+
+Run information includes the run ID allocated at startup and prints as it becomes available, followed by compiled contexts,
+retainers when present, goals, the plan, actions and the result. During retainer
+execution, Pure shows its running marker, elapsed time and latest stdout/stderr
+message. Completed decisions show `retained` with a green marker or `ignored`
+with an empty marker, followed by the action name and full context. Decision rows
+have no duration or log fields. Table shows Retainer, Status, Elapsed and Result columns.
+The dim planning summary shows compiler time and unique retained targets so far;
+the action count appears after pruning. Compiler time excludes retainer execution
+and dependency layout preparation.
+
+Successful retainers stay compact. Failed retainers show their full captured stdout
+and stderr beneath the summary, with indented `|` prefixes. Redirected and
+append-only loggers print one Retainers heading and each completed block immediately
+and once. Planning leaves stdin available to the retainer; keyboard, mouse and
+background detection start only with the action logger. Live progress preserves
+retention decisions, context identities and final output buffers. The existing
+60-second timeout still reports empty stdout and `Timeout expired` on stderr.
+
 Pure sections use the same heading style and order: heading, optional controls,
 data, then a status/range summary, with one blank line between document sections.
 Keyboard explanations stay in the bottom footer; metadata/output view selectors
@@ -469,10 +488,14 @@ The `Terminal interfaces` workflow configures Linux/macOS/Windows with Python
 
 ### Architecture
 
-`ExecutionEngine` selects one of the six `ActionLogger` implementations in
-`mudyla.logging`. The CLI resolves aliases once. `ActionLoggerSimple` prints
-lifecycle events; `ActionLoggerVerbose` adds immediate stream delivery;
-`ActionLoggerGitHub` owns grouping and CI diagnostics; `ActionLoggerTeamCity` owns
+The CLI creates one concrete `TerminalLogger` mode before planning. The same
+instance receives planner, retainer and action reports and owns the Console,
+bound `SymbolsFormatter` and display session throughout the run. `report_plan`
+prepares the authoritative pruned graph once; `start_actions` initializes real
+action state and enables input. `finish_actions` restores the terminal before
+outcome and output reports; `finish_run` provides idempotent cleanup on every path.
+`SimpleTerminalLogger` prints lifecycle events; `VerboseTerminalLogger` adds immediate stream delivery;
+`GitHubTerminalLogger` owns grouping and CI diagnostics; `TeamCityTerminalLogger` owns
 TeamCity blocks, native-message routing and escaped presentation. The engine reports command,
 output and completion events while retaining process, cancellation and artifact ownership.
 The engine calls `end_action` after status notification and `finalize` after all
@@ -480,7 +503,7 @@ workers stop, so cancellation can close remaining records independently of trans
 Failure presentation receives the full `ActionKey` explicitly so context-specific diagnostics
 use the correct flow. TeamCity shares the CLI formatter and its serialized writer with
 the engine; its protocol adapter does not own processes or captured artifacts.
-Pure inherits `ActionLoggerTable` and shares its task state, keyboard handling, artifact readers,
+Pure inherits `TableTerminalLogger` and shares its task state, keyboard handling, artifact readers,
 scrolling and lifecycle, while overriding its presentation. Both use Rich's alternate
 screen for `--fullscreen`, `--it` sessions and temporary detail views, restoring inline progress on
 return from a temporary detail view. Pure retains a

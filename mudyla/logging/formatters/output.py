@@ -11,10 +11,14 @@ Usage:
 """
 
 from io import TextIOWrapper
+from enum import Enum
 import sys
+import unicodedata
 from typing import Literal, Optional
 
+from rich import box
 from rich.console import Console, Group, RenderableType
+from rich.table import Table
 from rich.text import Text
 
 from .symbols import SymbolsFormatter
@@ -23,7 +27,20 @@ from .action import ActionFormatter
 from .details import KeyValueRow, KeyValueView, summary_field
 from .sections import section
 from ..terminal_output import StreamState
+from ..display_session import effective_console
 from ..teamcity import TeamCityWriter, standard_writer
+
+
+class RunInfoField(str, Enum):
+    RUN_ID = "Run ID"
+    USING_NIX = "Using Nix"
+    PROJECT_ROOT = "Project root"
+    DEFAULT_AXES = "Using default axes"
+    EXECUTION_MODE = "Execution mode"
+    DEFINITIONS = "Definitions"
+    WARNING = "Warning"
+    EXECUTION = "Execution"
+    CONTINUATION = "Continuing from previous run"
 
 
 class OutputFormatter:
@@ -51,7 +68,8 @@ class OutputFormatter:
     """
 
     def __init__(self, no_color: bool, *, plain: bool = False, compact: bool = False,
-                 teamcity: bool = False, console: Optional[Console] = None):
+                 teamcity: bool = False, console: Optional[Console] = None,
+                 force_interactive: bool = False):
         """Initialize the output formatter with all sub-formatters.
 
         Args:
@@ -68,6 +86,7 @@ class OutputFormatter:
         self._recorded_renderables: Optional[list[RenderableType]] = None
         self._defer_recording = False
         self._run_fields: Optional[list[KeyValueRow]] = None
+        self._run_key_width = max(Text(f"{field.value}:").cell_len for field in RunInfoField)
 
         # Create the Rich console with no_color support
         self._console = console if console is not None else Console(
@@ -77,6 +96,7 @@ class OutputFormatter:
             force_terminal=None if sys.stdout.isatty() else False,
             highlight=False,
         )
+        self._console = effective_console(self._console, no_color=no_color, force_interactive=force_interactive)
         self._stderr_console = Console(
             file=sink,
             no_color=no_color,
@@ -150,16 +170,19 @@ class OutputFormatter:
         self._defer_recording = defer
         if defer:
             self._run_fields = []
-            self._recorded_renderables.append(section("Run info:", KeyValueView(self._run_fields), None, None))
+            self._recorded_renderables.append(section("Run info:", KeyValueView(self._run_fields, key_width=self._run_key_width), None, None))
 
     @property
     def recording_preparation(self) -> bool:
         return self._run_fields is not None
 
-    def print_run_field(self, name: str, value: Text, legacy: str) -> None:
+    def print_run_field(self, field: RunInfoField, value: Text, legacy: str) -> None:
         if self.compact or self.recording_preparation:
             assert self._run_fields is not None, "Run fields require preparation recording"
-            self._run_fields.append(summary_field(name, value))
+            row = summary_field(field.value, value)
+            self._run_fields.append(row)
+            if not self._defer_recording:
+                self._console.print(KeyValueView([row], key_width=self._run_key_width), highlight=False)
         else:
             self.print(legacy)
 
@@ -170,14 +193,42 @@ class OutputFormatter:
             self._defer_recording = False
             self._console.print(Group(*(item for item in self._recorded_renderables if item is not exclude)), highlight=False)
 
-    def stop_recording(self, exclude: Optional[RenderableType] = None) -> Group:
+    def stop_recording(self, exclude: Optional[RenderableType] = None, *, emit: bool = True) -> Group:
         """Freeze the preparation snapshot before action execution starts."""
         assert self._recorded_renderables is not None, "Output recording was not started"
-        self.flush_recording(exclude=exclude)
+        if emit:
+            self.flush_recording(exclude=exclude)
         snapshot = Group(*(item for item in self._recorded_renderables if item is not exclude))
         self._recorded_renderables = None
         self._run_fields = None
+        self._defer_recording = False
         return snapshot
+
+    def preparation_snapshot(self) -> Group:
+        assert self._recorded_renderables is not None, "Output recording was not started"
+        return Group(*self._recorded_renderables)
+
+    def remember(self, message: RenderableType) -> None:
+        if self._recorded_renderables is not None:
+            self._recorded_renderables.append(message)
+
+    def print_immediate(self, message: RenderableType) -> None:
+        """Emit a completed planning event without recording it again."""
+        self._console.print(message, highlight=False)
+
+    def display_text(self, value: str, style: str) -> Text:
+        plain = Text.from_ansi(value).plain
+        plain = "".join(char for char in plain if char in "\n\t" or unicodedata.category(char) not in {"Cc", "Cs"})
+        plain = plain.encode(self.console.encoding, errors="replace").decode(self.console.encoding)
+        return Text(plain, style=style)
+
+    def table(self) -> Table:
+        return Table(box=box.ASCII if self.console.options.ascii_only else box.ROUNDED,
+                     padding=(0, 1), header_style="dim", border_style="dim", highlight=False, safe_box=True)
+
+    def latest_message(self, value: str, stream: Literal["stdout", "stderr"]) -> Text:
+        return (self.display_text(value, "red" if stream == "stderr" else "")
+                if value else self.display_text("<empty>", "dim"))
 
     def print(self, message: RenderableType) -> None:
         """Print message using Rich console.

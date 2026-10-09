@@ -80,7 +80,8 @@ def test_summary_values_are_normal_including_nested_styles_without_mutating_call
                           (" 42ms", "cyan not bold"))
     original = value.copy()
     output.start_recording(defer=True)
-    output.print_run_field("Using Nix", value, "unused")
+    from mudyla.logging.formatters.output import RunInfoField
+    output.print_run_field(RunInfoField.USING_NIX, value, "unused")
     output.stop_recording()
     assert value == original
     text = Text.from_ansi(stream.getvalue())
@@ -160,6 +161,63 @@ def test_contexts_preserve_structured_delimiters_and_default_identity(short):
     assert label.plain == "@" + output.context.format_id(context, short).plain
     assert label.get_style_at_offset(output.console, 0) == label.get_style_at_offset(output.console, 1)
     assert "@global" in rendered(contexts_view([ContextId.empty()], output.context, short))
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "ascii"])
+@pytest.mark.parametrize("no_color", [False, True])
+@pytest.mark.parametrize("axes", [{}, {"platform": "jvm"}])
+def test_contexts_without_axes_use_dim_global_preserving_other_fields(encoding, no_color, axes):
+    from io import BytesIO, TextIOWrapper
+
+    console = Console(file=TextIOWrapper(BytesIO(), encoding=encoding), width=160,
+                      force_terminal=True, color_system="truecolor", no_color=no_color)
+    output = OutputFormatter(no_color=no_color, compact=True, console=console)
+    context = ContextId.from_dict(axes, {"message": "value"}, {"trace": True})
+    original = str(context)
+    with console.capture() as capture:
+        console.print(contexts_view([context], output.context, True))
+    text = Text.from_ansi(capture.get())
+    expected = "at platform:jvm" if axes else "at global"
+    assert expected in text.plain and "(none)" not in text.plain
+    assert 'message="value"' in text.plain and "trace=true" in text.plain
+    assert str(context) == original
+    if not axes:
+        offset = text.plain.index("global", text.plain.index("at "))
+        assert all(text.get_style_at_offset(console, index).dim is True
+                   for index in range(offset, offset + len("global")))
+    if no_color:
+        assert all(text.get_style_at_offset(console, index).color is None
+                   for index in range(len(text.plain)))
+
+
+@pytest.mark.parametrize("width", [8, 12, 40, 80, 160])
+@pytest.mark.parametrize("encoding", ["utf-8", "ascii"])
+@pytest.mark.parametrize("no_color", [False, True])
+def test_incremental_run_info_early_and_late_values_share_column_when_wrapped(width, encoding, no_color):
+    from io import BytesIO, TextIOWrapper
+    from rich.cells import cell_len
+    from mudyla.logging.formatters.output import RunInfoField
+
+    stream = TextIOWrapper(BytesIO(), encoding=encoding)
+    console = Console(file=stream, width=width, force_terminal=True, color_system="truecolor", no_color=no_color)
+    output = OutputFormatter(no_color=no_color, compact=True, console=console)
+    output.start_recording(defer=True)
+    columns = []
+    offset = 0
+    for index, field in enumerate(RunInfoField):
+        value = f"V{index}_complete_payload"
+        output.print_run_field(field, Text(value, style="cyan"), "unused")
+        output.flush_recording()
+        stream.flush()
+        emitted = stream.buffer.getvalue()[offset:]
+        offset = stream.buffer.tell()
+        rendered = Text.from_ansi(emitted.decode(encoding)).plain
+        lines = rendered.splitlines()
+        assert all(cell_len(line) <= width for line in lines)
+        assert value in "".join(line.strip() for line in lines)
+        columns.append(next(cell_len(line[:line.index(f"V{index}")]) for line in lines if f"V{index}" in line))
+    assert len(set(columns)) == 1
+    output.stop_recording(emit=False)
 
 
 @pytest.mark.parametrize("value,expected", [("x" * 64, "x" * 64), ("x" * 65, "x" * 64 + "..."),

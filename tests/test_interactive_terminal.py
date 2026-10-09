@@ -1,5 +1,7 @@
 """Rendering and native terminal checks for the existing mdl action viewer."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import BytesIO, StringIO, TextIOWrapper
 import os
 from pathlib import Path
@@ -12,7 +14,7 @@ from rich.console import Console
 
 from mudyla.dag.context import ContextId
 from mudyla.dag.graph import ActionId, ActionKey
-from mudyla.logging.action_logger_table import ActionLoggerTable, ViewState
+from mudyla.logging.terminal_logger_table import TableTerminalLogger, ViewState
 
 
 def action_keys(count: int) -> list[ActionKey]:
@@ -24,7 +26,7 @@ def action_keys(count: int) -> list[ActionKey]:
     *((width, view) for width in [40, 120] for view in [ViewState.TABLE, ViewState.LOGS_STDOUT]),
 ])
 def test_inline_table_footer_advertises_keyboard_controls_only(monkeypatch, width, view):
-    logger = ActionLoggerTable(action_keys(1))
+    logger = prepared_logger(TableTerminalLogger, action_keys(1))
     logger.state = view
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, 24))
     footer = logger._build_footer().plain
@@ -36,15 +38,15 @@ def test_inline_table_footer_advertises_keyboard_controls_only(monkeypatch, widt
 
 @pytest.mark.parametrize("keep_running", [False, True])
 def test_pure_overview_footer_matches_mouse_ownership(keep_running):
-    from mudyla.logging.action_logger_pure import ActionLoggerPure
+    from mudyla.logging.terminal_logger_pure import PureTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=160, height=24, force_terminal=True))
-    logger = ActionLoggerPure(action_keys(1), output, True, keep_running=keep_running)
+    logger = prepared_logger(PureTerminalLogger, action_keys(1), output, True, keep_running=keep_running)
     assert ("Wheel/PgUp/PgDn scroll" in logger._build_footer().plain) == keep_running
 
 
-def rendered(logger: ActionLoggerTable, width: int, height: int) -> str:
+def rendered(logger: TableTerminalLogger, width: int, height: int) -> str:
     stream = StringIO()
     console = Console(file=stream, width=width, height=height, force_terminal=False)
     console.print(logger._build_renderable())
@@ -53,7 +55,7 @@ def rendered(logger: ActionLoggerTable, width: int, height: int) -> str:
 
 @pytest.mark.parametrize("width,height", [(80, 24), (40, 12), (120, 30)])
 def test_large_plan_keeps_selection_and_controls_visible(monkeypatch, width, height):
-    logger = ActionLoggerTable(action_keys(60), no_color=True)
+    logger = prepared_logger(TableTerminalLogger, action_keys(60), no_color=True)
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, height))
     logger.selected_index = 45
     frame = rendered(logger, width, height)
@@ -64,7 +66,7 @@ def test_large_plan_keeps_selection_and_controls_visible(monkeypatch, width, hei
 
 @pytest.mark.parametrize("view", [ViewState.TABLE, ViewState.LOGS_STDOUT])
 def test_footer_fits_one_terminal_row(monkeypatch, view):
-    logger = ActionLoggerTable(action_keys(1), no_color=True)
+    logger = prepared_logger(TableTerminalLogger, action_keys(1), no_color=True)
     logger.state = view
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
     stream = StringIO()
@@ -75,7 +77,7 @@ def test_footer_fits_one_terminal_row(monkeypatch, view):
 
 @pytest.mark.parametrize("complete,ending", [(False, "q kill"), (True, "q close")])
 def test_input_error_footer_matches_overview_quit_behavior(complete, ending):
-    logger = ActionLoggerTable(action_keys(1))
+    logger = prepared_logger(TableTerminalLogger, action_keys(1))
     logger.report_input_error(logger.action_keys[0], "Input closed")
     if complete:
         logger.mark_execution_complete()
@@ -84,7 +86,7 @@ def test_input_error_footer_matches_overview_quit_behavior(complete, ending):
 
 @pytest.mark.parametrize("no_color", [False, True])
 def test_log_controls_cannot_modify_terminal(tmp_path, monkeypatch, no_color):
-    logger = ActionLoggerTable(action_keys(1), no_color=no_color)
+    logger = prepared_logger(TableTerminalLogger, action_keys(1), no_color=no_color)
     logger.mark_running(logger.action_keys[0], tmp_path)
     logger.state = ViewState.LOGS_STDOUT
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
@@ -104,7 +106,7 @@ def test_coalesced_arrow_keys_are_not_discarded(monkeypatch):
         try:
             tty.setraw(terminal.fileno())
             monkeypatch.setattr(sys, "stdin", terminal)
-            logger = ActionLoggerTable(action_keys(3))
+            logger = prepared_logger(TableTerminalLogger, action_keys(3))
             os.write(master, b"\x1b[B\x1b[B")
             assert [logger._read_key_unix(), logger._read_key_unix()] == ["down", "down"]
         finally:
@@ -120,7 +122,7 @@ def test_escape_preserves_immediately_following_input(monkeypatch):
         try:
             tty.setraw(terminal.fileno())
             monkeypatch.setattr(sys, "stdin", terminal)
-            logger = ActionLoggerTable(action_keys(1))
+            logger = prepared_logger(TableTerminalLogger, action_keys(1))
             os.write(master, b"\x1bq")
             assert logger._read_key_unix() == "escape"
             assert logger._read_key_unix() == "q"
@@ -134,7 +136,7 @@ def test_escape_preserves_immediately_following_input(monkeypatch):
     (ViewState.OUTPUT, "output.json", "[" + ",".join(str(i) for i in range(100)) + "]"),
 ], ids=["source", "metadata", "output"])
 def test_highlighted_line_numbers_match_scroll_position(tmp_path, monkeypatch, view, filename, content):
-    logger = ActionLoggerTable(action_keys(1))
+    logger = prepared_logger(TableTerminalLogger, action_keys(1))
     logger.mark_running(logger.action_keys[0], tmp_path)
     logger.state = view
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
@@ -155,7 +157,7 @@ def test_view_uses_output_encoding(tmp_path, monkeypatch, encoding, no_color, vi
     key = ActionKey(ActionId("build-é-構築"), ContextId(()))
     (tmp_path / "stdout.log").write_text("résultat 構築\n", encoding="utf-8")
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        logger = ActionLoggerTable([key], no_color=no_color,
+        logger = prepared_logger(TableTerminalLogger, [key], no_color=no_color,
                                    console=Console(file=stream, width=80, height=24, force_terminal=True, no_color=no_color))
         logger.mark_running(key, tmp_path)
         logger.state = view
@@ -171,9 +173,9 @@ def test_view_uses_output_encoding(tmp_path, monkeypatch, encoding, no_color, vi
 ])
 def test_windows_console_key_sequences(monkeypatch, sequence, expected):
     from types import SimpleNamespace
-    from mudyla.logging import action_logger_table as module
+    from mudyla.logging import terminal_logger_table as module
 
-    logger = ActionLoggerTable(action_keys(1))
+    logger = prepared_logger(TableTerminalLogger, action_keys(1))
     keys = list(sequence)
     terminal = SimpleNamespace(kbhit=lambda: bool(keys), getwch=lambda: chr(keys.pop(0)))
     monkeypatch.setattr(module, "msvcrt", terminal, raising=False)
@@ -183,9 +185,9 @@ def test_windows_console_key_sequences(monkeypatch, sequence, expected):
 
 def test_windows_input_decoder_preserves_unicode_and_edit_keys(monkeypatch):
     from types import SimpleNamespace
-    from mudyla.logging import action_logger_table as module
+    from mudyla.logging import terminal_logger_table as module
 
-    logger = ActionLoggerTable(action_keys(1))
+    logger = prepared_logger(TableTerminalLogger, action_keys(1))
     logger._input_action = logger.action_keys[0]
     keys = list("é界\ud83d\ude42\b\r\x04\x1b")
     terminal = SimpleNamespace(kbhit=lambda: bool(keys), getwch=lambda: keys.pop(0))
@@ -196,7 +198,7 @@ def test_windows_input_decoder_preserves_unicode_and_edit_keys(monkeypatch):
 
 
 def test_stop_before_start_is_idempotent():
-    logger = ActionLoggerTable(action_keys(0))
+    logger = prepared_logger(TableTerminalLogger, action_keys(0))
     logger.stop()
     logger.stop()
 
@@ -208,16 +210,16 @@ def test_render_error_restores_screen_cursor_and_terminal(monkeypatch, stage, mo
     import termios
     from rich.console import Group
     from rich.text import Text
-    from mudyla.logging.action_logger_pure import ActionLoggerPure
+    from mudyla.logging.terminal_logger_pure import PureTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     master, slave = os.openpty()
     with os.fdopen(slave, "r", encoding="utf-8") as terminal, TextIOWrapper(BytesIO(), encoding="ascii") as stream:
         monkeypatch.setattr(sys, "stdin", terminal)
         console = Console(file=stream, width=80, height=24, force_terminal=True)
-        logger = (ActionLoggerPure(action_keys(1), OutputFormatter(no_color=True, compact=True, console=console), True,
+        logger = (prepared_logger(PureTerminalLogger, action_keys(1), OutputFormatter(no_color=True, compact=True, console=console), True,
                                    force_interactive=True) if mode == "pure" else
-                  ActionLoggerTable(action_keys(1), no_color=True, console=console))
+                  prepared_logger(TableTerminalLogger, action_keys(1), no_color=True, console=console))
         logger.state = ViewState.LOGS_STDOUT
         original = termios.tcgetattr(terminal)
         try:

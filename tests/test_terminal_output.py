@@ -1,5 +1,7 @@
 """Foreground preservation and proven terminal ownership for verbose prefixes."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import StringIO
 import ctypes
 from ctypes import wintypes
@@ -14,7 +16,7 @@ from rich.text import Text
 
 from mudyla.dag.context import ContextId
 from mudyla.dag.graph import ActionId, ActionKey
-from mudyla.logging.action_logger_verbose import ActionLoggerVerbose
+from mudyla.logging.terminal_logger_verbose import VerboseTerminalLogger
 from mudyla.logging.formatters import OutputFormatter
 from mudyla.logging import terminal_output
 from mudyla.logging.terminal_output import StreamState, same_terminal
@@ -36,7 +38,7 @@ def make_logger(monkeypatch, *, shared=True, no_color=False, term="xterm-256colo
     output._stderr_console = Console(file=stderr, force_terminal=True, color_system="truecolor", no_color=no_color,
                                      legacy_windows=legacy)
     keys = [ActionKey(ActionId(name), ContextId.empty()) for name in ["first", "second"]]
-    return ActionLoggerVerbose(keys, output, parallel=True), keys, stdout, stderr
+    return prepared_logger(VerboseTerminalLogger, keys, output, parallel=True), keys, stdout, stderr
 
 
 @pytest.mark.parametrize("parameters,foreground", [

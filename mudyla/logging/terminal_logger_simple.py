@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from rich.text import Text
 
 from ..dag.graph import ActionKey
-from .action_logger import ActionLogger
-from .formatters import OutputFormatter
+from .terminal_logger import LoggerMode, TerminalLogger
 from .formatters.details import context_label, duration_text, literal_text
 from .formatters.failure import failure_summary
 from .formatters.sections import heading
@@ -16,13 +15,16 @@ if TYPE_CHECKING:
     from ..executor.engine import ActionResult
 
 
-class ActionLoggerSimple(ActionLogger):
-    def __init__(self, action_keys: list[ActionKey], output: OutputFormatter, use_short_ids: bool = True):
-        self._action_keys = list(action_keys)
-        self._output = output
-        self._use_short_ids = use_short_ids
+class SimpleTerminalLogger(TerminalLogger):
+    MODE = LoggerMode.SIMPLE
+
+    def _initialize_actions(self) -> None:
+        assert self.execution_order is not None
+        self._action_keys = self.execution_order
+        self._use_short_ids = self.use_short_ids
         self._kill_callback: Optional[Callable[[], None]] = None
         self._kill_requested = False
+
     def _identity(self, action_key: ActionKey) -> Text:
         identity = Text.assemble(literal_text(action_key.id.name, "cyan"),
                                  context_label(action_key.context_id, self._output.context, self._use_short_ids))

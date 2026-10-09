@@ -59,8 +59,7 @@ import sys
 import termios
 import threading
 from rich.console import Console
-from mudyla.logging.action_logger_pure import ActionLoggerPure
-from mudyla.logging.action_logger_table import ActionLoggerTable
+from mudyla.logging.terminal_logger import LoggerMode, create_terminal_logger
 from mudyla.logging.formatters import OutputFormatter
 
 mode, result_path, size_json = sys.argv[1:]
@@ -69,8 +68,9 @@ environment = dict(os.environ)
 threads = [thread.ident for thread in threading.enumerate()]
 original = Console(width=width, height=height)
 output = OutputFormatter(no_color=False, compact=True, console=original)
-logger = (ActionLoggerPure([], output, True, force_interactive=True) if mode == "pure" else
-          ActionLoggerTable([], console=original, force_interactive=True))
+logger = create_terminal_logger(LoggerMode(mode), no_color=False, force_interactive=True,
+    interactive=False, fullscreen=False, show_dirs=False, use_short_ids=True,
+    plan_style="table", plan_minimize=True, dag_solver=None, console=original)
 before = tuple(logger.console.size)
 fcntl.ioctl(sys.stdout.fileno(), termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
 after = tuple(logger.console.size)

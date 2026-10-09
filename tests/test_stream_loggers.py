@@ -1,5 +1,7 @@
 """Append-only mode selection, presentation and exact child delivery."""
 
+from tests.logger_fixtures import prepared_logger
+
 import json
 import os
 from pathlib import Path
@@ -104,13 +106,13 @@ def test_lifecycle_markers_wrap_complete_long_names():
     from rich.console import Console
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_simple import ActionLoggerSimple
+    from mudyla.logging.terminal_logger_simple import SimpleTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     keys = [ActionKey(ActionId(name), ContextId(axis_values=())) for name in ["x" * 60 + "TAIL", "short"]]
     capture = StringIO()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=capture, width=30, color_system=None))
-    logger = ActionLoggerSimple(keys, output)
+    logger = prepared_logger(SimpleTerminalLogger, keys, output)
     for key in keys:
         logger.mark_done(key, 1.0)
     lines = capture.getvalue().splitlines()
@@ -163,8 +165,8 @@ def test_streaming_modes_flush_partial_prompts_with_suppression_and_inherited_in
 def test_partial_stream_fragments_preserve_callback_order_and_marker_boundary(monkeypatch, mode, stderr_first):
     from rich.console import Console
     from mudyla.dag.graph import ActionKey
-    from mudyla.logging.action_logger_github import ActionLoggerGitHub
-    from mudyla.logging.action_logger_verbose import ActionLoggerVerbose
+    from mudyla.logging.terminal_logger_github import GitHubTerminalLogger
+    from mudyla.logging.terminal_logger_verbose import VerboseTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     capture = StringIO()
@@ -172,8 +174,8 @@ def test_partial_stream_fragments_preserve_callback_order_and_marker_boundary(mo
     monkeypatch.setattr(sys, "stderr", capture)
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=capture, width=100, color_system=None))
     key = ActionKey.from_name("ask")
-    logger = (ActionLoggerGitHub([key], output) if mode == "github"
-              else ActionLoggerVerbose([key], output, parallel=False))
+    logger = (prepared_logger(GitHubTerminalLogger, [key], output) if mode == "github"
+              else prepared_logger(VerboseTerminalLogger, [key], output, parallel=False))
     fragments = [("ANSWER=héllo界\n", "stdout"), ("ERR_FRAGMENT", "stderr")]
     if stderr_first:
         fragments.reverse()
@@ -261,13 +263,13 @@ def test_action_marker_phrases_have_explicit_normal_intensity_colors():
     from rich.text import Text
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_simple import ActionLoggerSimple
+    from mudyla.logging.terminal_logger_simple import SimpleTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     capture = StringIO()
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=capture, width=120, force_terminal=True, color_system="standard", no_color=False))
     key = ActionKey(ActionId("work"), ContextId(axis_values=()))
-    logger = ActionLoggerSimple([key], output)
+    logger = prepared_logger(SimpleTerminalLogger, [key], output)
     logger.begin_action(key, ["python3", "script.py"])
     logger.mark_done(key, 1.2)
     logger.mark_failed(key, 2.3)
@@ -296,7 +298,7 @@ def test_terminal_record_boundary_cancels_only_incomplete_controls(monkeypatch, 
     from rich.console import Console
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_verbose import ActionLoggerVerbose
+    from mudyla.logging.terminal_logger_verbose import VerboseTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     class TerminalCapture(StringIO):
@@ -308,7 +310,7 @@ def test_terminal_record_boundary_cancels_only_incomplete_controls(monkeypatch, 
     monkeypatch.setenv("TERM", "xterm-256color")
     output = OutputFormatter(no_color=True, plain=True, compact=True, console=Console(file=capture, width=100, color_system=None))
     key = ActionKey(ActionId("work"), ContextId(axis_values=()))
-    logger = ActionLoggerVerbose([key], output, parallel=False)
+    logger = prepared_logger(VerboseTerminalLogger, [key], output, parallel=False)
     logger.write_output(key, fragment, "stdout")
     assert capture.getvalue() == fragment
     logger.mark_done(key, 1.0)
@@ -324,14 +326,14 @@ def test_terminal_record_boundary_cancels_only_incomplete_controls(monkeypatch, 
 def test_parallel_prefixes_preserve_split_controls_crlf_and_stream_ownership(monkeypatch):
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_verbose import ActionLoggerVerbose
+    from mudyla.logging.terminal_logger_verbose import VerboseTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
 
     out, err = StringIO(), StringIO()
     monkeypatch.setattr(sys, "stdout", out)
     monkeypatch.setattr(sys, "stderr", err)
     first, second = [ActionKey(ActionId(name), ContextId(axis_values=())) for name in ["first", "second"]]
-    logger = ActionLoggerVerbose([first, second], OutputFormatter(no_color=True, compact=True), parallel=True)
+    logger = prepared_logger(VerboseTerminalLogger, [first, second], OutputFormatter(no_color=True, compact=True), parallel=True)
     logger.write_output(first, "\x1b[0m", "stdout")
     assert out.getvalue() == "\x1b[0m", "A style-only fragment must not create an empty action record"
     out.seek(0)

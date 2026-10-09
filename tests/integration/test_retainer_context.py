@@ -1,14 +1,44 @@
 """Integration tests for retainer context-specific args/flags/axis values."""
 
 import pytest
-import re
+import pickle
+import sys
+from pathlib import Path
+from typing import cast
 
+from mudyla.dag.graph import ActionKey
+from mudyla.executor.retainer_executor import RetainerResult
 from tests.conftest import MudylaRunner
 
 
-def retainer_blocks(output: str) -> dict[str, str]:
-    blocks = re.findall(r"^soft-provider (@\w+)\n(.*?)(?=\n\n|\Z)", output, re.MULTILINE | re.DOTALL)
-    assert len({context for context, _ in blocks}) == len(blocks), "Repeated retainer context"
+@pytest.fixture
+def captured_retainers(mdl: MudylaRunner, tmp_path: Path) -> tuple[MudylaRunner, Path]:
+    capture = tmp_path / "retainer-results.pickle"
+    entry = f'''import pickle, sys
+from pathlib import Path
+import mudyla.cli as module
+from mudyla.dag.graph import ActionKey
+from mudyla.executor.retainer_executor import RetainerResult
+class CapturedRetainers(module.RetainerExecutor):
+    def execute_retainers(self) -> tuple[set[ActionKey], list[RetainerResult]]:
+        retained, results = super().execute_retainers()
+        with Path({str(capture)!r}).open("wb") as output:
+            pickle.dump(results, output)
+        return retained, results
+module.RetainerExecutor = CapturedRetainers
+raise SystemExit(module.CLI().run(sys.argv[1:]))
+'''
+    return MudylaRunner([sys.executable, "-c", entry], mdl.project_root), capture
+
+
+def retainer_blocks(capture: Path) -> dict[ActionKey, str]:
+    with capture.open("rb") as source:
+        value: object = pickle.load(source)
+    assert isinstance(value, list) and all(isinstance(result, RetainerResult) for result in value)
+    results = cast(list[RetainerResult], value)
+    blocks = [(result.retainer_key, result.stdout + result.stderr) for result in results]
+    assert all(key.id.name == "soft-provider" for key, _ in blocks)
+    assert len({key for key, _ in blocks}) == len(blocks), "Repeated full retainer key"
     return dict(blocks)
 
 
@@ -17,7 +47,7 @@ class TestRetainerContext:
     """Test that retainers receive correct context-specific values."""
 
     def test_retainer_receives_context_specific_args_flags_axis(
-        self, mdl: MudylaRunner, clean_test_output
+        self, captured_retainers: tuple[MudylaRunner, Path], clean_test_output
     ):
         """Test retainer receives context-specific args, flags, and axis values.
 
@@ -28,6 +58,7 @@ class TestRetainerContext:
 
         Each retainer should see its context-specific values, not just global ones.
         """
+        mdl, capture = captured_retainers
         result = mdl.run_success([
             "--defs", "./extended-tests/*",
             "--verbose",
@@ -42,13 +73,12 @@ class TestRetainerContext:
             ":all",
         ])
 
-        output = result.stdout + result.stderr
-
         # Verify execution completed successfully
         mdl.assert_in_output(result, "Execution completed successfully")
 
         # Verify there are multiple retainer executions with different contexts
-        blocks = retainer_blocks(output)
+        blocks = retainer_blocks(capture)
+        output = "\n".join(blocks.values())
         assert len(blocks) >= 3, (
             "Expected at least 3 retainer executions for different contexts"
         )
@@ -79,8 +109,9 @@ class TestRetainerContext:
             "Expected retainer to see axis value"
         )
 
-    def test_argument_alias_resolution(self, mdl: MudylaRunner, clean_test_output):
+    def test_argument_alias_resolution(self, captured_retainers: tuple[MudylaRunner, Path], clean_test_output):
         """Test that argument aliases are resolved correctly."""
+        mdl, capture = captured_retainers
         result = mdl.run_success([
             "--defs", "./extended-tests/*",
             "--verbose",
@@ -90,7 +121,7 @@ class TestRetainerContext:
             ":all",
         ])
 
-        output = result.stdout + result.stderr
+        output = "\n".join(retainer_blocks(capture).values())
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
@@ -100,8 +131,9 @@ class TestRetainerContext:
             "Expected --ml alias to resolve to message-local"
         )
 
-    def test_retainer_context_isolation(self, mdl: MudylaRunner, clean_test_output):
+    def test_retainer_context_isolation(self, captured_retainers: tuple[MudylaRunner, Path], clean_test_output):
         """Test that different contexts don't leak values to each other."""
+        mdl, capture = captured_retainers
         result = mdl.run_success([
             "--defs", "./extended-tests/*",
             "--verbose",
@@ -113,12 +145,10 @@ class TestRetainerContext:
             ":all",
         ])
 
-        output = result.stdout + result.stderr
-
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")
 
-        blocks = list(retainer_blocks(output).values())
+        blocks = list(retainer_blocks(capture).values())
 
         # Verify we have multiple retainer blocks
         assert len(blocks) >= 2, f"Expected at least 2 retainer blocks, got {len(blocks)}"

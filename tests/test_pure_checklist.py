@@ -1,5 +1,7 @@
 """Pure checklist layout and dependency plans."""
 
+from tests.logger_fixtures import prepared_logger, static_tree
+
 from io import BytesIO, StringIO, TextIOWrapper
 import os
 from pathlib import Path
@@ -17,9 +19,12 @@ from mudyla.cli import CLI
 from mudyla.dag.context import ContextId
 from mudyla.dag.display import build_display_edges
 from mudyla.dag.graph import ActionGraph, ActionId, ActionKey, ActionNode, Dependency
-from mudyla.logging.action_logger_pure import ActionLoggerPure, MAX_LOG_CHARS
-from mudyla.logging.action_logger_table import TaskStatus
-from mudyla.executor.retainer_executor import RetainerResult
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+from mudyla.logging.terminal_output import MAX_LOG_CHARS
+from mudyla.logging.terminal_logger_table import TaskStatus
+from mudyla.executor.retainer_executor import RetainerCompletion, RetainerDecision, RetainerOutcome, RetainerRequest, RetainerResult
+from mudyla.logging.terminal_logger import LoggerMode
+from mudyla.logging.retainer_display import RetainerDisplay
 from mudyla.logging.formatters import OutputFormatter
 from tests.terminal_capture import terminal_text
 
@@ -32,7 +37,7 @@ def test_final_snapshot_contains_selected_graph_once_without_replaying_run_info(
              for key in [source, goal]}
     nodes[goal].dependencies.add(Dependency(source))
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=24, force_terminal=interactive))
-    logger = ActionLoggerPure([source, goal], output, True, graph=ActionGraph(nodes, {goal}),
+    logger = prepared_logger(PureTerminalLogger, [source, goal], output, True, graph=ActionGraph(nodes, {goal}),
                               plan_style=plan_style, run_info=Text("ONLY_PREPARATION"))
     for key in [source, goal]:
         logger.mark_done(key, .1)
@@ -53,7 +58,7 @@ def test_tree_starts_with_actual_source_and_only_goal_names_are_bold():
     nodes[keys[1]].dependencies.add(Dependency(keys[0]))
     nodes[keys[2]].dependencies.add(Dependency(keys[1]))
     output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=100))
-    tree = CLI()._build_execution_tree(ActionGraph(nodes, set(keys[1:])), keys, output, True, {}, display=build_display_edges(ActionGraph(nodes, set(keys[1:])), tuple(keys), full=True))
+    tree = static_tree(ActionGraph(nodes, set(keys[1:])), keys, output, True, {}, display=build_display_edges(ActionGraph(nodes, set(keys[1:])), tuple(keys), full=True))
     rows = output.console.render_lines(tree, pad=False)
     first = Text.assemble(*[(segment.text, segment.style or "") for segment in rows[0]])
     assert first.plain.startswith("○ source"), first.plain
@@ -73,7 +78,7 @@ def test_checklist_preserves_authoritative_execution_order_and_selected_identity
     graph = ActionGraph(nodes, {goal})
     order = graph.get_execution_order()
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100))
-    logger = ActionLoggerPure(order, output, True, graph=graph)
+    logger = prepared_logger(PureTerminalLogger, order, output, True, graph=graph)
     logger.selected_index = order.index(right)
     before = [row.plain.split()[2 if row.plain.startswith(">") else 1] for row in logger._action_rows()]
     logger.mark_done(source, .1)
@@ -93,7 +98,7 @@ def test_live_tree_updates_dependency_readiness_and_shared_references_without_mo
         nodes[child].dependencies.add(Dependency(prerequisite))
     graph = ActionGraph(nodes, {goal})
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=24, force_terminal=True))
-    logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="tree", run_info=Text("RUN_INFORMATION"))
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_style="tree", run_info=Text("RUN_INFORMATION"))
 
     def document():
         rows = logger._overview_prefix()
@@ -132,7 +137,7 @@ def test_twelve_column_tree_keeps_deep_leaf_identifiers(depth, encoding):
         nodes[parent].dependencies.add(Dependency(child))
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
         output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=12))
-        output.print(CLI()._build_execution_tree(ActionGraph(nodes, {keys[-1]}), keys, output, True, {}, display=build_display_edges(ActionGraph(nodes, {keys[-1]}), tuple(keys), full=True)))
+        output.print(static_tree(ActionGraph(nodes, {keys[-1]}), keys, output, True, {}, display=build_display_edges(ActionGraph(nodes, {keys[-1]}), tuple(keys), full=True)))
         stream.flush()
         text = stream.buffer.getvalue().decode(encoding)
     unwrapped = "".join(line.strip() for line in text.splitlines())
@@ -168,9 +173,9 @@ def test_preparation_snapshot_preserves_rich_renderables_and_excludes_later_outp
 
 
 def test_overview_scrolls_run_information_and_all_actions_without_moving_selection():
-    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=90, height=30, force_terminal=True))
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=90, height=60, force_terminal=True))
     keys = [ActionKey.from_name(f"task{index:02d}") for index in range(36)]
-    logger = ActionLoggerPure(keys, output, True, keep_running=True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, keep_running=True)
     logger._run_info = Group(Text("Retainers: kept shared"), Text("Execution plan:"),
                              Text("goal\n└── shared\n    └── dependency"))
 
@@ -204,7 +209,7 @@ def test_overview_scrolls_run_information_and_all_actions_without_moving_selecti
 def test_overview_resize_preserves_action_position_after_prefix_rewrap():
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=12, force_terminal=True))
     keys = [ActionKey.from_name(f"task{index:02d}") for index in range(36)]
-    logger = ActionLoggerPure(keys, output, True, keep_running=True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, keep_running=True)
     logger._run_info = Text("retainer " * 35)
     for _ in range(25):
         logger._handle_key_table("down")
@@ -232,14 +237,18 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
         output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=65, height=24, force_terminal=True))
         cli = CLI()
         retained = RetainerResult(ActionKey.from_name("keep-shared"), [shared], True, 3)
-        run_info = Group(cli._build_retainer_results([retained], output, True), Text("Execution plan"),
-                         cli._build_execution_tree(graph, keys, output, True, {}, display=build_display_edges(graph, tuple(keys), full=True)))
-        logger = ActionLoggerPure(keys, output, True, keep_running=True, run_info=run_info)
+        retainers = RetainerDisplay(output, LoggerMode.PURE, True, session=None, fullscreen=False)
+        request = RetainerRequest(retained.retainer_key, (shared,), 0)
+        retainers.begin_retainer(request)
+        retainers.end_retainer(RetainerCompletion(request, retained, RetainerOutcome.SUCCEEDED, (RetainerDecision(shared, True),)))
+        run_info = Group(retainers.finish(), Text("Execution plan"),
+                         static_tree(graph, keys, output, True, {}, display=build_display_edges(graph, tuple(keys), full=True)))
+        logger = prepared_logger(PureTerminalLogger, keys, output, True, keep_running=True, run_info=run_info)
         logger._handle_key_table("top")
         output.console.print(logger._build_renderable())
         stream.flush()
         frame = terminal_text(stream.buffer.getvalue().decode(encoding)).plain
-    assert "Retainers" in frame and "keep-shared" in frame and "3ms: shared" in frame
+    assert "Retainers" in frame and "keep-shared" in frame and "3ms" in frame and "shared @global" in frame
     assert "Execution plan" in frame and "shared (@global)" in frame
     assert "goal" in frame and "Actions" in frame
 
@@ -248,7 +257,7 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
 def test_checklist_bounds_active_action_and_latest_output(width, height):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=height, force_terminal=True))
     keys = [ActionKey.from_name("live25" if i == 25 else f"task{i:02d}") for i in range(30)]
-    logger = ActionLoggerPure(keys, output, True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True)
     logger.mark_running(keys[25])
     logger.selected_index = 25
     logger.write_output(keys[25], "old\n" + "x" * 10000 + "LATEST", "stdout")
@@ -269,7 +278,7 @@ def test_checklist_bounds_active_action_and_latest_output(width, height):
     assert "q" in frame
     assert "old" not in frame
     assert logger.tasks[keys[25]].latest.endswith("LATEST")
-    assert len(logger._partial_lines[(keys[25], "stdout")]) <= MAX_LOG_CHARS
+    assert len(logger._latest_lines[(keys[25], "stdout")].partial) <= MAX_LOG_CHARS
     assert "RUN" not in output.console.file.getvalue()
 
 
@@ -278,7 +287,7 @@ def test_checklist_encoding_statuses_and_partial_prompt(encoding):
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
         output = OutputFormatter(no_color=False, compact=True, console=Console(file=stream, width=40, height=12, force_terminal=True))
         keys = [ActionKey.from_name(name) for name in ["long-build-é-構築-" * 4, "test", "package"]]
-        logger = ActionLoggerPure(keys, output, True)
+        logger = prepared_logger(PureTerminalLogger, keys, output, True)
         logger.mark_running(keys[0])
         logger.write_output(keys[0], "Type value: ", "stdout")
         assert logger.tasks[keys[0]].latest == "Type value: "
@@ -299,7 +308,7 @@ def test_show_dirs_title_preserves_directory_suffix_on_ascii_terminal(tmp_path):
         output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=80, height=24, force_terminal=True))
         key = ActionKey.from_name("work")
         directory = tmp_path / ("project-prefix-" * 10) / ".mdl/runs/example/selected-action-directory"
-        logger = ActionLoggerPure([key], output, True, show_dirs=True)
+        logger = prepared_logger(PureTerminalLogger, [key], output, True, show_dirs=True)
         logger.mark_running(key, directory)
         output.console.print(logger._build_renderable())
         stream.flush()
@@ -311,7 +320,7 @@ def test_show_dirs_title_preserves_directory_suffix_on_ascii_terminal(tmp_path):
 def test_checklist_keeps_action_name_before_context(width, use_short_ids):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=12, force_terminal=True))
     keys = [ActionKey(ActionId("echo"), ContextId((), (("message", value),))) for value in ["one", "two"]]
-    logger = ActionLoggerPure(keys, output, use_short_ids)
+    logger = prepared_logger(PureTerminalLogger, keys, output, use_short_ids)
     for key in keys:
         logger.mark_done(key, 1.3)
     stream = StringIO()
@@ -332,7 +341,7 @@ def test_checklist_action_time_and_log_columns_stay_aligned(width):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=24, force_terminal=True))
     keys = [ActionKey(ActionId(name), ContextId.from_dict({"platform": platform}))
             for name, platform in [("a", "prod"), ("longer-action-name", "test"), ("構築", "jvm"), ("last", "js")]]
-    logger = ActionLoggerPure(keys, output, True)
+    logger = prepared_logger(PureTerminalLogger, keys, output, True)
     logger.mark_running(keys[0])
     logger.mark_done(keys[1], 14.2)
     logger.mark_restored(keys[3], .3)
@@ -372,7 +381,10 @@ def test_dependency_tree_shares_only_exact_action_contexts(encoding):
     graph = ActionGraph(nodes, {build, other_build, test})
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
         output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=90, force_terminal=False))
-        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False, None, "tree", display=build_display_edges(graph, tuple([shared, build, other_build, test]), full=True))
+        logger = prepared_logger(PureTerminalLogger, [shared, build, other_build, test], output, False,
+            graph=graph, plan_style="tree", plan_display=build_display_edges(graph, tuple([shared, build, other_build, test]), full=True))
+        plan = logger.static_plan
+        output.print(plan)
         stream.flush()
         result = stream.buffer.getvalue().decode(encoding)
     assert "build (@" + output.context.format_id(build.context_id, False).plain in result

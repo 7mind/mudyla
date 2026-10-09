@@ -1,6 +1,23 @@
 """Factory for constructing the CLI argument parser."""
 
 import argparse
+from collections.abc import Sequence
+from typing import Never
+
+
+class HelpRequested(Exception):
+    """Parsing reached a help request without emitting terminal output."""
+
+
+class HelpAction(argparse.Action):
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: str | Sequence[str] | None, option_string: str | None = None) -> None:
+        raise HelpRequested()
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> Never:
+        raise argparse.ArgumentError(None, message)
 
 
 def _boolean(value: str) -> bool:
@@ -11,10 +28,13 @@ def _boolean(value: str) -> bool:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Construct the argparse parser for the CLI."""
-    parser = argparse.ArgumentParser(
+    parser = ArgumentParser(
         description="Mudyla - Multimodal Dynamic Launcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
     )
+    parser.add_argument('-h', '--help', action=HelpAction, nargs=0,
+                        help='show this help message and exit')
 
     parser.add_argument(
         "--defs",

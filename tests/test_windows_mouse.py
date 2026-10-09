@@ -1,5 +1,7 @@
 """Windows console record layout, event ownership and mode restoration."""
 
+from tests.logger_fixtures import prepared_logger
+
 import ctypes
 from io import StringIO
 from types import SimpleNamespace
@@ -7,9 +9,9 @@ import pytest
 
 from mudyla.logging.windows_mouse import InputRecord, WindowsMouseInput
 from mudyla.logging import windows_mouse
-from mudyla.logging import action_logger_table as interactive
+from mudyla.logging import terminal_logger_table as interactive
 from mudyla.dag.graph import ActionKey
-from mudyla.logging.action_logger_pure import ActionLoggerPure
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
 from mudyla.logging.formatters import OutputFormatter
 
 
@@ -98,8 +100,8 @@ def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypat
     api.records.append(key)
     monkeypatch.setattr(windows_mouse, "_console_api", lambda: api)
     keys = [ActionKey.from_name("work")]
-    logger = (ActionLoggerPure(keys, OutputFormatter(no_color=False, compact=True), True, force_interactive=True)
-              if mode == "pure" else interactive.ActionLoggerTable(keys))
+    logger = (prepared_logger(PureTerminalLogger, keys, OutputFormatter(no_color=False, compact=True), True, force_interactive=True)
+              if mode == "pure" else prepared_logger(interactive.TableTerminalLogger, keys))
     logger.console.file = StringIO()
     logger._input_enabled = True
     monkeypatch.setattr(interactive.sys, "platform", "win32")

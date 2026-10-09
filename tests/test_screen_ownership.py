@@ -1,5 +1,7 @@
 """Inline progress and temporary or persistent fullscreen inspection."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import BytesIO, StringIO, TextIOWrapper
 import os
 import sys
@@ -11,8 +13,8 @@ from rich.live import Live
 from rich.text import Text
 
 from mudyla.dag.graph import ActionKey
-from mudyla.logging.action_logger_pure import ActionLoggerPure
-from mudyla.logging.action_logger_table import ActionLoggerTable, InlineDisplay, ViewState
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
+from mudyla.logging.terminal_logger_table import TableTerminalLogger, InlineDisplay, ViewState
 from mudyla.logging.formatters import OutputFormatter
 from tests.test_logger_interactions import terminal_project
 from tests.terminal_capture import terminal_text
@@ -81,7 +83,7 @@ def test_inline_completion_inside_detail_restores_screen_and_exits(terminal_proj
 def test_inline_pure_keeps_only_populated_rows_and_omits_printed_preparation(width, height):
     output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=height, force_terminal=True))
     keys = [ActionKey.from_name("first"), ActionKey.from_name("second")]
-    logger = ActionLoggerPure(keys, output, True, run_info=Text("ALREADY_PRINTED_PREPARATION"))
+    logger = prepared_logger(PureTerminalLogger, keys, output, True, run_info=Text("ALREADY_PRINTED_PREPARATION"))
     logger.selected_index = 1
     rows = output.console.render_lines(logger._build_renderable(), pad=False)
     text = "\n".join("".join(segment.text for segment in row) for row in rows)
@@ -91,7 +93,7 @@ def test_inline_pure_keeps_only_populated_rows_and_omits_printed_preparation(wid
 
 
 def test_fullscreen_table_can_page_preparation_and_last_action_without_changing_selection(monkeypatch):
-    logger = ActionLoggerTable([ActionKey.from_name(f"task-{index:04d}") for index in range(1000)], keep_running=True,
+    logger = prepared_logger(TableTerminalLogger, [ActionKey.from_name(f"task-{index:04d}") for index in range(1000)], keep_running=True,
                                console=Console(file=StringIO(), width=80, height=24, force_terminal=True))
     logger._run_info = Text("PREPARATION_MARKER\n" * 40)
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
@@ -110,7 +112,7 @@ def test_fullscreen_table_can_page_preparation_and_last_action_without_changing_
 
 def test_fullscreen_table_keeps_selected_directory_on_narrow_terminal(monkeypatch):
     key = ActionKey.from_name("work")
-    logger = ActionLoggerTable([key], keep_running=True, show_dirs=True,
+    logger = prepared_logger(TableTerminalLogger, [key], keep_running=True, show_dirs=True,
                                console=Console(file=StringIO(), width=80, height=12, force_terminal=True))
     logger.action_dirs_map[logger._action_formatter.format_label_plain(key, True)] = "SELECTED_DIRECTORY"
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 12))
@@ -123,7 +125,7 @@ def test_fullscreen_table_keeps_selected_directory_on_narrow_terminal(monkeypatc
 @pytest.mark.parametrize("width,height", [(40, 12), (80, 18)])
 def test_fullscreen_table_resize_keeps_counts_bottom_border_and_controls(monkeypatch, width, height):
     keys = [ActionKey.from_name(name) for name in ["prepare", "cache", "compile-alpha", "compile-beta"]]
-    logger = ActionLoggerTable(keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35),
+    logger = prepared_logger(TableTerminalLogger, keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35),
                                console=Console(file=StringIO(), width=120, height=40, force_terminal=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: tuple(logger.console.size))
     for key in keys[:2]:
@@ -144,12 +146,12 @@ def test_fullscreen_table_resize_keeps_counts_bottom_border_and_controls(monkeyp
 
 def test_fullscreen_table_resize_shows_all_actions_when_the_complete_table_fits(monkeypatch):
     keys = [ActionKey.from_name(name) for name in ["prepare", "cache", "compile-alpha", "compile-beta"]]
-    logger = ActionLoggerTable(keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35),
+    logger = prepared_logger(TableTerminalLogger, keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35),
                                console=Console(file=StringIO(), width=120, height=40, force_terminal=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: tuple(logger.console.size))
     logger.selected_index = 2
     logger._build_renderable()
-    for size in [(60, 14), (40, 12), (80, 18), (120, 40)]:
+    for size in [(60, 14), (40, 14), (80, 18), (120, 40)]:
         logger.console.size = size
         rows = logger.console.render_lines(logger._build_renderable(), pad=False)
         text = "\n".join("".join(segment.text for segment in row) for row in rows)
@@ -176,10 +178,86 @@ def test_inline_display_preserves_styles_and_unicode_cell_width_without_hard_new
     assert stream.getvalue().count("\x1b[?25l") == stream.getvalue().count("\x1b[?25h") == 1
 
 
+@pytest.mark.parametrize("width", [10, 80])
+@pytest.mark.parametrize("ending", ["blank", "space", "short", "full", "whole-blank", "trailing-blanks", "interior-blank", "wide-blank"])
+def test_inline_idle_refresh_preserves_history_and_frame_anchor(width, ending):
+    import pyte
+    capture = StringIO()
+    console = Console(file=capture, width=width, height=24, force_terminal=True,
+                      color_system="truecolor", no_color=False)
+    rows = {
+        "blank": ["界é", ""],
+        "space": ["界é", " "],
+        "short": ["界é", "tail"],
+        "full": ["界é", "x" * width],
+        "whole-blank": ["", ""],
+        "trailing-blanks": ["界é", "", ""],
+        "interior-blank": ["界é", "", "tail"],
+        "wide-blank": ["界" * (width // 2), ""],
+    }[ending]
+    frame = Group(*(Text(value, style="red") for value in rows))
+    screen = pyte.HistoryScreen(width, 24, history=100)
+    terminal = pyte.Stream(screen)
+    terminal.feed("HISTORY\r\nRUN_INFO\r\n")
+    anchor = (screen.cursor.x, screen.cursor.y)
+    display = InlineDisplay(frame, console)
+    offset = 0
+    try:
+        display.start()
+        for _ in range(8):
+            display.update(frame, refresh=True)
+            emitted = capture.getvalue()[offset:]
+            offset = capture.tell()
+            assert "\n" not in emitted
+            terminal.feed(emitted)
+            assert (screen.cursor.x, screen.cursor.y) == anchor
+            assert screen.display[0].strip() == "HISTORY"
+            assert screen.display[1].strip() == "RUN_INFO"
+            assert screen.display[anchor[1]].startswith(rows[0])
+            if rows[0]:
+                assert screen.buffer[anchor[1]][0].fg == "red"
+    finally:
+        display.stop()
+
+
+def test_inline_idle_refresh_keeps_scrollback_after_frame_growth_and_crop():
+    import pyte
+    capture = StringIO()
+    console = Console(file=capture, width=20, height=6, force_terminal=True, color_system=None)
+    screen = pyte.HistoryScreen(20, 6, history=100)
+    terminal = pyte.Stream(screen)
+    terminal.feed("HISTORY_SENTINEL\r\n" + "old history\r\n" * 9)
+    display = InlineDisplay(Text(""), console)
+    offset = 0
+    try:
+        display.start()
+        for count in [2, 4, 10]:
+            frame = Group(*(Text(f"row-{index}") for index in range(count - 1)), Text(""))
+            anchor = None
+            history_count = None
+            for _ in range(8):
+                display.update(frame, refresh=True)
+                terminal.feed(capture.getvalue()[offset:])
+                offset = capture.tell()
+                history = ["".join(line[column].data for column in range(screen.columns))
+                           for line in screen.history.top]
+                if anchor is None:
+                    anchor = (screen.cursor.x, screen.cursor.y)
+                    history_count = len(history)
+                assert (screen.cursor.x, screen.cursor.y) == anchor
+                assert len(history) == history_count
+                assert any("HISTORY_SENTINEL" in line for line in history + screen.display)
+                assert screen.display[anchor[1]].startswith("row-0")
+                if count > screen.lines:
+                    assert "row-6" not in "\n".join(screen.display)
+    finally:
+        display.stop()
+
+
 @pytest.mark.parametrize("legacy_windows,dumb_terminal", [(False, False), (True, False), (False, True)])
 def test_inline_display_dispatch_preserves_console_capabilities(monkeypatch, legacy_windows, dumb_terminal):
     monkeypatch.setenv("TERM", "dumb" if dumb_terminal else "xterm-256color")
-    logger = ActionLoggerTable([ActionKey.from_name("work")],
+    logger = prepared_logger(TableTerminalLogger, [ActionKey.from_name("work")],
                                console=Console(file=StringIO(), width=80, height=24, force_terminal=True,
                                                legacy_windows=legacy_windows))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
@@ -226,8 +304,8 @@ def test_legacy_windows_display_uses_native_cursor_and_line_operations(monkeypat
                       no_color=True, width=80, height=24)
     output = OutputFormatter(no_color=True, compact=True, console=console)
     keys = [ActionKey.from_name("LEGACY_VISIBLE")]
-    logger = (ActionLoggerPure(keys, output, True) if mode == "pure" else
-              ActionLoggerTable(keys, no_color=True, console=console))
+    logger = (prepared_logger(PureTerminalLogger, keys, output, True) if mode == "pure" else
+              prepared_logger(TableTerminalLogger, keys, no_color=True, console=console))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
     logger._refresh_display()
     assert isinstance(logger.live, Live)
@@ -256,9 +334,9 @@ def test_render_failure_during_screen_transition_restores_terminal(monkeypatch, 
         monkeypatch.setattr(sys, "stdin", terminal)
         keys = [ActionKey.from_name("work")]
         console = Console(file=stream, width=80, height=24, force_terminal=True)
-        logger = (ActionLoggerPure(keys, OutputFormatter(no_color=True, compact=True, console=console), True,
+        logger = (prepared_logger(PureTerminalLogger, keys, OutputFormatter(no_color=True, compact=True, console=console), True,
                                    force_interactive=True) if mode == "pure" else
-                  ActionLoggerTable(keys, no_color=True, console=console))
+                  prepared_logger(TableTerminalLogger, keys, no_color=True, console=console))
         original = termios.tcgetattr(terminal)
         try:
             logger._setup_terminal()
@@ -282,7 +360,7 @@ def test_render_failure_during_screen_transition_restores_terminal(monkeypatch, 
 
 
 def test_input_failure_during_background_reply_drain_preserves_render_error_and_cleanup(monkeypatch):
-    logger = ActionLoggerTable([ActionKey.from_name("work")])
+    logger = prepared_logger(TableTerminalLogger, [ActionKey.from_name("work")])
     original = RuntimeError("render failed")
     restored = []
 
@@ -335,8 +413,8 @@ def test_partial_live_acquisition_restores_cursor_screen_and_original_error(monk
         stream = TransientWriteFailure()
         output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=80, height=24, force_terminal=True))
         keys = [ActionKey.from_name("work")]
-        logger = (ActionLoggerPure(keys, output, True, keep_running=stage == "start") if mode == "pure" else
-                  ActionLoggerTable(keys, no_color=True, keep_running=stage == "start", console=output.console))
+        logger = (prepared_logger(PureTerminalLogger, keys, output, True, keep_running=stage == "start") if mode == "pure" else
+                  prepared_logger(TableTerminalLogger, keys, no_color=True, keep_running=stage == "start", console=output.console))
         monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
         try:
             if stage == "start":

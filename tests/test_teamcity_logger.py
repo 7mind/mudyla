@@ -1,5 +1,7 @@
 """TeamCity transport, lifecycle and CLI compatibility."""
 
+from tests.logger_fixtures import prepared_logger
+
 import os
 from pathlib import Path
 import subprocess
@@ -70,10 +72,7 @@ def records(text):
     ["--logger", "teamcity", "--simple-log", "--verbose"],
     ["--logger", "teamcity", "--github-actions", "--verbose"]])
 def test_teamcity_rejects_conflicting_selectors(options):
-    cli = CLI()
-    with pytest.raises(SystemExit) as caught:
-        cli._apply_platform_defaults(cli.parser.parse_args(options), True)
-    assert caught.value.code == 2
+    assert CLI().run(options) == 2
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "ascii", "cp1252"])
@@ -158,12 +157,12 @@ def test_parallel_flows_are_distinct_by_full_context_and_preserve_parent_hierarc
     from io import StringIO
     from mudyla.dag.context import ContextId
     from mudyla.dag.graph import ActionId, ActionKey
-    from mudyla.logging.action_logger_teamcity import ActionLoggerTeamCity
+    from mudyla.logging.terminal_logger_teamcity import TeamCityTerminalLogger
     from mudyla.logging.formatters import OutputFormatter
     capture = StringIO()
     monkeypatch.setattr(sys, "stdout", capture)
     keys = [ActionKey(ActionId("same"), ContextId(axis_values=(("platform", value),))) for value in ["a", "b"]]
-    logger = ActionLoggerTeamCity(keys, OutputFormatter(no_color=True, plain=True, compact=True, teamcity=True), True, parallel=True)
+    logger = prepared_logger(TeamCityTerminalLogger, keys, OutputFormatter(no_color=True, plain=True, compact=True, teamcity=True), True, parallel=True)
     for key in keys:
         logger.begin_action(key, ["command"])
         for native in ["##teamcity[flowStarted]", "##teamcity[flowStarted flowId='' parent='']",

@@ -1,5 +1,7 @@
 """Background replies share terminal input without becoming action commands."""
 
+from tests.logger_fixtures import prepared_logger
+
 from io import StringIO
 import os
 import subprocess
@@ -11,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from mudyla.logging import action_logger_table as table
-from mudyla.logging.action_logger_pure import ActionLoggerPure
+from mudyla.logging import terminal_logger_table as table
+from mudyla.logging.terminal_logger_pure import PureTerminalLogger
 from mudyla.logging.formatters import OutputFormatter
 from mudyla.logging.terminal_background import BACKGROUND_QUERY, BackgroundProbe
 from tests.test_plan_dag import crossing_graph
@@ -68,7 +70,7 @@ def test_delayed_fragmented_reply_never_enters_action_input(monkeypatch):
             tty.setraw(terminal.fileno())
             monkeypatch.setattr(sys, "stdin", terminal)
             _, keys = crossing_graph()
-            logger = table.ActionLoggerTable(keys)
+            logger = prepared_logger(table.TableTerminalLogger, keys)
             logger._input_action = keys[0]
 
             def send_input(key, text):
@@ -154,9 +156,9 @@ def test_query_requires_actual_colored_input_and_output_tty(monkeypatch, color, 
     stream = Terminal() if output_tty else StringIO()
     monkeypatch.setattr(sys, "stdin", Terminal() if input_tty else StringIO())
     output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=stream, force_terminal=True, color_system=color, no_color=no_color))
-    logger = (ActionLoggerPure(keys, output, True, graph=graph, plan_style=plan) if mode == "pure" else
-              table.ActionLoggerTable(keys, no_color=no_color, console=output.console))
-    monkeypatch.setattr(table.ActionLoggerTable, "_setup_terminal", lambda self: setattr(self, "_terminal_active", True))
+    logger = (prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_style=plan) if mode == "pure" else
+              prepared_logger(table.TableTerminalLogger, keys, no_color=no_color, console=output.console))
+    monkeypatch.setattr(table.TableTerminalLogger, "_setup_terminal", lambda self: setattr(self, "_terminal_active", True))
     logger._setup_terminal()
     logger._probe_terminal_background()
     logger._probe_terminal_background()
@@ -173,7 +175,7 @@ def test_posix_reader_filters_reply_and_preserves_arrow_utf8_and_escape(monkeypa
         try:
             tty.setraw(terminal.fileno())
             monkeypatch.setattr(sys, "stdin", terminal)
-            logger = table.ActionLoggerTable([])
+            logger = prepared_logger(table.TableTerminalLogger, [])
             logger._background_probe = BackgroundProbe(time.monotonic())
             os.write(master, b"j\x1b]11;rgb:ff/ff/ff\x1b\\\x1b[B\x1bq")
             assert [logger._read_key_unix() for _ in range(4)] == ["down", "down", "escape", "q"]
@@ -189,7 +191,7 @@ def test_windows_reader_filters_reply_and_preserves_extended_and_unicode_keys(mo
     chars = list("\x1b]11;rgb:00/00/00\x07j\xe0P")
     monkeypatch.setattr(table.sys, "platform", "win32")
     monkeypatch.setattr(table, "msvcrt", SimpleNamespace(kbhit=lambda: bool(chars), getwch=lambda: chars.pop(0)), raising=False)
-    logger = table.ActionLoggerTable([])
+    logger = prepared_logger(table.TableTerminalLogger, [])
     logger._background_probe = BackgroundProbe(time.monotonic())
     assert [logger._read_key_windows() for _ in range(2)] == ["down", "down"]
     logger._input_action = object()
@@ -216,8 +218,8 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
         monkeypatch.setenv("TERM", "xterm-256color")
         graph, keys = crossing_graph()
         output = OutputFormatter(no_color=False, compact=True, console=Console(file=stream, width=80, height=24, color_system="truecolor", no_color=False))
-        logger = (ActionLoggerPure(keys, output, True, graph=graph) if mode == "pure" else
-                  table.ActionLoggerTable(keys, console=output.console))
+        logger = (prepared_logger(PureTerminalLogger, keys, output, True, graph=graph) if mode == "pure" else
+                  prepared_logger(table.TableTerminalLogger, keys, console=output.console))
         initial_frames = []
         refresh = logger._refresh_display
 

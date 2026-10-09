@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Callable, Optional
 
-from rich.console import Console, ConsoleOptions, Group, RenderResult
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Span, Text
@@ -258,11 +258,11 @@ def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatte
     return DependencyDag(graph, layout, formatter, use_short_ids, shared, status, edge_style, theme)
 
 
-def dag_section(dag: DependencyDag, symbols: SymbolsFormatter) -> Group:
+def dag_section(dag: DependencyDag, symbols: SymbolsFormatter, *, toolbar: RenderableType | None = None) -> Group:
     solid, dashed = ("|", ":") if symbols.console.options.ascii_only else ("│", "╎")
     ready, waiting = (symbols.status(symbol, now=0)
                       for symbol in (StatusSymbol.READY, StatusSymbol.WAITING))
     crossings = "gaps separate crossing edges; " if dag.crossings else ""
-    return section("Plan:", dag, None,
+    return section("Plan:", dag, toolbar,
                    Text(f"{ready} deps ready / {waiting} waiting; {solid} strong / {dashed} weak or soft; "
                         f"{crossings}prerequisites first", style="dim"))
