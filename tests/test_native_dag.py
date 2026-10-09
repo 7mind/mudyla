@@ -27,6 +27,8 @@ from mudyla.logging.action_logger_pure import ActionLoggerPure
 from mudyla.logging.action_logger_table import TaskStatus
 from layout_graphs import fixture, layered_kinds, nested_forks, repeated_diamonds
 
+GEOMETRY_BUDGET_SECONDS = 5
+
 def started_budget(seconds):
     budget = LayoutBudget(seconds)
     budget.start()
@@ -233,7 +235,7 @@ def test_layered_routes_avoid_foreign_node_bodies(mode):
     endpoints = ((0, 2), (0, 3), (0, 5), (0, 6), (1, 3), (1, 5), (1, 6), (2, 3), (2, 4), (2, 5), (2, 6), (3, 4), (3, 5), (3, 6), (4, 5), (4, 6), (5, 6))
     sample = fixture('layered-node-clearance', keys, [(target, Dependency(keys[source])) for source, target in endpoints], [6], 160)
     graph = build_solver_input(sample.graph, keys, fixed_node_sizes(keys), display=build_display_edges(sample.graph, tuple(keys), full=True))
-    result = create_solver(mode, graph, objective=NativeObjective(), budget=LayoutBudget(OVERALL_BUDGET_SECONDS)).solve()
+    result = create_solver(mode, graph, objective=NativeObjective(), budget=LayoutBudget(GEOMETRY_BUDGET_SECONDS)).solve()
     for component in result.components:
         for route in component.routes:
             edge = graph.edges[route.edge]
@@ -307,7 +309,7 @@ def test_native_row_routes_keep_all_edge_ids_orthogonal_ports_and_private_tracks
 def test_native_complex_geometry_preserves_all_edges_and_node_clearance(mode, build_fixture):
     sample = build_fixture()
     graph = build_solver_input(sample.graph, list(sample.order), fixed_node_sizes(sample.order), display=build_display_edges(sample.graph, tuple(list(sample.order)), full=True))
-    result = create_solver(mode, graph, objective=NativeObjective(), budget=LayoutBudget(OVERALL_BUDGET_SECONDS)).solve()
+    result = create_solver(mode, graph, objective=NativeObjective(), budget=LayoutBudget(GEOMETRY_BUDGET_SECONDS)).solve()
     assert sorted((route.edge for component in result.components for route in component.routes)) == list(range(len(graph.edges)))
     for component in result.components:
         for index, node in enumerate(component.nodes):
