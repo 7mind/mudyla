@@ -3,6 +3,12 @@
 import argparse
 
 
+def _boolean(value: str) -> bool:
+    if value not in ('true', 'false'):
+        raise argparse.ArgumentTypeError('expected true or false')
+    return value == 'true'
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Construct the argparse parser for the CLI."""
     parser = argparse.ArgumentParser(
@@ -48,14 +54,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show execution plan without executing",
     )
-    parser.set_defaults(plan_style=None)
-    plan_group = parser.add_mutually_exclusive_group()
-    plan_group.add_argument("--plan-table", dest="plan_style", action="store_const", const="table",
-                           help="Show a static execution plan table (default for the table logger)")
-    plan_group.add_argument("--plan-tree", dest="plan_style", action="store_const", const="tree",
-                           help="Show the dependency tree in any logger's Plan")
-    plan_group.add_argument("--plan-dag", dest="plan_style", action="store_const", const="dag",
-                           help="Show a connected dependency graph (default except for the table logger)")
+    parser.add_argument('--plan', dest='plan_style', choices=('tree', 'dag', 'table'), default='dag',
+                        help='Plan presentation (default: dag)')
+    parser.add_argument('--plan-minimize', type=_boolean, default=True,
+                        help='Remove redundant execution-order connections in tree/DAG plans (default: true)')
+    parser.add_argument('--plan-dag-solver', default=None,
+                        choices=('grid-auto', 'grid-low', 'grid-medium', 'grid-high', 'grid-opt', 'dagre', 'elk', 'sugiyama'),
+                        help='DAG layout solver (default: grid-auto)')
 
     parser.add_argument(
         "--continue",

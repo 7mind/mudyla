@@ -20,8 +20,7 @@ from tests.test_plan_dag import crossing_graph
 @pytest.mark.parametrize("finished", [False, True])
 def test_pure_dag_renders_one_actions_graph_with_execution_data(finished):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=120, height=60, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=120, height=60, force_terminal=True))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     logger.selected_index = 3
     logger.tasks[keys[1]].status = TaskStatus.DONE
@@ -42,8 +41,7 @@ def test_pure_dag_renders_one_actions_graph_with_execution_data(finished):
 
 def test_resize_keeps_selected_node_visible_across_wrapped_graph_rows():
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=24, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=24, force_terminal=True))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     for _ in keys[1:]:
         logger._handle_key_table("down")
@@ -59,8 +57,7 @@ def test_resize_keeps_selected_node_visible_across_wrapped_graph_rows():
 @pytest.mark.parametrize("no_color", [False, True])
 def test_cursor_and_palette_highlight_do_not_restyle_graph_or_font_weights(selected_index, no_color):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=no_color, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=24, force_terminal=True, color_system="truecolor", no_color=False)
+    output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=StringIO(), width=100, height=24, force_terminal=True, color_system="truecolor", no_color=False))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     logger._background_probe = BackgroundProbe(0)
     logger._background_probe.feed("\x1b]11;rgb:fa/fa/fa\x07", 0)
@@ -92,13 +89,14 @@ def test_cursor_and_palette_highlight_do_not_restyle_graph_or_font_weights(selec
 @pytest.mark.parametrize("width", [100, 25, 8])
 def test_selection_background_covers_full_physical_node_row(width):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=24, force_terminal=True, color_system="truecolor", no_color=False)
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=width, height=24, force_terminal=True, color_system="truecolor", no_color=False))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     logger.selected_index = 1
-    original_rows, original_anchors = logger._action_lines()
     logger._background_probe = BackgroundProbe(0)
     logger._background_probe.background = (250, 250, 250)
+    logger.selected_index = 0
+    original_rows, original_anchors = logger._action_lines()
+    logger.selected_index = 1
     rows, anchors = logger._action_lines()
     assert anchors == original_anchors
     start = anchors[keys[1]]
@@ -124,8 +122,7 @@ def test_selection_background_covers_full_physical_node_row(width):
 @pytest.mark.parametrize("no_color", [False, True])
 def test_flat_actions_share_the_full_row_selection_policy(width, no_color):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=no_color, compact=True)
-    output._console = Console(file=StringIO(), width=width, force_terminal=True, color_system="truecolor", no_color=False)
+    output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=StringIO(), width=width, force_terminal=True, color_system="truecolor", no_color=False))
     logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="tree")
     logger.selected_index = 1
     before = [Text.assemble(*[(segment.text, segment.style or "") for segment in row]) for row in logger._action_lines()[0]]
@@ -146,8 +143,7 @@ def test_flat_actions_share_the_full_row_selection_policy(width, no_color):
 @pytest.mark.parametrize("width,height", [(100, 24), (25, 5), (8, 5)])
 def test_keyboard_selection_skips_connector_and_wrapped_rows(width, height):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=height, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=height, force_terminal=True))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     for index, key in enumerate(keys):
         if index:
@@ -169,21 +165,19 @@ def test_narrow_node_anchor_keeps_status_and_first_name_fragment_together():
              for key in keys}
     for key in keys[1:]:
         nodes[key].dependencies.add(Dependency(keys[0]))
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=12, height=5, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=12, height=5, force_terminal=True))
     logger = ActionLoggerPure(keys, output, True, graph=ActionGraph(nodes, {keys[-1]}))
     logger.selected_index = 1
     logger.tasks[keys[1]].status = TaskStatus.DONE
     rows, anchors = logger._action_lines()
     selected = "".join(segment.text for segment in rows[anchors[keys[1]]])
-    assert selected.startswith("> ✓ very"), selected
+    assert selected.startswith("> ● very"), selected
 
 
 def test_equal_action_names_select_distinct_full_context_keys_and_details(tmp_path):
     keys = [ActionKey.from_name("build", ContextId.from_dict({"platform": platform})) for platform in ["linux", "windows"]]
     nodes = {key: ActionNode(key, ActionDefinition("build", [], {}, SourceLocation("fixture", 1, "build"))) for key in keys}
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=40, height=5, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True))
     logger = ActionLoggerPure(keys, output, True, graph=ActionGraph(nodes, set(keys)))
     for index, key in enumerate(keys):
         directory = tmp_path / str(index)
@@ -203,8 +197,7 @@ def test_equal_action_names_select_distinct_full_context_keys_and_details(tmp_pa
 
 def test_selection_preserves_name_context_and_time_foreground_attributes():
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=24, force_terminal=True, color_system="truecolor", no_color=False)
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=100, height=24, force_terminal=True, color_system="truecolor", no_color=False))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     logger._background_probe = BackgroundProbe(0)
     logger._background_probe.feed("\x1b]11;rgb:fa/fa/fa\x07", 0)
@@ -220,8 +213,7 @@ def test_selection_preserves_name_context_and_time_foreground_attributes():
 
 def test_render_cache_preserves_current_status_selection_latest_and_resize(monkeypatch):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=24, force_terminal=True, color_system="truecolor", no_color=False)
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=100, height=24, force_terminal=True, color_system="truecolor", no_color=False))
     logger = ActionLoggerPure(keys, output, True, graph=graph)
     logger._background_probe = BackgroundProbe(0)
     monkeypatch.setattr("mudyla.logging.action_logger_pure.time.time", lambda: 100.0)
@@ -240,3 +232,36 @@ def test_render_cache_preserves_current_status_selection_latest_and_resize(monke
             cold = logger._action_lines()
             assert warm == cold
             assert len(logger._dag._rendered_rows) == len(keys)
+
+
+@pytest.mark.parametrize('interactive', [False, True])
+def test_pure_omits_action_count_banner(interactive):
+    stream = StringIO()
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=100, height=30, force_terminal=interactive))
+    logger = ActionLoggerPure([ActionKey.from_name('work')], output, True)
+    if interactive:
+        output.print(logger._build_renderable())
+    else:
+        logger.start()
+    assert 'mudyla /' not in stream.getvalue()
+    if interactive:
+        assert terminal_text(stream.getvalue()).plain.splitlines()[0] == 'Actions:'
+    else:
+        assert stream.getvalue() == ''
+
+
+@pytest.mark.parametrize('show_dirs,has_directory', [(False, False), (True, False), (True, True)])
+def test_pure_banner_removal_reclaims_only_unused_heading_row(tmp_path, show_dirs, has_directory):
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=30, force_terminal=True))
+    key = ActionKey.from_name('work')
+    logger = ActionLoggerPure([key], output, True, show_dirs=show_dirs, fullscreen=True)
+    if has_directory:
+        logger.tasks[key].action_dir = tmp_path / 'selected-action-directory'
+    assert logger._get_content_height() == 30 - 2 - int(show_dirs and has_directory)
+    output.print(logger._build_renderable())
+    rendered = output.console.file.getvalue()
+    assert 'mudyla /' not in rendered
+    assert ('selected-action-directory' in rendered) == (show_dirs and has_directory)
+    assert len(rendered.splitlines()) <= 30
+    if not (show_dirs and has_directory):
+        assert terminal_text(rendered).plain.splitlines()[0].rstrip() == 'Actions:'

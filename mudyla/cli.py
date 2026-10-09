@@ -16,6 +16,7 @@ from rich.text import Text
 from .ast.models import ParsedDocument, ActionDefinition
 from .dag.compiler import DAGCompiler, CompilationError
 from .dag.graph import ActionGraph, ActionKey
+from .dag.display import build_display_edges
 from .dag.context import ContextId
 from .dag.validator import DAGValidator, ValidationError
 from .executor.engine import ExecutionEngine
@@ -37,7 +38,10 @@ from .logging.formatters import OutputFormatter
 from .logging.formatters.details import JsonValue, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
 from .logging.formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
 from .logging.formatters.dag import DagLayout, build_dag_layout, dag_section, execution_dag
+from .logging.formatters.branches import BranchTheme
+from .dag.solver.model import DisplayEdges, SolverMode
 from .logging.formatters.sections import section
+from .logging.formatters.symbols import StatusSymbol
 from .ast.expansions import ArgsExpansion, FlagsExpansion, EnvExpansion, ActionExpansion
 
 
@@ -182,11 +186,17 @@ class CLI:
                 )
 
             execution_order = pruned_graph.get_execution_order()
-            dag_layout = build_dag_layout(pruned_graph, execution_order) if args.plan_style == "dag" else None
+            dag_layout: Optional[DagLayout] = None
+            plan_display = (build_display_edges(pruned_graph, tuple(execution_order), full=not args.plan_minimize)
+                            if args.plan_style == "tree" else None)
+            if args.plan_style == "dag":
+                mode: SolverMode = "auto" if args.plan_dag_solver == "grid-auto" else args.plan_dag_solver
+                dag_layout = build_dag_layout(pruned_graph, execution_order, mode=mode, minimize=args.plan_minimize)
+                plan_display = dag_layout.display
             static_plan = None
             if not quiet_mode:
                 static_plan = self._visualize_execution_plan(pruned_graph, execution_order, goals, output, use_short_ids,
-                                                              dag_layout, args.plan_style)
+                                                              dag_layout, args.plan_style, display=plan_display)
 
             if args.dry_run:
                 output.print_run_field("Execution", Text("Dry run - not executing"),
@@ -222,6 +232,7 @@ class CLI:
                 keep_running=keep_running,
                 fullscreen=args.fullscreen,
                 dag_layout=dag_layout,
+                plan_display=plan_display,
                 timeout_ms=args.timeout_ms,
                 output=output,
             )
@@ -588,8 +599,10 @@ class CLI:
         except ValueError as error:
             self.parser.error(str(error))
         args.logger = mode.value
-        if args.plan_style is None:
-            args.plan_style = "table" if mode == LoggerMode.TABLE else "dag"
+        if args.plan_style != 'dag' and args.plan_dag_solver is not None:
+            self.parser.error('--plan-dag-solver requires --plan dag')
+        if args.plan_style == 'dag' and args.plan_dag_solver is None:
+            args.plan_dag_solver = 'grid-auto'
         args.verbose = mode == LoggerMode.VERBOSE
         args.github_actions = mode == LoggerMode.GITHUB
         usable_terminal = sys.stdout.isatty() and sys.stdin.isatty() and os.environ.get("TERM") not in {"dumb", "unknown"}
@@ -895,6 +908,7 @@ class CLI:
         use_short_ids: bool,
         dag_layout: Optional[DagLayout],
         plan_style: PlanStyle = "dag",
+        *, display: Optional[DisplayEdges],
     ) -> Group:
         """Render the selected static plan presentation.
 
@@ -920,32 +934,37 @@ class CLI:
             assert dag_layout is not None
             def initial_status(key: ActionKey) -> Text:
                 ready = not graph.get_node(key).dependencies
-                glyphs = (">", "o") if output.console.options.ascii_only else ("◇", "○")
-                return Text(glyphs[0 if ready else 1] + " ", style="cyan" if ready else "dim")
+                symbol = StatusSymbol.READY if ready else StatusSymbol.WAITING
+                glyph = output.symbols.status(symbol, now=0)
+                return Text(glyph + " ", style="cyan" if ready else "dim")
 
             dag = execution_dag(graph, execution_order, output.context, use_short_ids, sharing_counts,
-                                initial_status, lambda key: "dim", layout=dag_layout)
-            plan = Group(dag_section(dag, output.console.options.ascii_only), Text(""))
+                                initial_status, lambda key: "dim",
+                                lambda: BranchTheme.DISABLED if output.no_color or output.console.no_color
+                                or output.console.color_system is None else BranchTheme.TERMINAL, layout=dag_layout)
+            plan = Group(dag_section(dag, output.symbols), Text(""))
             output.print(plan)
             return plan
         assert plan_style == "tree"
-        return self._print_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts)
+        return self._print_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts, display=display)
 
     def _print_execution_tree(self, graph: ActionGraph, execution_order: list[ActionKey], output: OutputFormatter,
-                              use_short_ids: bool, sharing_counts: dict[ActionKey, int]) -> Group:
-        plan = Group(tree_section(self._build_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts),
-                                  output.console.options.ascii_only), Text(""))
+                              use_short_ids: bool, sharing_counts: dict[ActionKey, int], *, display: Optional[DisplayEdges]) -> Group:
+        plan = Group(tree_section(self._build_execution_tree(graph, execution_order, output, use_short_ids, sharing_counts, display=display),
+                                  output.symbols), Text(""))
         output.print(plan)
         return plan
 
     def _build_execution_tree(self, graph: ActionGraph, execution_order: list[ActionKey], output: OutputFormatter,
-                              use_short_ids: bool, sharing_counts: dict[ActionKey, int]) -> Group:
+                              use_short_ids: bool, sharing_counts: dict[ActionKey, int], *, display: Optional[DisplayEdges]) -> Group:
         def initial_status(key: ActionKey) -> Text:
             ready = not graph.get_node(key).dependencies
-            glyphs = (">", "o") if output.console.options.ascii_only else ("◇", "○")
-            return Text(glyphs[0 if ready else 1] + " ", style="cyan" if ready else "dim")
+            symbol = StatusSymbol.READY if ready else StatusSymbol.WAITING
+            glyph = output.symbols.status(symbol, now=0)
+            return Text(glyph + " ", style="cyan" if ready else "dim")
 
-        return execution_tree(graph, execution_order, output.context, use_short_ids, sharing_counts, initial_status)
+        assert display is not None
+        return execution_tree(graph, execution_order, output.context, use_short_ids, sharing_counts, initial_status, display=display)
 
     def _list_actions(self, document: ParsedDocument, output: OutputFormatter) -> None:
         """List all available actions."""

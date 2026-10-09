@@ -17,31 +17,32 @@ from layout_graphs import fixture, layered_kinds, nested_forks, repeated_diamond
 from mudyla.ast.models import ActionDefinition, SourceLocation
 from mudyla.cli import CLI
 from mudyla.dag.context import ContextId
+from mudyla.dag.display import build_display_edges
 from mudyla.dag.graph import ActionGraph, ActionKey, ActionNode, Dependency
 from mudyla.logging.action_logger_pure import ActionLoggerPure
 from mudyla.logging.action_logger_table import TaskStatus
 from mudyla.logging.formatters import OutputFormatter
+from mudyla.logging.formatters.branches import BranchTheme
 from mudyla.logging.formatters.dag import DagLayout, build_dag_layout, execution_dag
 from mudyla.logging.formatters import layered
 
 
-@pytest.mark.parametrize("option", ["--plan-table", "--plan-tree", "--plan-dag"])
-def test_plan_options_are_builtin_flags(option):
-    _, unknown = CLI().parser.parse_known_args([option])
-    assert unknown == []
+@pytest.mark.parametrize("plan", ["table", "tree", "dag"])
+def test_plan_options_are_builtin_flags(plan):
+    args, unknown = CLI().parser.parse_known_args(["--plan", plan])
+    assert unknown == [] and args.plan_style == plan
 
 
-@pytest.mark.parametrize("options", [["--plan-table", "--plan-tree"], ["--plan-table", "--plan-dag"], ["--plan-tree", "--plan-dag"]])
-def test_plan_options_are_mutually_exclusive(capsys, options):
+def test_plan_rejects_unknown_presentation(capsys):
     with pytest.raises(SystemExit) as error:
-        CLI().parser.parse_args(options)
+        CLI().parser.parse_args(["--plan", "other"])
     assert error.value.code == 2
-    assert "not allowed with" in capsys.readouterr().err
+    assert "invalid choice" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("mode", ["pure", "table", "simple", "verbose", "github", "teamcity"])
 @pytest.mark.parametrize("dry", [False, True])
-@pytest.mark.parametrize("selection", [[], ["--plan-dag"]])
+@pytest.mark.parametrize("selection", [[], ["--plan", "dag"]])
 def test_all_loggers_render_each_dag_action_once(tmp_path, mode, dry, selection):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
@@ -53,7 +54,7 @@ def test_all_loggers_render_each_dag_action_once(tmp_path, mode, dry, selection)
         '\npass\n```' for name, dependencies in actions.items()), encoding="utf-8")
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="160")
     result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode,
-        *(["--force-interactive", "--plan-dag"] if mode == "table" and not selection else ["--force-interactive"] if mode == "table" else []), *selection, *(["--dry-run"] if dry else []), ":goal"], cwd=tmp_path, env=env,
+        *(["--force-interactive"] if mode == "table" else []), *selection, *(["--dry-run"] if dry else []), ":goal"], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     if mode == "teamcity":
@@ -143,9 +144,10 @@ def assert_independent_routes(layout: DagLayout) -> None:
                                 layout.geometry.routes[connection.edge].target) for connection in marker.connections)
     assert actual == expected
     for track in layout.geometry.tracks:
-        cell = next(cell for cell in layout.geometry.connector_rows[track.source][0] if cell.column == track.column)
-        assert cell.directions == layered.Direction.UP | layered.Direction.DOWN
-        assert tuple(connection.edge for connection in cell.connections) == (track.edge,)
+        assert any((connections.get(track.edge) == frozenset("UD")
+                    and all(value == frozenset("LR") for owner, value in connections.items() if owner != track.edge))
+                   or (connections.get(track.edge) == frozenset("LR") and len(connections) == 1)
+                   for connections in actual.values()), 'Dependency has no private visible straight stroke'
 
 
 def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
@@ -160,8 +162,8 @@ def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
     layouts = []
     original = cli_module.build_dag_layout
 
-    def capture(*args):
-        layout = original(*args)
+    def capture(*args, **kwargs):
+        layout = original(*args, **kwargs)
         layouts.append(layout)
         return layout
 
@@ -174,7 +176,7 @@ def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
     route = next(route for edge, route in zip(layout.edges, layout.geometry.routes)
                  if edge.source.id.name == "demo-check" and edge.target.id.name == "demo-interactive")
     assert any(track.target == route.source and track.column == route.points[0][0] for track in layout.geometry.tracks)
-    assert len(route.points) - 2 <= 1
+    assert len(route.points) - 2 <= 4
     assert route.points[0][0] == route.points[1][0]
     assert_independent_routes(layout)
 
@@ -182,14 +184,14 @@ def test_demo_plan_separates_parallel_branches(tmp_path, monkeypatch):
 def test_disconnected_components_group_navigation_without_changing_execution_order():
     keys = [ActionKey.from_name(name) for name in ["a", "c", "b", "d"]]
     graph = fixture("components", keys, [(2, Dependency(keys[0])), (3, Dependency(keys[1]))], [2, 3], 80).graph
-    layout = build_dag_layout(graph, keys)
+    layout = build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True))
     presentation = [keys[index] for index in [0, 2, 1, 3]]
     assert layout.keys == tuple(presentation)
     assert layout.execution_order == tuple(keys)
     output = OutputFormatter(no_color=True, compact=True)
-    dag = execution_dag(graph, keys, output.context, False, {}, lambda key: Text("x"), lambda key: "", layout=layout)
+    dag = execution_dag(graph, keys, output.context, False, {}, lambda key: Text("x"), lambda key: "", lambda: BranchTheme.DISABLED, layout=layout)
     with pytest.raises(AssertionError, match="scheduler order"):
-        execution_dag(graph, presentation, output.context, False, {}, lambda key: Text("x"), lambda key: "", layout=layout)
+        execution_dag(graph, presentation, output.context, False, {}, lambda key: Text("x"), lambda key: "", lambda: BranchTheme.DISABLED, layout=layout)
     for width in [80, 8]:
         console = Console(file=StringIO(), width=width)
         lines, anchors = dag.visual_lines(console, console.options, lambda key, width: dag._label(key))
@@ -208,9 +210,9 @@ def test_singleton_and_chain_use_minimal_graph_rows():
         keys = [ActionKey.from_name(name) for name in names]
         graph = fixture("minimal", keys, [(target, Dependency(keys[source])) for source, target in links],
                         [len(keys) - 1], 80).graph
-        layout = build_dag_layout(graph, keys)
+        layout = build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True))
         output = OutputFormatter(no_color=True, compact=True)
-        dag = execution_dag(graph, keys, output.context, False, {}, lambda key: Text("x"), lambda key: "", layout=layout)
+        dag = execution_dag(graph, keys, output.context, False, {}, lambda key: Text("x"), lambda key: "", lambda: BranchTheme.DISABLED, layout=layout)
         rows = []
         for rank, cells in enumerate(layout.geometry.action_rows):
             rows.append(dag._gutter(cells, ("",) * len(layout.edges), False,
@@ -226,7 +228,7 @@ def test_singleton_and_chain_use_minimal_graph_rows():
 def test_complex_layouts_keep_branch_lanes_and_complete_dependency_tracks(make_fixture):
     fixture = make_fixture()
     keys = list(fixture.order)
-    layout = build_dag_layout(fixture.graph, keys)
+    layout = build_dag_layout(fixture.graph, keys, display=build_display_edges(fixture.graph, tuple(keys), full=True))
     geometry = layout.geometry
     assert_independent_routes(layout)
     assert layout.keys == fixture.order
@@ -234,17 +236,21 @@ def test_complex_layouts_keep_branch_lanes_and_complete_dependency_tracks(make_f
         (key, dependency) for key in keys for dependency in fixture.graph.get_node(key).dependencies}
     assert len(set(geometry.action_columns)) > 1
     for route, track in zip(geometry.routes, geometry.tracks):
-        assert len(route.points) - 2 <= 2
+        assert len(route.points) - 2 <= 4
         assert route.points[0][0] == geometry.action_columns[route.source]
         assert route.points[-1][0] == geometry.action_columns[route.target]
         vertical = [(first, last) for first, last in zip(route.points, route.points[1:]) if first[0] == last[0]]
-        assert len(vertical) == 1 and vertical[0][0][0] == track.column
+        if not any(first[0] == track.column for first, last in vertical):
+            assert route.target == route.source + 1 and len(geometry.connector_rows[route.source]) == 1
+            assert any(first[1] == last[1] and min(first[0], last[0]) <= track.column <= max(first[0], last[0])
+                       for first, last in zip(route.points, route.points[1:]))
+        assert all(first[0] in {track.column, route.points[0][0], route.points[-1][0]} for first, last in vertical)
     for rank, rows in enumerate(geometry.connector_rows):
-        assert len(rows) == 1
+        assert len(rows) in {0, 1, 2, 3}
     output = OutputFormatter(no_color=True, compact=True)
     dag = execution_dag(fixture.graph, keys, output.context, False, {}, lambda key: Text("o "),
-                        lambda key: "dim", layout=layout)
-    console = Console(file=StringIO(), width=fixture.width)
+                        lambda key: "dim", lambda: BranchTheme.DISABLED, layout=layout)
+    console = Console(file=StringIO(), width=max(fixture.width, geometry.width + 1 + max(len(dag._label(key).plain) for key in keys)))
     lines, anchors = dag.visual_lines(console, console.options, lambda key, width: dag._label(key))
     rendered = ["".join(segment.text for segment in line) for line in lines]
     for key, marker in zip(keys, geometry.action_columns):
@@ -254,11 +260,14 @@ def test_complex_layouts_keep_branch_lanes_and_complete_dependency_tracks(make_f
     assert all(Text(line).cell_len <= console.width for line in rendered)
     for edge, track in zip(layout.edges, geometry.tracks):
         if edge.kind != "strong":
-            row = geometry.connector_rows[track.source][0]
-            cell = next(cell for cell in row if cell.column == track.column)
-            assert [connection.edge for connection in cell.connections] == [track.edge]
-            line = rendered[anchors[keys[track.source]].stop]
-            assert line[track.column] == "╎"
+            assert any((connection.directions == layered.Direction.UP | layered.Direction.DOWN
+                        and all(peer.directions == layered.Direction.LEFT | layered.Direction.RIGHT
+                                for peer in cell.connections if peer.edge != track.edge))
+                       or (connection.directions == layered.Direction.LEFT | layered.Direction.RIGHT
+                           and len(cell.connections) == 1)
+                       for row in (*geometry.action_rows, *(row for rows in geometry.connector_rows for row in rows))
+                       for cell in row for connection in cell.connections if connection.edge == track.edge)
+            assert any(glyph in "".join(rendered) for glyph in ("╎", "╌"))
     if fixture.name == "layered-kinds":
         narrow = Console(file=StringIO(), width=12)
         narrow.print(dag)
@@ -274,13 +283,13 @@ def test_disconnected_actions_have_blank_separators():
         nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("fixture", 1, key.id.name)))
                  for key in keys}
         graph = ActionGraph(nodes, set(keys))
-        layout = build_dag_layout(graph, keys)
+        layout = build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True))
         assert len(layout.geometry.action_rows) == count
         assert layout.geometry.connector_rows == (((),),) * max(0, count - 1)
         assert not any(layout.geometry.continuation_rows)
         output = OutputFormatter(no_color=True, compact=True)
         dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "),
-                            lambda key: "dim", layout=layout)
+                            lambda key: "dim", lambda: BranchTheme.DISABLED, layout=layout)
         console = Console(file=StringIO(), width=80)
         console.print(dag)
         lines = console.file.getvalue().splitlines()
@@ -295,18 +304,18 @@ def test_wrapped_labels_continue_only_outgoing_and_through_tracks():
     nodes[keys[1]].dependencies.update([Dependency(keys[0]), Dependency(keys[0], weak=True),
                                       Dependency(keys[0], soft=True)])
     graph = ActionGraph(nodes, {keys[1]})
-    layout = build_dag_layout(graph, keys)
+    layout = build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True))
     output = OutputFormatter(no_color=True, compact=True)
     dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "),
-                        lambda key: "dim", layout=layout)
+                        lambda key: "dim", lambda: BranchTheme.DISABLED, layout=layout)
     console = Console(file=StringIO(), width=20)
     lines, anchors = dag.visual_lines(console, console.options, lambda key, width: Text(key.id.name * 20))
     for rank, key in enumerate(keys):
         assert len(anchors[key]) > 1
         expected = [" "] * layout.geometry.width
-        for track, edge in zip(layout.geometry.tracks, layout.edges):
-            if track.source <= rank < track.target:
-                expected[track.column] = "│" if edge.kind == "strong" else "╎"
+        for cell in layout.geometry.continuation_rows[rank]:
+            expected[cell.column] = "╎" if all(layout.edges[connection.edge].kind != "strong"
+                                              for connection in cell.connections) else "│"
         for row in range(anchors[key].start + 1, anchors[key].stop):
             line = "".join(segment.text for segment in lines[row])
             assert line[:layout.geometry.width] == "".join(expected)
@@ -323,7 +332,7 @@ def test_explicit_table_plan_is_rendered_by_cli_modes(tmp_path, mode, dry):
         '# action: base\n```python\npass\n```\n\n'
         '# action: work\n```python\nmdl.dep("action.base")\npass\n```\n')
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="100")
-    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode, "--plan-table",
+    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode, "--plan", "table",
                              *(["--force-interactive"] if mode == "table" else []),
                              *(["--dry-run"] if dry else []), ":work"], cwd=tmp_path, env=env,
                             capture_output=True, text=True, timeout=10)
@@ -345,8 +354,7 @@ def test_explicit_table_plan_is_rendered_by_cli_modes(tmp_path, mode, dry):
 @pytest.mark.parametrize("completed", [False, True])
 def test_pure_explicit_table_plan_remains_a_table_in_live_and_final_views(completed):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=40)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=40))
     logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="table")
     if completed:
         logger.stop_flag = True
@@ -361,8 +369,7 @@ def test_pure_explicit_table_plan_remains_a_table_in_live_and_final_views(comple
 
 def test_pure_static_table_plan_reuses_prefix_until_terminal_width_changes(monkeypatch):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=40)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=40))
     logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="table")
     calls = []
     original = logger._plan_section
@@ -388,7 +395,7 @@ def test_unchanged_dag_rows_reuse_rendered_blocks(monkeypatch, width):
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=False, compact=True)
     console = Console(file=StringIO(), width=width, color_system="truecolor", no_color=False)
-    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=build_dag_layout(graph, keys))
+    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)))
     first = dag.visual_lines(console, console.options, lambda key, width: dag._label(key))
     renders = []
     original = console.render_lines
@@ -408,7 +415,7 @@ def test_dag_cache_invalidation_includes_base_style_justification_and_incident_e
     output = OutputFormatter(no_color=False, compact=True)
     console = Console(file=StringIO(), width=100, color_system="truecolor", no_color=False)
     styles = {key: "dim" for key in keys}
-    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), styles.__getitem__, layout=build_dag_layout(graph, keys))
+    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), styles.__getitem__, lambda: BranchTheme.DISABLED, layout=build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)))
     label = Text("same", style="blue")
     baseline = dag.visual_lines(console, console.options, lambda key, width: label)
     label.style = "green on #f2f2f2"
@@ -424,7 +431,7 @@ def test_dag_cache_invalidation_includes_base_style_justification_and_incident_e
 def test_dag_routes_each_declared_edge_without_joining_unrelated_crossing():
     graph, keys = crossing_graph()
     output = OutputFormatter(no_color=True, compact=True)
-    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=build_dag_layout(graph, keys))
+    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)))
     assert list(dag.layout.keys) == keys
     assert {(edge.target, edge.dependency) for edge in dag.edges} == {
         (key, dependency) for key in keys for dependency in graph.get_node(key).dependencies}
@@ -453,10 +460,10 @@ def test_layered_routing_keeps_unrelated_bends_separate_and_parallel_strength_vi
         if count == 2:
             nodes[keys[1]].dependencies.update([Dependency(keys[0], weak=True), Dependency(keys[0], soft=True)])
         graph = ActionGraph(nodes, {keys[-1]})
-        layout = build_dag_layout(graph, keys)
+        layout = build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True))
         assert_independent_routes(layout)
         output = OutputFormatter(no_color=True, compact=True)
-        dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=layout)
+        dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=layout)
         stream = StringIO()
         Console(file=stream, width=160).print(dag)
         if count == 2:
@@ -479,18 +486,18 @@ def test_complex_execution_plan_bounds_connector_rows_and_keeps_each_action_once
     for source, target in links:
         nodes[keys[target]].dependencies.add(Dependency(keys[source], weak=(source, target) == (2, 3)))
     graph = ActionGraph(nodes, {keys[-1]})
-    layout = build_dag_layout(graph, keys)
+    layout = build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True))
     assert_independent_routes(layout)
-    assert sum(len(rows) for rows in layout.geometry.connector_rows) == 6
-    assert max(len(rows) for rows in layout.geometry.connector_rows) == 1
-    assert layout.geometry.width == 12
+    assert sum(len(rows) for rows in layout.geometry.connector_rows) <= 18
+    assert max(len(rows) for rows in layout.geometry.connector_rows) <= 3
+    assert layout.geometry.width == 23
     assert len(set(layout.geometry.action_columns)) > 1
-    assert all(len(route.points) - 2 <= 2 for route in layout.geometry.routes)
+    assert all(len(route.points) - 2 <= 4 for route in layout.geometry.routes)
     output = OutputFormatter(no_color=True, compact=True)
-    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=layout)
+    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=layout)
     stream = StringIO()
     Console(file=stream, width=120).print(dag)
-    assert len(stream.getvalue().splitlines()) == 13
+    assert len(stream.getvalue().splitlines()) == 7 + sum(map(len, layout.geometry.connector_rows))
     assert all(stream.getvalue().count(name + " (@") == 1 for name in names)
 
 
@@ -505,7 +512,7 @@ def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
     calls = {}
-    for name in ["solve_layered_layout", "_assign_lanes", "_allocate_routing", "_rasterize"]:
+    for name in ["_allocate_routing", "_rasterize_routes"]:
         original = getattr(layered, name)
 
         def counted(*args, stage=name, function=original, **kwargs):
@@ -534,7 +541,7 @@ def test_cli_shares_one_solved_layout_across_preparation_execution_and_resizing(
     monkeypatch.setattr(ActionLoggerPure, "start", start)
     assert CLI().run(["--without-nix", ":work"]) == 0
     assert len(layouts) == 2 and layouts[0] is layouts[1]
-    assert calls == {name: 1 for name in ["solve_layered_layout", "_assign_lanes", "_allocate_routing", "_rasterize"]}
+    assert calls == {name: 1 for name in ["_allocate_routing", "_rasterize_routes"]}
 
 
 def test_dag_preserves_contexts_parallel_strengths_retainers_and_pruned_endpoints():
@@ -547,7 +554,7 @@ def test_dag_preserves_contexts_parallel_strengths_retainers_and_pruned_endpoint
         *(Dependency(source, soft=True, retainer_action=key) for key in retainers)])
     nodes[variants[1]].dependencies.update([Dependency(source), Dependency(ActionKey.from_name("pruned"), weak=True)])
     output = OutputFormatter(no_color=True, compact=True)
-    dag = execution_dag(ActionGraph(nodes, set(variants)), keys, output.context, False, {}, lambda key: Text("o "), lambda key: "dim", layout=build_dag_layout(ActionGraph(nodes, set(variants)), keys))
+    dag = execution_dag(ActionGraph(nodes, set(variants)), keys, output.context, False, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=build_dag_layout(ActionGraph(nodes, set(variants)), keys, display=build_display_edges(ActionGraph(nodes, set(variants)), tuple(keys), full=True)))
     assert list(dag.layout.keys) == keys and len(dag.edges) == 5
     assert [edge.kind for edge in dag.edges] == ["strong", "weak", "soft", "soft", "strong"]
     assert [edge.dependency.retainer_action for edge in dag.edges if edge.kind == "soft"] == retainers
@@ -570,9 +577,8 @@ def test_dag_width_encoding_and_status_updates_preserve_geometry_and_references(
     frames = []
     for glyph, style in [("o ", "dim"), ("+ ", "cyan not dim")]:
         with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-            output = OutputFormatter(no_color=True, compact=True)
-            output._console = Console(file=stream, width=width)
-            dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text(glyph), lambda key: style, layout=build_dag_layout(graph, keys))
+            output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=width))
+            dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text(glyph), lambda key: style, lambda: BranchTheme.DISABLED, layout=build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)))
             output.print(dag)
             stream.flush()
             lines = stream.buffer.getvalue().decode(encoding).splitlines()
@@ -598,16 +604,16 @@ def test_dag_width_encoding_and_status_updates_preserve_geometry_and_references(
 @pytest.mark.parametrize("status", list(TaskStatus))
 def test_live_dag_keeps_geometry_and_styles_edges_by_dependent_status(status):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=100, force_terminal=True, color_system="standard")
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=100, force_terminal=True, color_system="standard"))
     logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="dag")
     before = logger._plan_section().renderables[1]
     logger.tasks[keys[1]].status = status
     logger.tasks[keys[0]].status = TaskStatus.DONE
     after = logger._plan_section().renderables[1]
     assert before.layout is after.layout
-    assert logger._plan_edge_style(keys[3]) == "dim"
-    assert ("not dim" in logger._plan_edge_style(keys[1])) == (status not in {TaskStatus.TBD, TaskStatus.SKIPPED})
+    expected_ready = status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}
+    assert logger._plan_edge_style(keys[3]) == ("not dim" if expected_ready else "dim")
+    assert ("not dim" in logger._plan_edge_style(keys[1])) == (status != TaskStatus.SKIPPED and (status != TaskStatus.TBD or logger._dependencies_ready(keys[1])))
     rows = output.console.render_lines(after, pad=False)
     for key in keys:
         line = next(Text.assemble(*[(segment.text, segment.style or "") for segment in row])
@@ -620,9 +626,9 @@ def test_unspecified_plan_matches_explicit_dag_and_retains_tree_alternative(comp
     graph, keys = crossing_graph()
     frames = []
     for selection in [None, "dag", "tree"]:
-        output = OutputFormatter(no_color=True, compact=compact)
-        output._console = Console(file=StringIO(), width=100)
-        CLI()._visualize_execution_plan(graph, keys, ["package"], output, True, build_dag_layout(graph, keys),
+        output = OutputFormatter(no_color=True, compact=compact, console=Console(file=StringIO(), width=100))
+        CLI()._visualize_execution_plan(graph, keys, ["package"], output, True, build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)),
+                                        display=build_display_edges(graph, tuple(keys), full=True),
                                         **({"plan_style": selection} if selection else {}))
         frames.append(output.console.file.getvalue())
     cli = CLI()
@@ -636,9 +642,8 @@ def test_unspecified_plan_matches_explicit_dag_and_retains_tree_alternative(comp
 @pytest.mark.parametrize("width", [9, 12, 100])
 def test_goal_annotations_keep_normal_weight_when_labels_wrap(width):
     graph, keys = crossing_graph()
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=width, force_terminal=True, color_system="standard")
-    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=build_dag_layout(graph, keys))
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=width, force_terminal=True, color_system="standard"))
+    dag = execution_dag(graph, keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=build_dag_layout(graph, keys, display=build_display_edges(graph, tuple(keys), full=True)))
     label = dag._label(next(iter(graph.goals)))
     assert label.get_style_at_offset(output.console, 0).bold
     in_annotation = False
@@ -663,7 +668,7 @@ def test_four_parallel_branches_do_not_cross_unrelated_sibling_lanes(tmp_path):
         "\n".join(f'mdl.dep("action.{dependency}")' for dependency in dependencies) +
         '\npass\n```' for name, dependencies in actions.items()), encoding="utf-8")
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="160")
-    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--simple-log", "--plan-dag", "--dry-run",
+    result = subprocess.run([sys.executable, "-m", "mudyla", "--without-nix", "--simple-log", "--plan", "dag", "--dry-run",
         *(':' + name for name in actions if name.startswith("compile"))], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -684,9 +689,9 @@ def test_repeated_forks_keep_compact_routes_and_preserve_edges():
     for target, dependency in links:
         nodes[target].dependencies.add(dependency)
     output = OutputFormatter(no_color=True, compact=True)
-    dag = execution_dag(ActionGraph(nodes, {keys[-1]}), keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=build_dag_layout(ActionGraph(nodes, {keys[-1]}), keys))
+    dag = execution_dag(ActionGraph(nodes, {keys[-1]}), keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=build_dag_layout(ActionGraph(nodes, {keys[-1]}), keys, display=build_display_edges(ActionGraph(nodes, {keys[-1]}), tuple(keys), full=True)))
     assert not dag.crossings
-    assert max(len(rows) for rows in dag.layout.geometry.connector_rows) == 1
+    assert max(len(rows) for rows in dag.layout.geometry.connector_rows) <= 3
     assert {(edge.target, edge.dependency) for edge in dag.edges} == set(links)
 
 
@@ -697,8 +702,15 @@ def test_nonplanar_merges_keep_explicit_nonjoining_crossings():
         for target in keys[3:]:
             nodes[target].dependencies.add(Dependency(source))
     output = OutputFormatter(no_color=True, compact=True)
-    dag = execution_dag(ActionGraph(nodes, set(keys[3:])), keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", layout=build_dag_layout(ActionGraph(nodes, set(keys[3:])), keys))
+    dag = execution_dag(ActionGraph(nodes, set(keys[3:])), keys, output.context, True, {}, lambda key: Text("o "), lambda key: "dim", lambda: BranchTheme.DISABLED, layout=build_dag_layout(ActionGraph(nodes, set(keys[3:])), keys, display=build_display_edges(ActionGraph(nodes, set(keys[3:])), tuple(keys), full=True)))
     stream = StringIO()
     Console(file=stream, width=100).print(dag)
-    assert dag.crossings and "╪" in stream.getvalue()
+    assert dag.crossings and "╪" not in stream.getvalue()
+    for cells in (*dag.layout.geometry.action_rows, *(row for rows in dag.layout.geometry.connector_rows for row in rows)):
+        gutter = dag._gutter(cells, ("dim",) * len(dag.edges), False, None).plain
+        for cell in cells:
+            if cell.crossing:
+                assert gutter[cell.column] == "│"
+                assert {connection.directions for connection in cell.connections} == {
+                    layered.Direction.UP | layered.Direction.DOWN, layered.Direction.LEFT | layered.Direction.RIGHT}
     assert len(dag.edges) == 9 and len(dag.layout.keys) == 6

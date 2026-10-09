@@ -4,15 +4,15 @@ Provides a clean API for accessing symbols that automatically fall back
 to ASCII when emoji support is not available or colors are disabled.
 
 Usage:
-    symbols = SymbolsFormatter()
+    symbols = SymbolsFormatter(console, decorative_ascii=False)
     print(symbols.Globe)  # Returns "🌍" or "*" depending on support
-    print(symbols.Check)  # Returns "✅" or "+"
+    print(symbols.Check)  # Returns "●" or "+"
 """
 
 import platform
-import sys
 from dataclasses import dataclass
-from functools import cached_property
+from enum import Enum
+from rich.console import Console
 
 
 @dataclass(frozen=True)
@@ -23,12 +23,23 @@ class Symbol:
     ascii: str
 
 
+class StatusSymbol(Enum):
+    WAITING = Symbol("◌", "*")
+    READY = Symbol("○", "o")
+    RUNNING = Symbol("◐◓◑◒", "|/-\\")
+    DONE = Symbol("●", "+")
+    FAILED = Symbol("⊗", "x")
+    RESTORED = Symbol("◉", "+")
+    SKIPPED = Symbol("⊖", "-")
+    CANCELLED = Symbol("⊘", "!")
+
+
 class Symbols:
     """Symbol definitions as class attributes."""
 
     # Status indicators
-    Check = Symbol("✅", "+")
-    Cross = Symbol("❌", "x")
+    Check = StatusSymbol.DONE.value
+    Cross = StatusSymbol.FAILED.value
     Warning = Symbol("⚠️", "!")
     Info = Symbol("ℹ️", "i")
     Play = Symbol("▶️", ">")
@@ -96,35 +107,50 @@ class SymbolsFormatter:
     Emoji is disabled when no_color=True or when the terminal doesn't support it.
     """
 
-    def __init__(self, no_color: bool = False):
-        """Initialize the symbols formatter.
+    MARKER_FRAMES_PER_SECOND = 4
 
-        Args:
-            no_color: If True, always use ASCII symbols instead of emoji
-        """
-        self._no_color = no_color
+    def __init__(self, console: Console, *, decorative_ascii: bool) -> None:
+        self.console = console
+        self._decorative_ascii = decorative_ascii
 
-    @cached_property
+    def status(self, symbol: StatusSymbol, *, now: float) -> str:
+        glyph, fallback = symbol.value.emoji, symbol.value.ascii
+        if symbol == StatusSymbol.RUNNING:
+            frame = int(now * SymbolsFormatter.MARKER_FRAMES_PER_SECOND)
+            glyph = glyph[frame % len(glyph)]
+            fallback = fallback[frame % len(fallback)]
+        if self.console.options.ascii_only:
+            return fallback
+        try:
+            glyph.encode(self.console.encoding)
+        except UnicodeEncodeError:
+            return fallback
+        return glyph
+
+    @property
     def supports_emoji(self) -> bool:
         """Detect if terminal supports emoji display."""
         # Disable emoji when no_color is set
-        if self._no_color:
+        if self._decorative_ascii:
             return False
 
         if platform.system() == "Windows":
             return False
 
-        if not hasattr(sys.stdout, 'encoding') or sys.stdout.encoding is None:
-            return False
-
-        encoding = sys.stdout.encoding.lower()
+        encoding = self.console.encoding.lower()
         emoji_encodings = ['utf-8', 'utf8', 'utf-16', 'utf16']
 
         return any(enc in encoding for enc in emoji_encodings)
 
     def _resolve(self, symbol: Symbol) -> str:
         """Resolve a symbol to emoji or ASCII based on support."""
-        return symbol.emoji if self.supports_emoji else symbol.ascii
+        if not self.supports_emoji or self.console.options.ascii_only:
+            return symbol.ascii
+        try:
+            symbol.emoji.encode(self.console.encoding)
+        except UnicodeEncodeError:
+            return symbol.ascii
+        return symbol.emoji
 
     def get(self, symbol: Symbol) -> str:
         """Get the resolved symbol string.
@@ -140,11 +166,11 @@ class SymbolsFormatter:
     # Status indicators
     @property
     def Check(self) -> str:
-        return self._resolve(Symbols.Check)
+        return self.status(StatusSymbol.DONE, now=0)
 
     @property
     def Cross(self) -> str:
-        return self._resolve(Symbols.Cross)
+        return self.status(StatusSymbol.FAILED, now=0)
 
     @property
     def Warning(self) -> str:

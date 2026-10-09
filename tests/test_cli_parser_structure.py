@@ -1,10 +1,35 @@
 from io import StringIO
 from unittest.mock import patch
+import pytest
 
 from mudyla.cli import CLI
 from mudyla.cli_builder import build_arg_parser
 from mudyla.parser.markdown_parser import MarkdownParser
 from mudyla.utils.project_root import find_project_root
+
+
+@pytest.mark.parametrize('plan', ['dag', 'tree', 'table'])
+def test_canonical_plan_options_accept_explicit_values(plan):
+    args, unknown = build_arg_parser().parse_known_args([
+        '--plan', plan, '--plan-minimize', 'false', '--plan-dag-solver', 'dagre'])
+    assert unknown == [], 'Canonical plan options were not recognized'
+    assert args.plan_style == plan and args.plan_minimize is False
+    assert args.plan_dag_solver == 'dagre'
+
+
+def test_plan_defaults_to_minimized_grid_auto_for_every_logger():
+    cli = CLI()
+    for mode in ('pure', 'table', 'simple'):
+        args = cli.parser.parse_args(['--logger', mode, '--force-interactive'])
+        cli._apply_platform_defaults(args, quiet_mode=True)
+        assert args.plan_style == 'dag'
+        assert args.plan_minimize is True and args.plan_dag_solver == 'grid-auto'
+
+
+def test_obsolete_plan_selectors_are_removed():
+    options = {option for action in build_arg_parser()._actions for option in action.option_strings}
+    assert not options.intersection({'--plan-dag', '--plan-tree', '--plan-table', '--dag-full',
+                                     '--dag-minimized', '--dag-auto', '--dag-grid-low', '--dag-dagre'})
 
 
 def test_cli_parser_defaults_and_options_present():
@@ -143,3 +168,36 @@ class TestLoggerTerminalDetection:
         with patch("sys.stdout", new_callable=StringIO):
             cli._apply_platform_defaults(args, quiet_mode=True)
         assert args.logger == "pure"
+
+
+@pytest.mark.parametrize('plan', ['tree', 'table'])
+def test_explicit_dag_solver_rejects_non_dag_plans_before_discovery(plan, monkeypatch, capsys):
+    cli = CLI()
+    monkeypatch.setattr(cli, '_discover_markdown_files', lambda *args: pytest.fail('Conflicting plan reached discovery'))
+    with pytest.raises(SystemExit) as failure:
+        cli.run(['--plan', plan, '--plan-dag-solver', 'grid-auto', ':goal'])
+    assert failure.value.code == 2
+    assert '--plan-dag-solver requires --plan dag' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('shell,file', [('bash', 'mdl.bash'), ('zsh', '_mdl')])
+@pytest.mark.parametrize('option,values', [
+    ('--plan', ['tree', 'dag', 'table']),
+    ('--plan-minimize', ['true', 'false']),
+    ('--plan-dag-solver', ['grid-auto', 'grid-low', 'grid-medium', 'grid-high', 'grid-opt', 'dagre', 'elk', 'sugiyama']),
+])
+def test_shell_completion_supplies_canonical_plan_values(shell, file, option, values):
+    from pathlib import Path
+    import subprocess
+    import shutil
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"Optional completion shell {shell} is unavailable")
+    path = Path(__file__).resolve().parents[1] / 'completions' / file
+    if shell == 'bash':
+        script = 'source "$1"; COMP_WORDS=(mdl "$2" ""); COMP_CWORD=2; _mdl_completion; printf "%s\\n" "${COMPREPLY[@]}"'
+    else:
+        script = 'compadd() { print -l -- "$@"; }; source "$1"; words=(mdl "$2" ""); CURRENT=3; _mdl'
+    result = subprocess.run([executable, '-c', script, 'completion', str(path), option], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == values

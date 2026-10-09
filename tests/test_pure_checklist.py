@@ -15,6 +15,7 @@ from rich.text import Text
 from mudyla.ast.models import ActionDefinition, SourceLocation
 from mudyla.cli import CLI
 from mudyla.dag.context import ContextId
+from mudyla.dag.display import build_display_edges
 from mudyla.dag.graph import ActionGraph, ActionId, ActionKey, ActionNode, Dependency
 from mudyla.logging.action_logger_pure import ActionLoggerPure, MAX_LOG_CHARS
 from mudyla.logging.action_logger_table import TaskStatus
@@ -30,8 +31,7 @@ def test_final_snapshot_contains_selected_graph_once_without_replaying_run_info(
     nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("test.md", 1, key.id.name)))
              for key in [source, goal]}
     nodes[goal].dependencies.add(Dependency(source))
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=100, height=24, force_terminal=interactive)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100, height=24, force_terminal=interactive))
     logger = ActionLoggerPure([source, goal], output, True, graph=ActionGraph(nodes, {goal}),
                               plan_style=plan_style, run_info=Text("ONLY_PREPARATION"))
     for key in [source, goal]:
@@ -43,7 +43,7 @@ def test_final_snapshot_contains_selected_graph_once_without_replaying_run_info(
     frame = Text.from_ansi(output.console.file.getvalue()).plain
     assert frame.count("Plan:") == (0 if plan_style == "dag" else 1)
     assert "ONLY_PREPARATION" not in frame
-    assert ("✓ source" if interactive else "+ source") in frame or "✓ source" in frame
+    assert ("● source" if interactive else "+ source") in frame or "● source" in frame
     assert frame.count("Actions:") == 1
 
 
@@ -52,12 +52,11 @@ def test_tree_starts_with_actual_source_and_only_goal_names_are_bold():
     nodes = {key: ActionNode(key, ActionDefinition(key.id.name, [], {}, SourceLocation("test.md", 1, key.id.name))) for key in keys}
     nodes[keys[1]].dependencies.add(Dependency(keys[0]))
     nodes[keys[2]].dependencies.add(Dependency(keys[1]))
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=100)
-    tree = CLI()._build_execution_tree(ActionGraph(nodes, set(keys[1:])), keys, output, True, {})
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=100))
+    tree = CLI()._build_execution_tree(ActionGraph(nodes, set(keys[1:])), keys, output, True, {}, display=build_display_edges(ActionGraph(nodes, set(keys[1:])), tuple(keys), full=True))
     rows = output.console.render_lines(tree, pad=False)
     first = Text.assemble(*[(segment.text, segment.style or "") for segment in rows[0]])
-    assert first.plain.startswith("◇ source"), first.plain
+    assert first.plain.startswith("○ source"), first.plain
     for name, bold in [("source", False), ("intermediate_goal", True), ("last", True)]:
         row = next(Text.assemble(*[(segment.text, segment.style or "") for segment in line])
                    for line in rows if name in "".join(segment.text for segment in line))
@@ -73,8 +72,7 @@ def test_checklist_preserves_authoritative_execution_order_and_selected_identity
         nodes[prerequisite].dependents.add(Dependency(dependent))
     graph = ActionGraph(nodes, {goal})
     order = graph.get_execution_order()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=100)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=100))
     logger = ActionLoggerPure(order, output, True, graph=graph)
     logger.selected_index = order.index(right)
     before = [row.plain.split()[2 if row.plain.startswith(">") else 1] for row in logger._action_rows()]
@@ -94,8 +92,7 @@ def test_live_tree_updates_dependency_readiness_and_shared_references_without_mo
     for child, prerequisite in [(left, base), (right, base), (goal, left), (goal, right)]:
         nodes[child].dependencies.add(Dependency(prerequisite))
     graph = ActionGraph(nodes, {goal})
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=24, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=24, force_terminal=True))
     logger = ActionLoggerPure(keys, output, True, graph=graph, plan_style="tree", run_info=Text("RUN_INFORMATION"))
 
     def document():
@@ -111,19 +108,19 @@ def test_live_tree_updates_dependency_readiness_and_shared_references_without_mo
     running = document()
     running_glyph = logger._tree_status(base).plain.strip()
     assert running.count(running_glyph + " base") == 1
-    assert running.count("○ goal") == 2
+    assert running.count("◌ goal") == 2
     assert logger._overview_offset - logger._overview_prefix_length == before
     logger.mark_done(base, .2)
     ready = document()
-    assert logger._tree_status(left).plain.strip() == logger._tree_status(right).plain.strip() == "◇"
+    assert logger._tree_status(left).plain.strip() == logger._tree_status(right).plain.strip() == "○"
     logger.mark_running(left)
     logger.mark_failed(left, .3)
     failed = document()
-    assert "✕" in failed
-    assert all(logger._tree_status(key).plain.strip() == "○" for key in [right, goal])
+    assert "⊗" in failed
+    assert all(logger._tree_status(key).plain.strip() == "◌" for key in [right, goal])
     logger.mark_execution_complete()
     assert all(logger.tasks[key].status == TaskStatus.SKIPPED for key in [right, goal])
-    assert "- right" in document()
+    assert "⊖ right" in document()
 
 
 @pytest.mark.parametrize("depth", [3, 8])
@@ -134,9 +131,8 @@ def test_twelve_column_tree_keeps_deep_leaf_identifiers(depth, encoding):
     for parent, child in zip(keys[1:], keys):
         nodes[parent].dependencies.add(Dependency(child))
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        output = OutputFormatter(no_color=True, compact=True)
-        output._console = Console(file=stream, width=12)
-        output.print(CLI()._build_execution_tree(ActionGraph(nodes, {keys[-1]}), keys, output, True, {}))
+        output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=12))
+        output.print(CLI()._build_execution_tree(ActionGraph(nodes, {keys[-1]}), keys, output, True, {}, display=build_display_edges(ActionGraph(nodes, {keys[-1]}), tuple(keys), full=True)))
         stream.flush()
         text = stream.buffer.getvalue().decode(encoding)
     unwrapped = "".join(line.strip() for line in text.splitlines())
@@ -149,8 +145,7 @@ def test_preparation_snapshot_preserves_rich_renderables_and_excludes_later_outp
     from rich.tree import Tree
 
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        output = OutputFormatter(no_color=False, compact=True)
-        output._console = Console(file=stream, width=50, force_terminal=True, highlight=False)
+        output = OutputFormatter(no_color=False, compact=True, console=Console(file=stream, width=50, force_terminal=True, highlight=False))
         output.start_recording()
         output.print("[bold cyan]Contexts:[/bold cyan]")
         output.print(Text("[literal] context", style="yellow"))
@@ -173,8 +168,7 @@ def test_preparation_snapshot_preserves_rich_renderables_and_excludes_later_outp
 
 
 def test_overview_scrolls_run_information_and_all_actions_without_moving_selection():
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=90, height=30, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=90, height=30, force_terminal=True))
     keys = [ActionKey.from_name(f"task{index:02d}") for index in range(36)]
     logger = ActionLoggerPure(keys, output, True, keep_running=True)
     logger._run_info = Group(Text("Retainers: kept shared"), Text("Execution plan:"),
@@ -208,8 +202,7 @@ def test_overview_scrolls_run_information_and_all_actions_without_moving_selecti
 
 
 def test_overview_resize_preserves_action_position_after_prefix_rewrap():
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=80, height=12, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=12, force_terminal=True))
     keys = [ActionKey.from_name(f"task{index:02d}") for index in range(36)]
     logger = ActionLoggerPure(keys, output, True, keep_running=True)
     logger._run_info = Text("retainer " * 35)
@@ -236,12 +229,11 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
         nodes[key].dependencies.add(Dependency(shared))
     graph = ActionGraph(nodes, {first, second})
     with TextIOWrapper(BytesIO(), encoding=encoding, newline="\r\n") as stream:
-        output = OutputFormatter(no_color=True, compact=True)
-        output._console = Console(file=stream, width=65, height=24, force_terminal=True)
+        output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=65, height=24, force_terminal=True))
         cli = CLI()
         retained = RetainerResult(ActionKey.from_name("keep-shared"), [shared], True, 3)
         run_info = Group(cli._build_retainer_results([retained], output, True), Text("Execution plan"),
-                         cli._build_execution_tree(graph, keys, output, True, {}))
+                         cli._build_execution_tree(graph, keys, output, True, {}, display=build_display_edges(graph, tuple(keys), full=True)))
         logger = ActionLoggerPure(keys, output, True, keep_running=True, run_info=run_info)
         logger._handle_key_table("top")
         output.console.print(logger._build_renderable())
@@ -254,8 +246,7 @@ def test_overview_reuses_retainer_results_and_shared_dependency_tree(encoding):
 
 @pytest.mark.parametrize("width,height", [(100, 24), (40, 12), (24, 6), (12, 4)])
 def test_checklist_bounds_active_action_and_latest_output(width, height):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=height, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=height, force_terminal=True))
     keys = [ActionKey.from_name("live25" if i == 25 else f"task{i:02d}") for i in range(30)]
     logger = ActionLoggerPure(keys, output, True)
     logger.mark_running(keys[25])
@@ -285,8 +276,7 @@ def test_checklist_bounds_active_action_and_latest_output(width, height):
 @pytest.mark.parametrize("encoding", ["ascii", "cp1252", "utf-8"])
 def test_checklist_encoding_statuses_and_partial_prompt(encoding):
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        output = OutputFormatter(no_color=False, compact=True)
-        output._console = Console(file=stream, width=40, height=12, force_terminal=True)
+        output = OutputFormatter(no_color=False, compact=True, console=Console(file=stream, width=40, height=12, force_terminal=True))
         keys = [ActionKey.from_name(name) for name in ["long-build-é-構築-" * 4, "test", "package"]]
         logger = ActionLoggerPure(keys, output, True)
         logger.mark_running(keys[0])
@@ -306,8 +296,7 @@ def test_checklist_encoding_statuses_and_partial_prompt(encoding):
 
 def test_show_dirs_title_preserves_directory_suffix_on_ascii_terminal(tmp_path):
     with TextIOWrapper(BytesIO(), encoding="ascii") as stream:
-        output = OutputFormatter(no_color=True, compact=True)
-        output._console = Console(file=stream, width=80, height=24, force_terminal=True)
+        output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=80, height=24, force_terminal=True))
         key = ActionKey.from_name("work")
         directory = tmp_path / ("project-prefix-" * 10) / ".mdl/runs/example/selected-action-directory"
         logger = ActionLoggerPure([key], output, True, show_dirs=True)
@@ -320,8 +309,7 @@ def test_show_dirs_title_preserves_directory_suffix_on_ascii_terminal(tmp_path):
 @pytest.mark.parametrize("use_short_ids", [True, False])
 @pytest.mark.parametrize("width", [40, 120])
 def test_checklist_keeps_action_name_before_context(width, use_short_ids):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=12, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=12, force_terminal=True))
     keys = [ActionKey(ActionId("echo"), ContextId((), (("message", value),))) for value in ["one", "two"]]
     logger = ActionLoggerPure(keys, output, use_short_ids)
     for key in keys:
@@ -330,7 +318,7 @@ def test_checklist_keeps_action_name_before_context(width, use_short_ids):
     Console(file=stream, width=width, height=12).print(logger._render_checklist())
     rows = stream.getvalue().splitlines()[:2]
     for key, row in zip(keys, rows):
-        assert row.lstrip("> ").startswith("✓ echo")
+        assert row.lstrip("> ").startswith("● echo")
         context = "@" + output.context.format_id(key.context_id, use_short_ids).plain
         assert (context if width == 120 else context[:4]) in row
         assert "1.3s" in row
@@ -341,8 +329,7 @@ def test_checklist_keeps_action_name_before_context(width, use_short_ids):
 def test_checklist_action_time_and_log_columns_stay_aligned(width):
     from rich.cells import cell_len
 
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=24, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=24, force_terminal=True))
     keys = [ActionKey(ActionId(name), ContextId.from_dict({"platform": platform}))
             for name, platform in [("a", "prod"), ("longer-action-name", "test"), ("構築", "jvm"), ("last", "js")]]
     logger = ActionLoggerPure(keys, output, True)
@@ -384,9 +371,8 @@ def test_dependency_tree_shares_only_exact_action_contexts(encoding):
     nodes[test].dependencies.add(Dependency(other_build))
     graph = ActionGraph(nodes, {build, other_build, test})
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        output = OutputFormatter(no_color=True, compact=True)
-        output._console = Console(file=stream, width=90, force_terminal=False)
-        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False, None, "tree")
+        output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=90, force_terminal=False))
+        CLI()._visualize_execution_plan(graph, [shared, build, other_build, test], ["build", "test"], output, False, None, "tree", display=build_display_edges(graph, tuple([shared, build, other_build, test]), full=True))
         stream.flush()
         result = stream.buffer.getvalue().decode(encoding)
     assert "build (@" + output.context.format_id(build.context_id, False).plain in result
@@ -433,10 +419,9 @@ def test_plan_distinguishes_strong_and_non_strong_incoming_edges(encoding):
     nodes[soft].dependencies.add(Dependency(source, soft=True, retainer_action=ActionKey.from_name("keep")))
     graph = ActionGraph(nodes, set(keys[1:]))
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        output = OutputFormatter(no_color=True, compact=True)
-        output._console = Console(file=stream, width=100)
-        output.print(tree_section(execution_tree(graph, keys, output.context, True, {}, lambda key: Text("+ ")),
-                                  output.console.options.ascii_only))
+        output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=100))
+        output.print(tree_section(execution_tree(graph, keys, output.context, True, {}, lambda key: Text("+ "), display=build_display_edges(graph, tuple(keys), full=True)),
+                                  output.symbols))
         stream.flush()
         lines = stream.buffer.getvalue().decode(encoding).splitlines()
     unicode = encoding == "utf-8"
@@ -459,9 +444,8 @@ def test_mixed_plan_edges_keep_all_nodes_and_stable_rows_during_status_changes(w
     frames = []
     for glyph in ["+ ", "- "]:
         with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-            output = OutputFormatter(no_color=True, compact=True)
-            output._console = Console(file=stream, width=width)
-            output.print(execution_tree(graph, keys, output.context, True, {}, lambda key: Text(glyph)))
+            output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=width))
+            output.print(execution_tree(graph, keys, output.context, True, {}, lambda key: Text(glyph), display=build_display_edges(graph, tuple(keys), full=True)))
             stream.flush()
             lines = stream.buffer.getvalue().decode(encoding).splitlines()
         assert all(Text(line).cell_len <= width for line in lines)
@@ -483,9 +467,8 @@ def test_parallel_edges_have_stable_strength_order_and_shared_context_identity()
     nodes[goal].dependencies.update([Dependency(source, soft=True), Dependency(source), Dependency(source, weak=True)])
     nodes[child].dependencies.add(Dependency(goal, weak=True))
     graph = ActionGraph(nodes, {goal, child})
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=120, force_terminal=True, color_system="standard")
-    rows = output.console.render_lines(execution_tree(graph, keys, output.context, True, {}, lambda key: Text("+ ")), pad=False)
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=120, force_terminal=True, color_system="standard"))
+    rows = output.console.render_lines(execution_tree(graph, keys, output.context, True, {}, lambda key: Text("+ "), display=build_display_edges(graph, tuple(keys), full=True)), pad=False)
     text = [Text.assemble(*[(segment.text, segment.style or "") for segment in row]) for row in rows]
     goal_rows = [row for row in text if "+ goal" in row.plain]
     assert [row.plain[:2] for row in goal_rows] == ["├─", "├╌", "└╌"]
@@ -496,7 +479,7 @@ def test_parallel_edges_have_stable_strength_order_and_shared_context_identity()
 
 
 @pytest.mark.parametrize("retain,strong,encoding", [(True, False, "utf-8"), (False, False, "utf-8"), (False, True, "cp1252")])
-@pytest.mark.parametrize("plan_options", [["--plan-tree"], ["--plan-dag"]])
+@pytest.mark.parametrize("plan_options", [["--plan", "tree"], ["--plan", "dag"]])
 def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_path, retain, strong, encoding, plan_options):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
@@ -516,9 +499,9 @@ def test_actual_retainer_plan_uses_declared_strength_and_existing_pruning(tmp_pa
     assert ("cache (@global" in plan) == (retain or strong)
     unicode = encoding == "utf-8"
     if retain or strong:
-        soft_edge = ("╎" if unicode else ":") if plan_options == ["--plan-dag"] else ("╌" if unicode else ".")
+        soft_edge = ("╎" if unicode else ":") if plan_options == ["--plan", "dag"] else ("╌" if unicode else ".")
         assert soft_edge in plan.split("deps ready", 1)[0] and "soft" in plan
     if strong:
-        strong_edge = ("│" if unicode else "|") if plan_options == ["--plan-dag"] else ("├─" if unicode else "+-")
+        strong_edge = ("│" if unicode else "|") if plan_options == ["--plan", "dag"] else ("├─" if unicode else "+-")
         assert strong_edge in plan.split("deps ready", 1)[0]
     assert (tmp_path / "retainer-ran").exists() == (not strong)

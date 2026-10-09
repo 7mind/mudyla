@@ -31,9 +31,8 @@ def make_logger(monkeypatch, *, shared=True, no_color=False, term="xterm-256colo
     monkeypatch.setattr(sys, "stdout", stdout)
     monkeypatch.setattr(sys, "stderr", stderr)
     monkeypatch.setenv("TERM", term)
-    output = OutputFormatter(no_color=no_color, compact=True)
-    output._console = Console(file=stdout, force_terminal=True, color_system="truecolor", no_color=no_color,
-                              legacy_windows=legacy)
+    output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=stdout, force_terminal=True, color_system="truecolor", no_color=no_color,
+                              legacy_windows=legacy))
     output._stderr_console = Console(file=stderr, force_terminal=True, color_system="truecolor", no_color=no_color,
                                      legacy_windows=legacy)
     keys = [ActionKey(ActionId(name), ContextId.empty()) for name in ["first", "second"]]

@@ -109,8 +109,7 @@ def test_lifecycle_markers_wrap_complete_long_names():
 
     keys = [ActionKey(ActionId(name), ContextId(axis_values=())) for name in ["x" * 60 + "TAIL", "short"]]
     capture = StringIO()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=capture, width=30, color_system=None)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=capture, width=30, color_system=None))
     logger = ActionLoggerSimple(keys, output)
     for key in keys:
         logger.mark_done(key, 1.0)
@@ -171,8 +170,7 @@ def test_partial_stream_fragments_preserve_callback_order_and_marker_boundary(mo
     capture = StringIO()
     monkeypatch.setattr(sys, "stdout", capture)
     monkeypatch.setattr(sys, "stderr", capture)
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=capture, width=100, color_system=None)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=capture, width=100, color_system=None))
     key = ActionKey.from_name("ask")
     logger = (ActionLoggerGitHub([key], output) if mode == "github"
               else ActionLoggerVerbose([key], output, parallel=False))
@@ -267,8 +265,7 @@ def test_action_marker_phrases_have_explicit_normal_intensity_colors():
     from mudyla.logging.formatters import OutputFormatter
 
     capture = StringIO()
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=capture, width=120, force_terminal=True, color_system="standard", no_color=False)
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=capture, width=120, force_terminal=True, color_system="standard", no_color=False))
     key = ActionKey(ActionId("work"), ContextId(axis_values=()))
     logger = ActionLoggerSimple([key], output)
     logger.begin_action(key, ["python3", "script.py"])
@@ -309,8 +306,7 @@ def test_terminal_record_boundary_cancels_only_incomplete_controls(monkeypatch, 
     capture = TerminalCapture()
     monkeypatch.setattr(sys, "stdout", capture)
     monkeypatch.setenv("TERM", "xterm-256color")
-    output = OutputFormatter(no_color=True, plain=True, compact=True)
-    output._console = Console(file=capture, width=100, color_system=None)
+    output = OutputFormatter(no_color=True, plain=True, compact=True, console=Console(file=capture, width=100, color_system=None))
     key = ActionKey(ActionId("work"), ContextId(axis_values=()))
     logger = ActionLoggerVerbose([key], output, parallel=False)
     logger.write_output(key, fragment, "stdout")

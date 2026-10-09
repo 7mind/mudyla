@@ -256,12 +256,12 @@ class ActionGraph:
             result.append(action_key)
 
             node = self.nodes[action_key]
-            for dependent in node.dependents:
+            for dependent_key in {dependent.action for dependent in node.dependents}:
                 # Only decrement if the dependent is in the graph
-                if dependent.action in in_degree:
-                    in_degree[dependent.action] -= 1
-                    if in_degree[dependent.action] == 0:
-                        queue.append(dependent.action)
+                if dependent_key in in_degree:
+                    in_degree[dependent_key] -= 1
+                    if in_degree[dependent_key] == 0:
+                        queue.append(dependent_key)
 
         if len(result) != len(self.nodes):
             # Graph has a cycle - find and report the actual cycle path

@@ -3,7 +3,7 @@
 import re
 from typing import Optional
 
-from rich.color import Color, ColorSystem
+from rich.color import Color
 from rich.style import Style
 
 RGB = tuple[int, int, int]
@@ -11,7 +11,9 @@ PROBE_SECONDS = 0.250
 ESCAPE_SECONDS = 0.020
 SELECTION_BLEND = 0.03
 LIGHT_BACKGROUND_THRESHOLD = 128
-MAX_PALETTE_CHANNEL_DELTA = 16
+MAX_PALETTE_CHANNEL_DELTA = 24
+FIRST_FIXED_PALETTE_COLOR = 16
+PALETTE_COLORS = 256
 BACKGROUND_QUERY = "\x1b]11;?\x1b\\"
 REPLY_PREFIX = "\x1b]11;rgb:"
 
@@ -96,12 +98,17 @@ class BackgroundProbe:
         tint = tuple(round(channel * (1 - SELECTION_BLEND) + target * SELECTION_BLEND) for channel in background)
         color = Color.from_rgb(*tint)
         if color_system == "256":
-            color = color.downgrade(ColorSystem.EIGHT_BIT)
-            if color.number is None or color.number < 16:
+            candidates = []
+            for index in range(FIRST_FIXED_PALETTE_COLOR, PALETTE_COLORS):
+                candidate = Color.from_ansi(index)
+                quantized = candidate.get_truecolor()
+                change = luminance(quantized) - luminance(background)
+                if (change <= 0 if target else change >= 0) or any(
+                        abs(a - b) > MAX_PALETTE_CHANNEL_DELTA for a, b in zip(quantized, background)):
+                    continue
+                distance = sum((a - b) ** 2 for a, b in zip(quantized, tint))
+                candidates.append((distance, index, candidate))
+            if not candidates:
                 return None
-            quantized = color.get_truecolor()
-            change = luminance(quantized) - luminance(background)
-            if (change <= 0 if target else change >= 0) or any(
-                    abs(a - b) > MAX_PALETTE_CHANNEL_DELTA for a, b in zip(quantized, background)):
-                return None
+            color = min(candidates, key=lambda item: (item[0], item[1]))[2]
         return Style(bgcolor=color)

@@ -47,11 +47,16 @@ class PythonRuntime(LanguageRuntime):
         }
         context_json_path.write_text(json.dumps(context_data, indent=2), encoding="utf-8")
 
+        package = resources.files("mudyla")
+        if not isinstance(package, Path) or not (package / "__init__.py").is_file() or not (package / "runtime.py").is_file():
+            raise FileNotFoundError("Mudyla Python runtime requires an installed package directory")
+
         # Build initialization code
-        # Import runtime directly from mudyla package
         init_code = f'''#!/usr/bin/env python3
 
 # Initialize Mudyla runtime from package
+import sys as _mdl_sys
+_mdl_sys.path.insert(0, {str(package.parent)!r})
 from mudyla import runtime as _mdl_runtime
 _mdl_runtime._initialize_runtime({str(context_json_path)!r}, {str(output_json_path)!r})
 

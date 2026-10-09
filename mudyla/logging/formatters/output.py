@@ -51,7 +51,7 @@ class OutputFormatter:
     """
 
     def __init__(self, no_color: bool, *, plain: bool = False, compact: bool = False,
-                 teamcity: bool = False):
+                 teamcity: bool = False, console: Optional[Console] = None):
         """Initialize the output formatter with all sub-formatters.
 
         Args:
@@ -70,7 +70,7 @@ class OutputFormatter:
         self._run_fields: Optional[list[KeyValueRow]] = None
 
         # Create the Rich console with no_color support
-        self._console = Console(
+        self._console = console if console is not None else Console(
             file=sink,
             no_color=no_color,
             color_system=None if plain else "auto",
@@ -87,7 +87,7 @@ class OutputFormatter:
         )
 
         # Create all sub-formatters - symbols first as others depend on it
-        self._symbols = SymbolsFormatter(no_color=no_color or compact)
+        self._symbols = SymbolsFormatter(self._console, decorative_ascii=no_color or compact)
         self._context = ContextFormatter(symbols=self._symbols)
         self._action = ActionFormatter(context_formatter=self._context)
 
@@ -104,7 +104,7 @@ class OutputFormatter:
         """Get the symbols formatter for emoji/ASCII symbol access.
 
         Usage:
-            output.symbols.Check  # Returns "✅" or "+"
+            output.symbols.Check  # Returns "●" or "+"
             output.symbols.Globe  # Returns "🌍" or "*"
         """
         return self._symbols

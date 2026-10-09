@@ -128,9 +128,10 @@ def test_default_and_context_axes_use_the_same_foreground_colors(tmp_path, monke
     (definitions / "actions.md").write_text('# Axis\n\n- `version`=`{2.13*|3}`\n\n'
                                             '# action: work\n\n## definition when `version:2.13`\n\n```python\nprint("ok")\n```\n')
     monkeypatch.chdir(tmp_path)
-    output = OutputFormatter(no_color=False, compact=True)
     stream = StringIO()
-    output._console = Console(file=stream, width=160, force_terminal=True, color_system="truecolor", no_color=False)
+    output = OutputFormatter(no_color=False, compact=True,
+                             console=Console(file=stream, width=160, force_terminal=True,
+                                             color_system="truecolor", no_color=False))
     monkeypatch.setattr(CLI, "_build_formatters", lambda *args: output)
     assert CLI().run(["--without-nix", "--dry-run", ":work"]) == 0
     rendered = Text.from_ansi(stream.getvalue())
@@ -167,10 +168,9 @@ def test_pure_run_information_emphasizes_quantities_without_restyling_identifier
     monkeypatch.chdir(project)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
     stream = StringIO()
-    output = OutputFormatter(no_color=no_color, compact=True)
     console_options = dict(width=width, force_terminal=color_system is not None,
                            color_system=color_system, no_color=no_color, highlight=False)
-    output._console = Console(file=stream, **console_options)
+    output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=stream, **console_options))
     monkeypatch.setattr(CLI, "_build_formatters", lambda *args: output)
     execute = ExecutionEngine.execute_all
     snapshots = []
@@ -628,9 +628,8 @@ def test_pure_stdout_style_does_not_depend_on_transport_chunks():
     key = ActionKey(ActionId("build"), ContextId(()))
     styles = []
     for chunks in [["payload\n"], ["pay", "load\n"]]:
-        output = OutputFormatter(no_color=False)
         stream = StringIO()
-        output._console = Console(file=stream, force_terminal=True)
+        output = OutputFormatter(no_color=False, console=Console(file=stream, force_terminal=True))
         logger = ActionLoggerPure([key], output, True)
         logger._interactive = False
         for chunk in chunks:

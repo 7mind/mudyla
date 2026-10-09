@@ -79,8 +79,7 @@ def test_inline_completion_inside_detail_restores_screen_and_exits(terminal_proj
 
 @pytest.mark.parametrize("width,height", [(120, 40), (60, 14), (80, 18), (40, 12)])
 def test_inline_pure_keeps_only_populated_rows_and_omits_printed_preparation(width, height):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=height, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=height, force_terminal=True))
     keys = [ActionKey.from_name("first"), ActionKey.from_name("second")]
     logger = ActionLoggerPure(keys, output, True, run_info=Text("ALREADY_PRINTED_PREPARATION"))
     logger.selected_index = 1
@@ -92,8 +91,8 @@ def test_inline_pure_keeps_only_populated_rows_and_omits_printed_preparation(wid
 
 
 def test_fullscreen_table_can_page_preparation_and_last_action_without_changing_selection(monkeypatch):
-    logger = ActionLoggerTable([ActionKey.from_name(f"task-{index:04d}") for index in range(1000)], keep_running=True)
-    logger.console = Console(file=StringIO(), width=80, height=24, force_terminal=True)
+    logger = ActionLoggerTable([ActionKey.from_name(f"task-{index:04d}") for index in range(1000)], keep_running=True,
+                               console=Console(file=StringIO(), width=80, height=24, force_terminal=True))
     logger._run_info = Text("PREPARATION_MARKER\n" * 40)
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
     logger.selected_index = 500
@@ -111,9 +110,9 @@ def test_fullscreen_table_can_page_preparation_and_last_action_without_changing_
 
 def test_fullscreen_table_keeps_selected_directory_on_narrow_terminal(monkeypatch):
     key = ActionKey.from_name("work")
-    logger = ActionLoggerTable([key], keep_running=True, show_dirs=True)
+    logger = ActionLoggerTable([key], keep_running=True, show_dirs=True,
+                               console=Console(file=StringIO(), width=80, height=12, force_terminal=True))
     logger.action_dirs_map[logger._action_formatter.format_label_plain(key, True)] = "SELECTED_DIRECTORY"
-    logger.console = Console(file=StringIO(), width=80, height=12, force_terminal=True)
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 12))
     rows = logger.console.render_lines(logger._build_renderable(), pad=False)
     text = "\n".join("".join(segment.text for segment in row) for row in rows)
@@ -124,8 +123,8 @@ def test_fullscreen_table_keeps_selected_directory_on_narrow_terminal(monkeypatc
 @pytest.mark.parametrize("width,height", [(40, 12), (80, 18)])
 def test_fullscreen_table_resize_keeps_counts_bottom_border_and_controls(monkeypatch, width, height):
     keys = [ActionKey.from_name(name) for name in ["prepare", "cache", "compile-alpha", "compile-beta"]]
-    logger = ActionLoggerTable(keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35))
-    logger.console = Console(file=StringIO(), width=120, height=40, force_terminal=True)
+    logger = ActionLoggerTable(keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35),
+                               console=Console(file=StringIO(), width=120, height=40, force_terminal=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: tuple(logger.console.size))
     for key in keys[:2]:
         logger.mark_done(key, 0.1)
@@ -145,8 +144,8 @@ def test_fullscreen_table_resize_keeps_counts_bottom_border_and_controls(monkeyp
 
 def test_fullscreen_table_resize_shows_all_actions_when_the_complete_table_fits(monkeypatch):
     keys = [ActionKey.from_name(name) for name in ["prepare", "cache", "compile-alpha", "compile-beta"]]
-    logger = ActionLoggerTable(keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35))
-    logger.console = Console(file=StringIO(), width=120, height=40, force_terminal=True)
+    logger = ActionLoggerTable(keys, keep_running=True, show_dirs=True, run_info=Text("PREPARATION\n" * 35),
+                               console=Console(file=StringIO(), width=120, height=40, force_terminal=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: tuple(logger.console.size))
     logger.selected_index = 2
     logger._build_renderable()
@@ -180,9 +179,9 @@ def test_inline_display_preserves_styles_and_unicode_cell_width_without_hard_new
 @pytest.mark.parametrize("legacy_windows,dumb_terminal", [(False, False), (True, False), (False, True)])
 def test_inline_display_dispatch_preserves_console_capabilities(monkeypatch, legacy_windows, dumb_terminal):
     monkeypatch.setenv("TERM", "dumb" if dumb_terminal else "xterm-256color")
-    logger = ActionLoggerTable([ActionKey.from_name("work")])
-    logger.console = Console(file=StringIO(), width=80, height=24, force_terminal=True,
-                             legacy_windows=legacy_windows)
+    logger = ActionLoggerTable([ActionKey.from_name("work")],
+                               console=Console(file=StringIO(), width=80, height=24, force_terminal=True,
+                                               legacy_windows=legacy_windows))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
     logger._refresh_display()
     inline = not legacy_windows and not dumb_terminal
@@ -225,11 +224,10 @@ def test_legacy_windows_display_uses_native_cursor_and_line_operations(monkeypat
     stream = LegacyStream()
     console = Console(file=stream, force_terminal=True, force_interactive=True, legacy_windows=True,
                       no_color=True, width=80, height=24)
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = console
+    output = OutputFormatter(no_color=True, compact=True, console=console)
     keys = [ActionKey.from_name("LEGACY_VISIBLE")]
-    logger = (ActionLoggerPure(keys, output, True) if mode == "pure" else ActionLoggerTable(keys, no_color=True))
-    logger.console = console
+    logger = (ActionLoggerPure(keys, output, True) if mode == "pure" else
+              ActionLoggerTable(keys, no_color=True, console=console))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
     logger._refresh_display()
     assert isinstance(logger.live, Live)
@@ -257,9 +255,10 @@ def test_render_failure_during_screen_transition_restores_terminal(monkeypatch, 
     with os.fdopen(slave, "r", encoding="utf-8") as terminal, TextIOWrapper(BytesIO(), encoding="ascii") as stream:
         monkeypatch.setattr(sys, "stdin", terminal)
         keys = [ActionKey.from_name("work")]
-        logger = (ActionLoggerPure(keys, OutputFormatter(no_color=True, compact=True), True, force_interactive=True)
-                  if mode == "pure" else ActionLoggerTable(keys, no_color=True))
-        logger.console = Console(file=stream, width=80, height=24, force_terminal=True)
+        console = Console(file=stream, width=80, height=24, force_terminal=True)
+        logger = (ActionLoggerPure(keys, OutputFormatter(no_color=True, compact=True, console=console), True,
+                                   force_interactive=True) if mode == "pure" else
+                  ActionLoggerTable(keys, no_color=True, console=console))
         original = termios.tcgetattr(terminal)
         try:
             logger._setup_terminal()
@@ -334,12 +333,10 @@ def test_partial_live_acquisition_restores_cursor_screen_and_original_error(monk
         monkeypatch.setattr(sys, "stdin", terminal)
         original = termios.tcgetattr(terminal)
         stream = TransientWriteFailure()
-        output = OutputFormatter(no_color=True, compact=True)
-        output._console = Console(file=stream, width=80, height=24, force_terminal=True)
+        output = OutputFormatter(no_color=True, compact=True, console=Console(file=stream, width=80, height=24, force_terminal=True))
         keys = [ActionKey.from_name("work")]
         logger = (ActionLoggerPure(keys, output, True, keep_running=stage == "start") if mode == "pure" else
-                  ActionLoggerTable(keys, no_color=True, keep_running=stage == "start"))
-        logger.console = output.console
+                  ActionLoggerTable(keys, no_color=True, keep_running=stage == "start", console=output.console))
         monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
         try:
             if stage == "start":

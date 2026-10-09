@@ -28,11 +28,9 @@ from mudyla.logging.formatters import OutputFormatter
 ])
 def test_input_hint_and_handler_share_running_stdout_or_overview_eligibility(mode, view, status):
     key = ActionKey.from_name("work")
-    output = OutputFormatter(no_color=True, compact=True)
     console = Console(file=StringIO(), width=160, height=24, force_terminal=True, no_color=True)
-    output._console = console
-    logger = ActionLoggerPure([key], output, True) if mode == "pure" else ActionLoggerTable([key], no_color=True)
-    logger.console = console
+    output = OutputFormatter(no_color=True, compact=True, console=console)
+    logger = ActionLoggerPure([key], output, True) if mode == "pure" else ActionLoggerTable([key], no_color=True, console=console)
     logger.state = view
     logger.tasks[key].status = status
     eligible = status == TaskStatus.RUNNING and view in {ViewState.TABLE, ViewState.LOGS_STDOUT}
@@ -46,11 +44,9 @@ def test_input_hint_and_handler_share_running_stdout_or_overview_eligibility(mod
 @pytest.mark.parametrize("view,ending", [(ViewState.TABLE, "q close"), (ViewState.LOGS_STDOUT, "q back")])
 def test_input_completion_feedback_preserves_ordinary_navigation(mode, view, ending):
     key = ActionKey.from_name("work")
-    output = OutputFormatter(no_color=True, compact=True)
     console = Console(file=StringIO(), width=120, force_terminal=True, no_color=True)
-    output._console = console
-    logger = ActionLoggerPure([key], output, True) if mode == "pure" else ActionLoggerTable([key], no_color=True)
-    logger.console = console
+    output = OutputFormatter(no_color=True, compact=True, console=console)
+    logger = ActionLoggerPure([key], output, True) if mode == "pure" else ActionLoggerTable([key], no_color=True, console=console)
     logger.mark_done(key, .1)
     logger.mark_execution_complete()
     logger.state = view
@@ -114,8 +110,7 @@ def test_nonstdout_input_shortcut_does_not_capture_navigation(terminal_project, 
 @pytest.mark.parametrize("no_color", [False, True])
 @pytest.mark.parametrize("view", [ViewState.OUTPUT, ViewState.SOURCE])
 def test_pure_json_long_values_remain_reachable_at_five_rows(tmp_path, no_color, view):
-    output = OutputFormatter(no_color=no_color, compact=True)
-    output._console = Console(file=StringIO(), width=40, height=5, force_terminal=True, no_color=no_color)
+    output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True, no_color=no_color))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -136,8 +131,7 @@ def test_pure_json_long_values_remain_reachable_at_five_rows(tmp_path, no_color,
 
 
 def test_failed_metadata_prioritizes_diagnosis_in_five_rows(tmp_path):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=40, height=5, force_terminal=True, no_color=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True, no_color=True))
     key = ActionKey.from_name("failed")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -180,8 +174,7 @@ def test_large_metadata_values_keep_live_navigation_and_original_json(terminal_p
 
 @pytest.mark.parametrize("view,filename", [(ViewState.META, "meta.json"), (ViewState.OUTPUT, "output.json")])
 def test_pure_json_toggle_preserves_original_text_and_independent_positions(tmp_path, view, filename):
-    output = OutputFormatter(no_color=False, compact=True)
-    output._console = Console(file=StringIO(), width=40, height=5, force_terminal=True)
+    output = OutputFormatter(no_color=False, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -216,8 +209,7 @@ def test_pure_json_toggle_preserves_original_text_and_independent_positions(tmp_
 
 
 def test_pure_incomplete_json_preserves_raw_text_until_refresh(tmp_path):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=60, height=10, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=60, height=10, force_terminal=True))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -235,8 +227,7 @@ def test_pure_incomplete_json_preserves_raw_text_until_refresh(tmp_path):
 
 @pytest.mark.parametrize("view", [ViewState.TABLE, ViewState.META, ViewState.OUTPUT, ViewState.LOGS_STDOUT])
 def test_pure_sections_keep_keyboard_help_last_and_selectors_under_heading(tmp_path, view):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=80, height=12, force_terminal=True, no_color=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=12, force_terminal=True, no_color=True))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -303,8 +294,8 @@ def test_force_interactive_overrides_terminal_capability(terminal_project, mode,
 @pytest.mark.parametrize("view", [ViewState.TABLE, ViewState.LOGS_STDOUT])
 def test_table_small_frames_do_not_fill_the_terminal(tmp_path, monkeypatch, view):
     keys = [ActionKey.from_name(name) for name in ["base", "work"]]
-    logger = ActionLoggerTable(keys, no_color=True)
-    logger.console = Console(file=StringIO(), width=120, height=60, force_terminal=True, no_color=True)
+    logger = ActionLoggerTable(keys, no_color=True,
+                               console=Console(file=StringIO(), width=120, height=60, force_terminal=True, no_color=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (120, 60))
     logger.mark_running(keys[0], tmp_path)
     (tmp_path / "stdout.log").write_text("FIRST_LOG_LINE\nSECOND_LOG_LINE\n")
@@ -362,7 +353,7 @@ def test_live_tree_tracks_real_shared_action_starts_and_completion(terminal_proj
                     f'while not Path("{name}-release").exists(): time.sleep(.02)\n'
                     'mdl.ret("ok", True, "bool")\n```\n\n')
     actions += '# action: goal\n\n```python\nmdl.dep("action.left")\nmdl.dep("action.right")\nmdl.ret("ok", True, "bool")\n```\n'
-    child = terminal_project("pure", actions, options=("--it", "--plan-tree", execution), goals=(":goal",), dimensions=(40, 100))
+    child = terminal_project("pure", actions, options=("--it", "--plan", "tree", execution), goals=(":goal",), dimensions=(40, 100))
     child.expect_exact("BASE_WAIT")
 
     def current_tree():
@@ -371,10 +362,10 @@ def test_live_tree_tracks_real_shared_action_starts_and_completion(terminal_proj
         return terminal_text(child.before).plain.split("Actions:", 1)[0]
 
     first = current_tree()
-    running = r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"
+    running = r"[◐◓◑◒]"
     assert len(re.findall(running + r" base", first)) == 1, first
-    assert first.count("○ goal") == 2
-    assert "○ left" in first and "○ right" in first
+    assert first.count("◌ goal") == 2
+    assert "◌ left" in first and "◌ right" in first
     assert "Execution plan:" not in first and "Plan:" in first
     (tmp_path / "base-release").touch()
     child.expect_exact("LEFT_WAIT")
@@ -384,18 +375,18 @@ def test_live_tree_tracks_real_shared_action_starts_and_completion(terminal_proj
             time.sleep(.02)
         assert (tmp_path / "right-started").exists()
     after = current_tree()
-    assert after.count("✓ base") == 1, after
-    assert after.count("○ goal") == 2
+    assert after.count("● base") == 1, after
+    assert after.count("◌ goal") == 2
     assert re.search(running + r" left", after), after
-    assert ("◇ right" in after) if execution == "--seq" else re.search(running + r" right", after)
+    assert ("○ right" in after) if execution == "--seq" else re.search(running + r" right", after)
     assert not (tmp_path / "right-started").exists() if execution == "--seq" else True
     (tmp_path / "left-release").touch()
     (tmp_path / "right-release").touch()
     child.expect_exact("q close")
     child.expect_exact("q close")
     complete = terminal_text(child.before).plain.split("Actions:", 1)[0]
-    assert "✓ left" in complete and "✓ right" in complete and complete.count("✓ base") == 1
-    assert complete.count("✓ goal") == 2
+    assert "● left" in complete and "● right" in complete and complete.count("● base") == 1
+    assert complete.count("● goal") == 2
     child.send("q")
     child.expect(pexpect.EOF)
     child.close()
@@ -413,7 +404,7 @@ def test_live_dag_resizes_detail_and_restores_complete_final_actions(terminal_pr
     for name in ["left", "right"]:
         actions += f'# action: {name}\n\n```python\nmdl.dep("action.source")\n```\n\n'
     actions += '# action: goal\n\n```python\nmdl.dep("action.left")\nmdl.dep("action.right")\n```\n'
-    child = terminal_project("pure", actions, options=("--it", "--par", "--plan-dag"),
+    child = terminal_project("pure", actions, options=("--it", "--par", "--plan", "dag"),
                              goals=(":goal",), dimensions=(40, 100))
     child.expect_exact("SOURCE_WAIT")
     child.expect_exact("q kill")
@@ -657,8 +648,7 @@ def test_closed_child_stdin_reports_delivery_error_without_failing_action(termin
 
 
 def test_tiny_detail_input_editor_remains_visible(tmp_path):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=40, height=5, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=40, height=5, force_terminal=True))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -675,8 +665,7 @@ def test_tiny_detail_input_editor_remains_visible(tmp_path):
 @pytest.mark.parametrize("width", [12, 40, 80])
 @pytest.mark.parametrize("text", ["abcdefghijklmnopqrstuvwxyz0123456789LAST_TYPED", "界🙂é" * 20 + "LAST_TYPED"])
 def test_input_footer_scrolls_to_cursor_without_changing_delivery(width, text):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=width, height=5, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=width, height=5, force_terminal=True))
     key = ActionKey.from_name("long-action-name")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key)
@@ -706,8 +695,7 @@ def test_blocked_child_input_writer_does_not_block_controls():
     running = RunningAction(process)
     engine._running_processes = {key: running}
     engine._processes_lock = threading.Lock()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO())
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO()))
     logger = ActionLoggerPure([key], output, True)
     engine._current_logger = logger
     try:
@@ -753,8 +741,7 @@ def test_input_delivery_stops_when_parent_exits_with_descendant_holding_pipe(tmp
     running = RunningAction(process)
     engine._running_processes = {key: running}
     engine._processes_lock = threading.Lock()
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO())
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO()))
     logger = ActionLoggerPure([key], output, True)
     engine._current_logger = logger
     try:
@@ -856,8 +843,7 @@ def test_forced_rendering_with_redirected_stdin_does_not_keep_open(tmp_path, mod
 
 
 def test_pure_detail_fills_resized_viewport_and_keeps_following(tmp_path):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=80, height=30, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=30, force_terminal=True))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)
@@ -878,8 +864,7 @@ def test_pure_detail_fills_resized_viewport_and_keeps_following(tmp_path):
 
 
 def test_paused_log_position_survives_rewrap_and_new_output(tmp_path):
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=80, height=24, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=80, height=24, force_terminal=True))
     key = ActionKey.from_name("work")
     logger = ActionLoggerPure([key], output, True)
     logger.mark_running(key, tmp_path)

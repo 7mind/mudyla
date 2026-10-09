@@ -30,22 +30,24 @@ add a subtle selection background derived from their theme, preserving text colo
 Arrow keys
 select and reveal any action. Both pure and
 table support action selection, logs, metadata, outputs, source, and action input.
-Table uses a static plan table and content-sized live columns, with counts below
-the rows and the same subtle theme-aware selection.
+Table uses content-sized live columns, with counts below the rows and the same
+subtle theme-aware selection. `--plan table` selects the full static plan table.
 Pure and table display inline by default, leaving the mouse wheel to scroll terminal history.
 Shrinking the terminal during inline updates can leave previous frame fragments in history.
 `--fullscreen` uses the alternate screen during execution and exits automatically.
 `--it` / `--interactive` opens fullscreen and keeps the completed view open.
 Opening details from an inline view temporarily enters fullscreen; returning restores
 the same action selection.
-`--plan-table`, `--plan-tree`, and `--plan-dag` select the plan layout explicitly in any logger.
+`--plan tree|dag|table` selects the plan layout in any logger; the default is DAG
+with `--plan-dag-solver grid-auto`. `--plan-minimize true|false` controls redundant
+connections in tree and DAG views (default: `true`); table plans retain all dependency information.
 Press `i` in the Actions list or stdout view to send input to a selected running action:
 
 ```bash
 mdl :build
 mdl --logger table :build
-mdl --plan-tree :build          # Separate Plan tree and flat Actions list
-mdl --plan-table :build         # Static Plan table and flat Actions list
+mdl --plan tree :build          # Separate Plan tree and flat Actions list
+mdl --plan table :build         # Full static Plan table and flat Actions list
 mdl --fullscreen :build         # Fullscreen view; exit after completion
 mdl --it :build                 # Fullscreen view; keep open after completion
 mdl --logger simple :build      # Append-only progress and compact Plan

@@ -4,6 +4,12 @@ _mdl_completion() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
+    case "$prev" in
+        --plan) COMPREPLY=($(compgen -W "tree dag table" -- "$cur")); return 0 ;;
+        --plan-minimize) COMPREPLY=($(compgen -W "true false" -- "$cur")); return 0 ;;
+        --plan-dag-solver) COMPREPLY=($(compgen -W "grid-auto grid-low grid-medium grid-high grid-opt dagre elk sugiyama" -- "$cur")); return 0 ;;
+    esac
+
     # Axis option aliases
     local axis_options="--axis --use -u -a"
 

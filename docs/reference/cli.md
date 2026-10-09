@@ -14,7 +14,9 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--github-actions`: Alias for `--logger github`; stream output with GitHub Actions groups.
 *   `--teamcity`: Alias for `--logger teamcity`; emit TeamCity service messages.
 *   `--logger pure|table|simple|verbose|github|teamcity`: Select the logger (`pure` by default). `raw` remains an alias for `simple`.
-*   `--plan-table` / `--plan-tree` / `--plan-dag`: Select a static execution table, dependency tree, or connected dependency graph for Plan. Mutually exclusive; available with every logger. Only the table logger defaults to `--plan-table`; other loggers default to DAG.
+*   `--plan tree|dag|table`: Select the plan presentation for every logger (default: `dag`).
+*   `--plan-minimize true|false`: Omit redundant ordering connections in tree and DAG views (default: `true`). Table plans always retain all dependency information.
+*   `--plan-dag-solver grid-auto|grid-low|grid-medium|grid-high|grid-opt|dagre|elk|sugiyama`: Select the DAG solver (default: `grid-auto`).
 *   `--simple-log`: Alias for `--logger simple`.
 *   `--force-interactive`: Force terminal rendering for pure/table (default `pure`). Append-only modes remain append-only.
 *   `--no-color`: Remove colors. A nonempty `NO_COLOR` environment variable has the same effect; empty or unset values retain the default. `--force-interactive` respects this setting. Dim and bold text may remain, and raw mode preserves action-produced terminal sequences.
@@ -55,7 +57,7 @@ and run artifacts. They change how execution appears:
 | Logger | Behavior |
 |--------|----------|
 | `pure` (default) | Interactive Actions DAG with animated status, elapsed times, latest log lines and totals. Borderless detail views; optional separate Plan tree and checklist. |
-| `table` | Static plan table, content-sized live action columns, counts in the footer, and the same action controls and detail views. |
+| `table` | Content-sized live action columns, counts in the footer, and the same action controls and detail views. `--plan table` selects the full static plan table. |
 | `simple` | Append-only command/start and completion markers, compact Plan and summaries. Captures successful output silently; shows the combined capture once on failure. |
 | `verbose` | Simple's compact sections plus commands and immediate stdout/stderr, including partial prompts. Failure summaries identify the error and log files without replaying streamed output. |
 | `github` | Shared compact sections with GitHub Actions groups, immediate unprefixed output and the established failure diagnostics. |
@@ -156,19 +158,27 @@ with the official cached Java parser; no connected TeamCity server was exercised
 
 Pure combines the dependency graph and action list under one `Actions:` heading.
 It aligns action names, contexts, durations and latest output, including
-flushed prompts without a newline. Its overview contains the same run information
+flushed prompts without a newline. Actions without a latest message show dim
+`<empty>` after the duration. Its overview contains the same run information
 printed before execution: Nix mode, project path, default axes, warnings, context
 IDs mapped to compact values, goals, retainers, execution mode, dependency plan,
 continuation source and current run ID. Every action/context appears as one selectable
 node in component order, preserving execution order within each component. The `>` cursor occupies a separate left gutter; connector
-and wrapped continuation rows do not become selectable actions. `--plan-tree`
+and wrapped continuation rows do not become selectable actions. `--plan tree`
 retains a separate updating `Plan:` tree above the flat `Actions:` list.
-`--plan-table` pairs a static `Plan:` table with the flat `Actions:` list.
+`--plan table` pairs a static `Plan:` table with the flat `Actions:` list.
 Strong dependency edges use solid guides; weak and soft edges share dashed guides
 (dotted guides in ASCII terminals). These patterns describe the declared dependency,
 not whether a retainer executed.
-The plan uses the checklist's status glyphs; `◇` means prerequisites completed and
-`○` means waiting (`>` and `o` on ASCII terminals). Ready actions still follow the
+Pure and the plan use `◌` for waiting and `○` for ready actions (`*` and `o` on ASCII terminals).
+Pure animates a yellow half-filled circle (`◐◓◑◒`) while running, changing frames every 250 ms.
+It uses a green `●` when done and a red `⊗` when failed.
+Restored, skipped and cancelled actions use `◉`, `⊖` and `⊘`, respectively.
+Completion and error marks use the same `●` and `⊗` symbols. Table status cells and
+streamed lifecycle messages retain their text labels.
+ASCII and limited encodings use the existing spinner, `+` for done/restored, `x` for
+failed, `-` for skipped and `!` for cancelled.
+Ready actions still follow the
 selected sequential/parallel dispatch mode. Names come first, with context and
 shared/goal/weak/soft annotations in dim parentheses. Page keys scroll this document;
 selecting an action with the arrow keys reveals it. Pure and table render inline by
@@ -178,7 +188,7 @@ Shrinking the terminal during inline updates can leave previous frame fragments 
 `--fullscreen` keeps the live view in the alternate screen and exits after execution.
 `--it` also keeps the completed view open. In fullscreen, the mouse wheel scrolls the view.
 On exit both modes restore the preceding transcript. Pure prints its final Actions
-graph once; `--plan-tree` and `--plan-table` print their respective plan and checklist.
+graph once; `--plan tree` and `--plan table` print their respective plan and checklist.
 Run facts appear together under `Run info:`; completion outcome, wall time and log
 location appear under `Result:`. Action totals remain below the checklist.
 Default-axis notices share one `Using default axes: axis:value, ...` field,
@@ -199,8 +209,8 @@ Pure and table request the background once through OSC 11 after the initial fram
 both input and output are terminals. The existing input reader consumes the reply
 without delaying startup. A short run may retain input ownership for the remaining
 250 ms reply interval during shutdown; keys typed after quitting are not action input.
-Replies arriving after the process exits cannot be consumed. The 256-color tint is
-used only when palette quantization preserves a small contrast change.
+Replies arriving after the process exits cannot be consumed. The 256-color tint selects a fixed palette
+color in the intended light/dark direction within 24 RGB channel values of the reported background.
 An incomplete RGB reply remains recognizable while the viewer owns input; the first
 character outside its grammar returns to normal keyboard handling. Hexadecimal keys
 typed within such a partial reply cannot be distinguished from its remaining payload.
@@ -233,7 +243,7 @@ bordered tables. Pure uses `@name` (or `@hash` with `--full-ctx-reprs`) consiste
 under the first axis or argument; flags remain explicit. Argument previews stop at
 the first newline or 64 characters, appending `...` only when content was omitted.
 Execution arguments and saved values stay unchanged.
-With `--plan-tree`, roots are actual prerequisite actions; their dependent actions branch below.
+With `--plan tree`, roots are actual prerequisite actions; their dependent actions branch below.
 Only goal names are bold. The flat checklist follows the authoritative
 dependency-first execution order without moving rows as statuses change.
 In the optional tree, converging branches can refer to the same dependent.
@@ -253,27 +263,28 @@ omitted from compact results; if none of the selected actions has output fields,
 the `Outputs:` section is omitted. Table results and `--out` retain their existing
 JSON data format, including empty action maps.
 
-These terminal-emulator screenshots replay actual CLI sessions from a small
-example project. The [README](../../README.md#terminal-interfaces) uses the same images.
+These renderer captures come from actual CLI sessions in a small example project.
+The PNGs rasterize Rich SVG exports with CoreText/Menlo. The
+[README](../../README.md#terminal-interfaces) uses the same images.
 
-![pure execution checklist with --plan-tree](../ui/pure-tree-dark.png)
+![pure execution checklist with --plan tree](../ui/pure-tree-dark.png)
 
-Plan uses a connected dependency graph by default, except table mode which uses a static table.
-Use an explicit plan selector to override either default:
+Plan uses a connected dependency graph by default with every logger.
+Select a different presentation explicitly:
 
 ```bash
 mdl :build :test
-mdl --logger verbose --plan-dag :build :test
-mdl --plan-tree :build :test
-mdl --plan-table :build :test
+mdl --logger verbose --plan dag :build :test
+mdl --plan tree :build :test
+mdl --plan table :build :test
 ```
 
-Table mode's default Plan includes action numbers, contexts, goal markers, dependency
+The explicit table Plan includes action numbers, contexts, goal markers, dependency
 row references (`~` weak, `?` soft), and counts of sharing goal contexts. Action names
 and context identifiers wrap in narrow terminals instead of losing their identity.
-Other modes use the shared DAG layout by default. Executing pure attaches runtime
+All loggers use the shared DAG layout by default. Executing pure attaches runtime
 data and keyboard selection to this graph under `Actions:`; dry runs and other
-loggers print a static `Plan:`. Explicit `--plan-table`, `--plan-tree`, and `--plan-dag`
+loggers print a static `Plan:`. Explicit `--plan table`, `--plan tree`, and `--plan dag`
 select the shared table, tree, or DAG, including with `--logger table`; the live action
 table remains unchanged. These options do not change scheduling or pruning.
 
@@ -281,13 +292,23 @@ The DAG groups disconnected components with a blank line between them and places
 each action/context once, preserving execution order within its component. Shared
 prerequisites join at their dependent actions. Solid lanes mean strong
 dependencies; dashed lanes mean weak or soft dependencies (`|` and `:` in ASCII).
-Branches occupy distinct lanes; each dependency keeps one vertical track with
-horizontal arms only at its endpoints. When a merge crosses another path, `╪` (`x` in ASCII)
-marks a crossing without a connection. Lane positions remain fixed while statuses
-change. Pending connections are dim; connections
-to running actions use normal-intensity cyan, completion green, restored actions
-blue, failure red and cancellation yellow. Status glyphs also remain available
-without color. Pure uses the same DAG for its live and final Actions view.
+By default, tree and DAG views show a minimized execution ordering: redundant endpoint pairs
+are omitted when another displayed path preserves the same prerequisite ordering.
+`--plan-minimize true` selects this default explicitly; `--plan-minimize false`
+shows every retained dependency. The table presentation always shows full plan information. Scheduling, retention, metadata and
+the prerequisites listed in narrow terminals retain every declared relationship.
+This ordering view does not infer dependency strength from an alternate path.
+
+Branches occupy distinct lanes. Each dependency keeps one vertical track, with
+endpoint arms separated from action rows and neighboring turns. Crossings interrupt
+the horizontal stroke while the vertical stroke continues (`-|-` in ASCII); they
+never indicate a connection. Nonbranching paths share a stable palette slot. Fixed
+light and dark palettes follow the existing terminal-background reply; an unknown
+background uses ANSI colors. Colors depend on the displayed full action identities,
+not status, resizing or solver choice. Changing between minimized and full views
+can change the branch segments. Waiting connections are dim; ready and active
+connections use normal intensity. Status glyphs keep their existing meanings and
+styles. Pure uses the same DAG for its live and final Actions view.
 
 When even single-column lanes cannot fit alongside labels, Plan explicitly lists
 every action and its complete prerequisites instead. Widening the terminal
@@ -480,13 +501,18 @@ the collected information exactly once. Declared output types are retained in `A
 when the existing artifact reader parses fresh or restored results; final pure
 reporting therefore keeps types after ordinary run-directory cleanup. This internal
 annotation does not change artifact schemas or the `--out` aggregate.
-The live graph uses the exact pruned execution graph and shared task state.
-A greedy top-down grid layout assigns compact node lanes.
+The live graph uses the selected ordering view of the final pruned graph and shared
+task state. A frozen `DisplayEdges` retains the complete typed dependency tuple,
+visible original indices and selected tuple. Default and native solvers consume
+that selection before layout. A greedy top-down grid layout assigns compact node lanes.
 A bounded interval allocator gives every complete dependency
 one distinct vertical track while its interval overlaps another edge. Routes have
-at most two endpoint bends; this heuristic does not claim optimal crossings or width.
-Each occupied rank cut receives one connector row; disconnected components receive
-one blank separator. Keyboard navigation follows this component-grouped presentation;
+at most four endpoint bends; this heuristic does not claim optimal crossings or width.
+Connector rows adapt to the actual routes: straight continuations may use the next
+action row, while turns receive one to three rows as needed for crossing clearance
+and visible dependency strength. Adjacent endpoints retain a visible branch segment.
+Independent tracks have a blank column between them; disconnected
+components receive one blank separator. Keyboard navigation follows this component-grouped presentation;
 the scheduler retains its original execution order.
 The CLI solves this geometry and its routing tracks once after pruning. Preparation,
 live views and the final graph share the immutable solution; resizing wraps labels and
@@ -498,11 +524,96 @@ branches when their guides would otherwise exhaust the terminal width.
 `mudyla.logging.formatters.dag` derives its lane layout from retained dependency
 records and the supplied execution order. The immutable `DagLayout.execution_order`
 retains that original order, while `DagLayout.keys` groups connected components.
-Status callbacks style that layout
-without changing its node positions or importing interactive logger state. Its
+Status callbacks supply intensity and a required theme provider supplies the branch
+palette without changing node positions or importing interactive logger state.
+Readiness uses the complete execution graph even when the display omits shortcuts. Its
 shared `visual_lines` renderer accepts node labels and returns full-ActionKey row
 anchors. Pure uses those anchors for keyboard selection and resize visibility;
 connector rows remain ordinary scrollable document lines.
 Pure executions omit the initial Plan from the transcript and print the final
 Actions graph once after execution; dry runs print one initial Plan.
 Simple, verbose, GitHub and TeamCity retain the initial plan and do not replay it at completion.
+
+### Experimental native DAG layouts
+
+DAG plans use the native Python Grid-auto solver by default. Select another solver to compare the supported algorithms:
+
+```bash
+mdl --without-nix --plan-dag-solver grid-low --dry-run :demo-interactive
+mdl --without-nix --plan-dag-solver grid-auto --fullscreen :demo-interactive
+```
+
+| Solver | Placement and selection |
+| --- | --- |
+| `grid-low` | The fully evaluated greedy seed. |
+| `grid-medium` | The same Grid search, up to 20 complete layout evaluations. |
+| `grid-high` | The same Grid search, up to 100 complete layout evaluations. |
+| `grid-opt` | The same finite Grid search without an effort cap, within the shared time limit. |
+| `dagre` | Longest-path ranks, weighted median ordering, transpose passes and corrected Brandes–Köpf coordinates. |
+| `sugiyama` | Dependency-depth ranks, barycenter ordering and bounded quadratic coordinate relaxation. |
+| `elk` | Linear-segment placement, pendulum passes and orthogonal north/south port channels with common-target trunks. |
+| `grid-auto` | Continue one Grid search through the effort checkpoints until exhaustion or the time limit. |
+
+These selectors use Python implementations of the stated algorithm phases;
+they do not reproduce complete upstream engines or require an external runtime.
+An explicit `--plan-dag-solver` requires `--plan dag`. Tree and table presentations
+bypass DAG solving when the solver option is omitted. The DAG works with inline
+progress, `--fullscreen` and `--it`.
+
+Native candidates retain their unrelated-overlap, crossing and normalized-area
+scores. Grid and Auto evaluate their displayed action-row gutter separately: overlaps,
+then crossing cells, then gutter area per action. Equal scores retain the earlier
+incumbent. Distinct
+tracks and separated endpoint arms exclude unrelated overlaps in this projection.
+One try includes a feasible whole-graph lane assignment, native scoring and its
+complete cached projection. The greedy seed counts as try 1 and remains selected
+until a completed try improves the displayed score. Auto continues one owned
+search without reseeding, retaining reached checkpoints and the final incumbent.
+The finite domain includes every feasible dense lane ordering for the fixed action
+order; exhaustion proves its optimum for the supplied objective. An effort or
+time limit provides no proof. This does not claim an optimum across other layout
+algorithms. Dagre, ELK and Sugiyama remain manual selectors.
+
+One shared 200 ms deadline bounds the complete layout operation, including
+search expansion, native scoring and displayed projection. A deadline returns the
+best complete cached Grid incumbent; if even the seed cannot finish, the CLI
+reports the unfinished phase explicitly. Partial evaluations never replace an
+incumbent or count as tries. Other failures propagate with attempt history.
+These effort limits tune work rather than guaranteeing a fixed improvement.
+Deadline checks run cooperatively between finite operations; scheduling and
+checkpoint overhead can slightly exceed the nominal time limit.
+
+Terminal presentation keeps the existing action rows, including names, contexts,
+durations, latest output, selection and details. The selected layout supplies
+node-column preferences to an orthogonal dependency gutter. Unrelated crossings
+receive cuts in the horizontal stroke; the vertical stroke continues. Narrow
+views list prerequisite identities, including dependency strengths and retainers.
+Each connected component receives a separate block. Native scores and displayed
+selection scores describe different geometries and remain separately inspectable.
+
+Internally, `build_dag_layout` prepares the chosen ordering view, solver input and
+complete terminal projection under one shared budget. The terminal uses one-cell
+graph markers and renders labels beside the gutter:
+
+```python
+layout = build_dag_layout(graph, execution_order, mode="auto", minimize=True)
+```
+
+`layout.preparation_ms` measures the complete preparation interval, including
+dependency reduction, input construction, native solving and terminal projection.
+CLI, Engine and Pure reuse this same builder and immutable layout. For lower-level
+mathematical callers, `build_solver_input(graph, execution_order, node_sizes,
+display=display, budget=budget)` preserves the schedule, component presentation
+order and full-key typed edges. `create_solver(mode, input, objective=objective,
+budget=budget)` receives the caller-owned budget explicitly.
+
+`CandidateObjective.score(candidate, budget)` provides the required solver objective;
+`NativeObjective()` retains raw-geometry selection for mathematical/reference callers.
+`RowProjectionObjective` caches complete projections by their integer action columns.
+Each distinct column arrangement is routed and rasterized at most once, before its
+selection score becomes eligible. The chosen layout retrieves that cached raster,
+including when later candidate work exhausts the shared budget. Preparation, execution and the final view
+share that immutable row layout. Each solver owns its cached result; Auto owns one
+continuing `GridSearch`. Its `advance(effort_limit)` returns an immutable candidate
+with evaluated-layout count, best try, cap, exhaustion and stop reason. Resizing, status updates and selection reuse
+that layout without repeating placement, routing or optimization.

@@ -131,7 +131,7 @@ def test_palette_quantization_requires_small_change_in_intended_direction():
     probe.background = (250, 250, 250)
     assert probe.selection_style("256").bgcolor.get_truecolor() == (238, 238, 238)
     probe.background = (20, 25, 30)
-    assert probe.selection_style("256") is None
+    assert probe.selection_style("256").bgcolor.get_truecolor() == (28, 28, 28)
 
 
 class Terminal(StringIO):
@@ -153,11 +153,9 @@ def test_query_requires_actual_colored_input_and_output_tty(monkeypatch, color, 
     graph, keys = crossing_graph()
     stream = Terminal() if output_tty else StringIO()
     monkeypatch.setattr(sys, "stdin", Terminal() if input_tty else StringIO())
-    output = OutputFormatter(no_color=no_color, compact=True)
-    output._console = Console(file=stream, force_terminal=True, color_system=color, no_color=no_color)
+    output = OutputFormatter(no_color=no_color, compact=True, console=Console(file=stream, force_terminal=True, color_system=color, no_color=no_color))
     logger = (ActionLoggerPure(keys, output, True, graph=graph, plan_style=plan) if mode == "pure" else
-              table.ActionLoggerTable(keys, no_color=no_color))
-    logger.console = output.console
+              table.ActionLoggerTable(keys, no_color=no_color, console=output.console))
     monkeypatch.setattr(table.ActionLoggerTable, "_setup_terminal", lambda self: setattr(self, "_terminal_active", True))
     logger._setup_terminal()
     logger._probe_terminal_background()
@@ -217,10 +215,9 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
         monkeypatch.setattr(sys, "stdin", terminal)
         monkeypatch.setenv("TERM", "xterm-256color")
         graph, keys = crossing_graph()
-        output = OutputFormatter(no_color=False, compact=True)
-        output._console = Console(file=stream, width=80, height=24, color_system="truecolor", no_color=False)
-        logger = ActionLoggerPure(keys, output, True, graph=graph) if mode == "pure" else table.ActionLoggerTable(keys)
-        logger.console = output.console
+        output = OutputFormatter(no_color=False, compact=True, console=Console(file=stream, width=80, height=24, color_system="truecolor", no_color=False))
+        logger = (ActionLoggerPure(keys, output, True, graph=graph) if mode == "pure" else
+                  table.ActionLoggerTable(keys, console=output.console))
         initial_frames = []
         refresh = logger._refresh_display
 
@@ -273,3 +270,13 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
             done.set()
             worker.join(timeout=1)
             os.close(master)
+
+
+def test_white_palette_background_keeps_selected_row_visible():
+    probe = BackgroundProbe(0)
+    assert probe.feed('\x1b]11;rgb:ff/ff/ff\x07', 0) == ''
+    style = probe.selection_style('256')
+    assert style is not None, 'White 256-color background suppresses the selected-row tint'
+    color = style.bgcolor.get_truecolor()
+    assert max(color) < 255
+    assert style.color is None and style.bold is None and style.dim is None

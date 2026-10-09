@@ -15,9 +15,8 @@ from mudyla.logging.terminal_background import BackgroundProbe
 
 def table_logger(monkeypatch, width):
     keys = [ActionKey.from_name(name) for name in ["demo-prepare", "demo-build", "demo-check"]]
-    logger = ActionLoggerTable(keys)
-    logger.console = Console(file=StringIO(), width=width, height=24, force_terminal=True,
-                             color_system="truecolor", no_color=False, highlight=False)
+    logger = ActionLoggerTable(keys, console=Console(file=StringIO(), width=width, height=24, force_terminal=True,
+                                                    color_system="truecolor", no_color=False, highlight=False))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, 24))
     for key in keys:
         logger.mark_done(key, .1)
@@ -62,7 +61,7 @@ def test_table_selection_tints_row_without_reversing_foreground(monkeypatch, bac
     assert selected.get_style_at_offset(logger.console, selected.plain.index("done")).color.name == "green"
 
 
-def test_table_default_plan_and_run_fields_use_shared_sections(tmp_path, monkeypatch, capsys):
+def test_explicit_full_table_plan_and_run_fields_use_shared_sections(tmp_path, monkeypatch, capsys):
     (tmp_path / ".git").mkdir()
     definitions = tmp_path / ".mdl" / "defs"
     definitions.mkdir(parents=True)
@@ -70,7 +69,7 @@ def test_table_default_plan_and_run_fields_use_shared_sections(tmp_path, monkeyp
         '# action: base\n```python\npass\n```\n\n'
         '# action: work\n```python\nmdl.dep("action.base")\npass\n```\n')
     monkeypatch.chdir(tmp_path)
-    assert CLI().run(["--without-nix", "--logger", "table", "--force-interactive", "--no-color", "--dry-run", ":work"]) == 0
+    assert CLI().run(["--without-nix", "--logger", "table", "--force-interactive", "--plan", "table", "--no-color", "--dry-run", ":work"]) == 0
     output = capsys.readouterr().out
     assert "Run info:" in output
     assert output.index("Execution mode:") < output.index("Contexts:")
@@ -82,9 +81,9 @@ def test_table_default_plan_and_run_fields_use_shared_sections(tmp_path, monkeyp
     assert "deps ready" not in plan
 
 
-@pytest.mark.parametrize("mode,option,expected", [("table", [], "table"), ("table", ["--plan-tree"], "tree"),
-    ("table", ["--plan-dag"], "dag"), ("pure", [], "dag")])
-def test_plan_default_depends_on_logger_but_explicit_options_are_preserved(mode, option, expected):
+@pytest.mark.parametrize("mode,option,expected", [("table", [], "dag"), ("table", ["--plan", "tree"], "tree"),
+    ("table", ["--plan", "dag"], "dag"), ("pure", [], "dag")])
+def test_plan_defaults_to_dag_and_preserves_explicit_presentations(mode, option, expected):
     cli = CLI()
     args = cli.parser.parse_args(["--logger", mode, "--force-interactive", *option])
     cli._apply_platform_defaults(args, True)
@@ -129,8 +128,8 @@ def test_static_table_keeps_contextual_goals_and_dependency_kinds():
 @pytest.mark.parametrize("height", [6, 8, 12])
 def test_table_directory_and_controls_fit_in_viewport(monkeypatch, height):
     keys = [ActionKey.from_name(f"action-{index:03d}") for index in range(100)]
-    logger = ActionLoggerTable(keys, show_dirs=True)
-    logger.console = Console(file=StringIO(), width=40, height=height, force_terminal=True, no_color=True)
+    logger = ActionLoggerTable(keys, show_dirs=True,
+                               console=Console(file=StringIO(), width=40, height=height, force_terminal=True, no_color=True))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (40, height))
     logger.selected_index = 50
     lines = rendered_lines(logger)
@@ -145,8 +144,8 @@ def test_live_table_distinguishes_same_action_in_different_contexts(monkeypatch)
     from mudyla.logging.formatters.details import context_label
 
     keys = [ActionKey(ActionId("work"), ContextId(axis_values=(("mode", value),))) for value in ["fast", "slow"]]
-    logger = ActionLoggerTable(keys)
-    logger.console = Console(file=StringIO(), width=120, height=24, force_terminal=True, no_color=False)
+    logger = ActionLoggerTable(keys,
+                               console=Console(file=StringIO(), width=120, height=24, force_terminal=True, no_color=False))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (120, 24))
     lines = rendered_lines(logger)
     rendered = "\n".join(line.plain for line in lines)
@@ -167,8 +166,8 @@ def test_long_action_labels_preserve_status_metrics_and_context(monkeypatch, wid
 
     keys = [ActionKey(ActionId("compile-library-with-a-deliberately-long-action-identifier"),
                       ContextId(axis_values=(("flavor", value),))) for value in ["alpha", "beta"]]
-    logger = ActionLoggerTable(keys, show_dirs=show_dirs, use_short_ids=False)
-    logger.console = Console(file=StringIO(), width=width, height=24, force_terminal=True, no_color=False)
+    logger = ActionLoggerTable(keys, show_dirs=show_dirs, use_short_ids=False,
+                               console=Console(file=StringIO(), width=width, height=24, force_terminal=True, no_color=False))
     monkeypatch.setattr(logger, "_get_terminal_size", lambda: (width, 24))
     for key in keys:
         logger.mark_done(key, 1.5)
@@ -225,6 +224,6 @@ def test_static_plan_wraps_full_action_and_context_identities_at_40_columns():
 @pytest.mark.parametrize("mode", ["pure", "table", "simple", "verbose"])
 def test_explicit_plan_table_selects_static_table_for_every_logger(mode):
     cli = CLI()
-    args = cli.parser.parse_args(["--logger", mode, "--force-interactive", "--plan-table"])
+    args = cli.parser.parse_args(["--logger", mode, "--force-interactive", "--plan", "table"])
     cli._apply_platform_defaults(args, True)
     assert args.plan_style == "table"

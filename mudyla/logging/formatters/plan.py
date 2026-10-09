@@ -10,9 +10,11 @@ from rich.table import Table
 
 from ...dag.context import ContextId
 from ...dag.graph import ActionGraph, ActionKey
+from ...dag.solver.model import DisplayEdges
 from .context import ContextFormatter
 from .details import context_label, literal_text
 from .sections import section
+from .symbols import StatusSymbol, SymbolsFormatter
 
 MIN_LABEL_WIDTH = 8
 PlanStyle = Literal["table", "tree", "dag"]
@@ -88,18 +90,17 @@ def sharing_counts(graph: ActionGraph, execution_order: list[ActionKey], goals: 
 
 def execution_tree(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
                    use_short_ids: bool, shared: dict[ActionKey, int],
-                   status: Callable[[ActionKey], Text]) -> Group:
+                   status: Callable[[ActionKey], Text], *, display: DisplayEdges) -> Group:
     """Render prerequisite roots and dependent branches from the existing graph."""
     positions = {key: index for index, key in enumerate(execution_order)}
     seen: set[ActionKey] = set()
     dependents: dict[ActionKey, list[tuple[ActionKey, str]]] = {key: [] for key in execution_order}
-    roots = []
-    for key in execution_order:
-        dependencies = [dep for dep in graph.get_node(key).dependencies if dep.action in positions]
-        if not dependencies:
-            roots.append(key)
-        for dep in dependencies:
-            dependents[dep.action].append((key, "soft" if dep.soft else "weak" if dep.weak else ""))
+    incoming: set[ActionKey] = set()
+    for edge in display.visible:
+        assert edge.source in positions and edge.target in positions
+        incoming.add(edge.target)
+        dependents[edge.source].append((edge.target, "soft" if edge.dependency.soft else "weak" if edge.dependency.weak else ""))
+    roots = [key for key in execution_order if key not in incoming]
 
     def add_action(rows: list[TreeRow], key: ActionKey, qualifier: str, parent_context: Optional[ContextId],
                    last_siblings: tuple[bool, ...]) -> None:
@@ -139,9 +140,10 @@ def execution_tree(graph: ActionGraph, execution_order: list[ActionKey], formatt
     return Group(*forest)
 
 
-def tree_section(tree: RenderableType, ascii_only: bool) -> Group:
-    ready, waiting = (">", "o") if ascii_only else ("◇", "○")
-    solid, dashed = ("-", ".") if ascii_only else ("─", "╌")
+def tree_section(tree: RenderableType, symbols: SymbolsFormatter) -> Group:
+    ready, waiting = (symbols.status(symbol, now=0)
+                      for symbol in (StatusSymbol.READY, StatusSymbol.WAITING))
+    solid, dashed = ("-", ".") if symbols.console.options.ascii_only else ("─", "╌")
     return section("Plan:", tree, None,
                    Text(f"{ready} deps ready / {waiting} waiting; {solid} strong / {dashed} weak or soft; "
                         "prerequisites first, branches may overlap", style="dim"))

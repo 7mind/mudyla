@@ -1,6 +1,9 @@
 """Project one immutable layered dependency layout into terminal rows."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+import time
 from typing import Callable, Optional
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult
@@ -8,35 +11,43 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Span, Text
 
-from ...dag.graph import ActionGraph, ActionKey, Dependency
+from ...dag.graph import ActionGraph, ActionKey
 from .context import ContextFormatter
+from .branches import BranchTheme, branch_palette, branch_segments
 from .details import context_label, literal_text
 from . import layered
 from .layered import Direction, LayeredLayout, LayoutCell
 from .plan import MIN_LABEL_WIDTH
 from .sections import section
+from ...dag.solver.model import DagEdge, DisplayEdges, SolverResult
+from ...dag.solver.model import NodeSize, SolverMode
+from ...dag.solver.factory import DEFAULT_SOLVER_MODE, create_solver
+from ...dag.solver.graph import build_solver_input
+from ...dag.solver.budget import BudgetExpired, LayoutBudget, OVERALL_BUDGET_SECONDS
+from ...dag.solver.base import OverallTimeout
+from ...dag.display import build_display_edges
+from .symbols import StatusSymbol, SymbolsFormatter
 
 
 UNICODE_LINES = (" ", "│", "│", "│", "─", "╯", "╮", "┤", "─", "╰", "╭", "├", "─", "┴", "┬", "┼")
 
 
 @dataclass(frozen=True)
-class DagEdge:
-    source: ActionKey
-    target: ActionKey
-    dependency: Dependency
+class DagLayout:
+    keys: tuple[ActionKey, ...]
+    display: DisplayEdges
+    geometry: LayeredLayout
+    execution_order: tuple[ActionKey, ...]
 
     @property
-    def kind(self) -> str:
-        return "soft" if self.dependency.soft else "weak" if self.dependency.weak else "strong"
+    def edges(self) -> tuple[DagEdge, ...]:
+        return self.display.visible
 
 
 @dataclass(frozen=True)
-class DagLayout:
-    keys: tuple[ActionKey, ...]
-    edges: tuple[DagEdge, ...]
-    geometry: LayeredLayout
-    execution_order: tuple[ActionKey, ...]
+class NativeDagLayout(DagLayout):
+    native_result: SolverResult
+    preparation_ms: float
 
 
 TextAttributes = tuple[str, tuple[Span, ...], str | Style, Optional[str], Optional[str], Optional[bool], str, Optional[int]]
@@ -64,10 +75,17 @@ class DependencyDag:
     shared: dict[ActionKey, int]
     status: Callable[[ActionKey], Text]
     edge_style: Callable[[ActionKey], str]
+    theme: Callable[[], BranchTheme]
+    _branch_segments: tuple[int, ...] = field(init=False, repr=False)
+    _palette: tuple[str, ...] = field(init=False, repr=False)
     _rendered_rows: dict[ActionKey, RenderedDagRow] = field(default_factory=dict, init=False, repr=False)
     _render_options: Optional[tuple[ConsoleOptions, Optional[str], bool]] = field(default=None, init=False, repr=False)
     _frame_attributes: Optional[tuple[FrameAttributes, tuple[str, ...]]] = field(default=None, init=False, repr=False)
     _frame: Optional[tuple[list[list[Segment]], dict[ActionKey, range]]] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._branch_segments = branch_segments(self.layout.edges)
+        self._palette = branch_palette(self.theme())
 
     @property
     def edges(self) -> tuple[DagEdge, ...]:
@@ -109,20 +127,21 @@ class DependencyDag:
             if cell is None:
                 gutter.append(" ")
                 continue
-            edge_ids = tuple(connection.edge for connection in cell.connections)
-            active = next((edge for edge in edge_ids if "not dim" in styles[edge]), edge_ids[0])
+            edge_ids = tuple(connection.edge for connection in cell.connections
+                             if not cell.crossing or connection.directions == Direction.UP | Direction.DOWN)
+            segment = min(self._branch_segments[edge] for edge in edge_ids)
+            color = self._palette[segment % len(self._palette)] if self._palette else ""
+            intensity = "not dim" if any("not dim" in styles[edge] for edge in edge_ids) else "dim"
             weak = all(self.edges[edge].kind != "strong" for edge in edge_ids)
-            vertical = cell.directions == Direction.UP | Direction.DOWN
+            vertical = cell.crossing or cell.directions == Direction.UP | Direction.DOWN
             horizontal = cell.directions == Direction.LEFT | Direction.RIGHT
-            if cell.crossing:
-                glyph_text = "x" if ascii_only else "╪"
-            elif vertical:
+            if vertical:
                 glyph_text = (":" if ascii_only else "╎") if weak else ("|" if ascii_only else "│")
             elif horizontal:
                 glyph_text = ("." if ascii_only else "╌") if weak else ("-" if ascii_only else "─")
             else:
                 glyph_text = "+" if ascii_only else UNICODE_LINES[cell.directions]
-            gutter.append(glyph_text, style=styles[active])
+            gutter.append(glyph_text, style=f"{color} {intensity}".strip())
         return gutter
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
@@ -133,6 +152,10 @@ class DependencyDag:
 
     def visual_lines(self, console: Console, options: ConsoleOptions,
                      node_label: Callable[[ActionKey, int], Text]) -> tuple[list[list[Segment]], dict[ActionKey, range]]:
+        palette = branch_palette(self.theme())
+        if palette != self._palette:
+            self._palette = palette
+            self._frame_attributes = None
         configuration = options, console.color_system, console.no_color
         if configuration != self._render_options:
             self._rendered_rows.clear()
@@ -159,7 +182,7 @@ class DependencyDag:
         if narrow:
             lines.extend(console.render_lines(Text("Plan too narrow for connected lanes; prerequisites listed below.", style="dim"),
                                               options, pad=False))
-            for edge in self.edges:
+            for edge in self.layout.display.original:
                 incoming[edge.target].append(edge)
         for rank, key in enumerate(self.layout.keys):
             label_attributes, status_attributes = attributes[0][rank]
@@ -208,55 +231,38 @@ class DependencyDag:
         return self._frame
 
 
-def _presentation_order(keys: tuple[ActionKey, ...], edges: tuple[DagEdge, ...]) -> tuple[ActionKey, ...]:
-    neighbors: dict[ActionKey, set[ActionKey]] = {key: set() for key in keys}
-    for edge in edges:
-        neighbors[edge.source].add(edge.target)
-        neighbors[edge.target].add(edge.source)
-    unseen = set(keys)
-    components: list[tuple[ActionKey, ...]] = []
-    for first in keys:
-        if first not in unseen:
-            continue
-        pending = [first]
-        connected: set[ActionKey] = set()
-        while pending:
-            key = pending.pop()
-            if key in connected:
-                continue
-            connected.add(key)
-            pending.extend(neighbors[key] - connected)
-        unseen.difference_update(connected)
-        components.append(tuple(key for key in keys if key in connected))
-    return tuple(key for component in components for key in component)
+def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey], *,
+                     display: DisplayEdges | None = None, mode: SolverMode = DEFAULT_SOLVER_MODE,
+                     minimize: bool = True) -> NativeDagLayout:
+    from .native_dag import RowProjectionObjective, build_native_row_layout
 
-
-def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey]) -> DagLayout:
-    positions = {key: index for index, key in enumerate(execution_order)}
-    assert len(positions) == len(execution_order), "Plan action keys must be unique"
-    edges = [DagEdge(dependency.action, key, dependency) for key in execution_order
-             for dependency in graph.get_node(key).dependencies if dependency.action in positions]
-    edges.sort(key=lambda edge: (positions[edge.source], positions[edge.target],
-                                {"strong": 0, "weak": 1, "soft": 2}[edge.kind],
-                                str(edge.dependency.retainer_action)))
-    keys = _presentation_order(tuple(execution_order), tuple(edges))
-    presentation = {key: index for index, key in enumerate(keys)}
-    endpoints = tuple((presentation[edge.source], presentation[edge.target]) for edge in edges)
-    geometry = layered.solve_layered_layout(len(keys), endpoints)
-    return DagLayout(keys, tuple(edges), geometry, tuple(execution_order))
+    started = time.monotonic()
+    budget = LayoutBudget(OVERALL_BUDGET_SECONDS)
+    budget.start()
+    try:
+        selected = display if display is not None else build_display_edges(
+            graph, tuple(execution_order), full=not minimize, budget=budget)
+        model = build_solver_input(graph, execution_order, {key: NodeSize(1, 1) for key in execution_order},
+                                   display=selected, budget=budget)
+        projection = RowProjectionObjective(model)
+    except BudgetExpired as error:
+        raise OverallTimeout(error.phase, ()) from error
+    result = create_solver(mode, model, objective=projection, budget=budget).solve()
+    return build_native_row_layout(result, projection=projection, preparation_ms=(time.monotonic() - started) * 1000)
 
 
 def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
                   use_short_ids: bool, shared: dict[ActionKey, int], status: Callable[[ActionKey], Text],
-                  edge_style: Callable[[ActionKey], str], *, layout: DagLayout) -> DependencyDag:
+                  edge_style: Callable[[ActionKey], str], theme: Callable[[], BranchTheme], *, layout: DagLayout) -> DependencyDag:
     assert layout.execution_order == tuple(execution_order), "Dependency layout must match scheduler order"
-    return DependencyDag(graph, layout, formatter, use_short_ids, shared, status, edge_style)
+    return DependencyDag(graph, layout, formatter, use_short_ids, shared, status, edge_style, theme)
 
 
-def dag_section(dag: DependencyDag, ascii_only: bool) -> Group:
-    ready, waiting = (">", "o") if ascii_only else ("◇", "○")
-    solid, dashed, crossing = ("|", ":", "x") if ascii_only else ("│", "╎", "╪")
-    crossings = f"{crossing} crossing without a join; " if dag.crossings else ""
+def dag_section(dag: DependencyDag, symbols: SymbolsFormatter) -> Group:
+    solid, dashed = ("|", ":") if symbols.console.options.ascii_only else ("│", "╎")
+    ready, waiting = (symbols.status(symbol, now=0)
+                      for symbol in (StatusSymbol.READY, StatusSymbol.WAITING))
+    crossings = "gaps separate crossing edges; " if dag.crossings else ""
     return section("Plan:", dag, None,
                    Text(f"{ready} deps ready / {waiting} waiting; {solid} strong / {dashed} weak or soft; "
                         f"{crossings}prerequisites first", style="dim"))

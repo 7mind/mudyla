@@ -73,10 +73,9 @@ def test_context_values_keep_normal_intensity_across_wrapped_fields(width):
 
 @pytest.mark.parametrize("width", [40, 120])
 def test_summary_values_are_normal_including_nested_styles_without_mutating_callers(width):
-    output = OutputFormatter(no_color=False, compact=True)
     stream = StringIO()
     console = Console(file=stream, width=width, force_terminal=True, color_system="standard", no_color=False)
-    output._console = console
+    output = OutputFormatter(no_color=False, compact=True, console=console)
     value = Text.assemble(("Yes (reason with Unicode 構築 and path2026)", "dim green"),
                           (" 42ms", "cyan not bold"))
     original = value.copy()

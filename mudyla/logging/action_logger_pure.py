@@ -14,13 +14,18 @@ from rich.style import Style
 from rich.text import Text
 
 from ..dag.graph import ActionGraph, ActionKey
+from ..dag.display import build_display_edges
+from ..dag.solver.model import DisplayEdges
 from .formatters import OutputFormatter
 from .formatters.details import JsonValue, KeyValueRow, KeyValueView, action_label, context_label, literal_text, metadata_view, output_view
 from .formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
 from .formatters.dag import DagLayout, build_dag_layout, dag_section, execution_dag
+from .formatters.branches import BranchTheme
+from .terminal_background import LIGHT_BACKGROUND_THRESHOLD, luminance
 from .formatters.sections import heading, section
 from .action_logger_table import ActionLoggerTable, ScrollState, TaskStatus, ViewState
 from .formatters.failure import legacy_failure
+from .formatters.symbols import StatusSymbol
 
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult
@@ -43,21 +48,28 @@ class ActionLoggerPure(ActionLoggerTable):
                  action_dirs: Optional[dict[str, str]] = None, run_directory: Optional[Path] = None,
                  force_interactive: bool = False, run_info: Optional[RenderableType] = None,
                  graph: Optional[ActionGraph] = None, plan_style: PlanStyle = "dag",
-                 dag_layout: Optional[DagLayout] = None) -> None:
+                 dag_layout: Optional[DagLayout] = None, plan_display: Optional[DisplayEdges] = None) -> None:
         display_keys = action_keys
         if graph is not None and plan_style == "dag":
             if dag_layout is None:
-                dag_layout = build_dag_layout(graph, action_keys)
+                dag_layout = build_dag_layout(graph, action_keys, display=plan_display)
+            if plan_display is None:
+                plan_display = dag_layout.display
+            assert dag_layout.display is plan_display
             display_keys = list(dag_layout.keys)
+        elif graph is not None and plan_style == "tree" and plan_display is None:
+            plan_display = build_display_edges(graph, tuple(action_keys), full=False)
         super().__init__(display_keys, no_color=output.no_color, use_short_ids=use_short_ids,
                          keep_running=keep_running, fullscreen=fullscreen, show_dirs=show_dirs, action_dirs=action_dirs,
-                         run_directory=run_directory, run_info=run_info)
-        self._output = output
-        self._action_formatter = output.action
-        if force_interactive:
-            self.console.file = output.console.file
+                         run_directory=run_directory, run_info=run_info, console=output.console,
+                         force_interactive=force_interactive)
+        if self.console is not output.console:
+            self._output = OutputFormatter(no_color=output.no_color, compact=output.compact, console=self.console)
         else:
             self.console = output.console
+            self._output = output
+        self._action_formatter = self._output.action
+        self._context_formatter = self._output.context
         self._completed = 0
         self._open_line: Optional[tuple[ActionKey, str]] = None
         self._escape_states: dict[tuple[ActionKey, str], AnsiState] = {}
@@ -65,13 +77,14 @@ class ActionLoggerPure(ActionLoggerTable):
         self._interactive = force_interactive or (self.console.is_terminal and not self.console.is_dumb_terminal)
         self._graph = graph
         self._plan_style = plan_style
+        self._plan_display = plan_display
         self._tree_frame_time = time.time()
         self._sharing_counts = sharing_counts(graph, action_keys, [key.id.name for key in graph.goals]) if graph is not None else {}
         self._dag = None
         if graph is not None and plan_style == "dag":
             assert dag_layout is not None
-            self._dag = execution_dag(graph, action_keys, output.context, use_short_ids, self._sharing_counts,
-                                      self._tree_status, self._plan_edge_style, layout=dag_layout)
+            self._dag = execution_dag(graph, action_keys, self._output.context, use_short_ids, self._sharing_counts,
+                                      self._tree_status, self._plan_edge_style, self._branch_theme, layout=dag_layout)
         self._raw_json_views: set[tuple[ActionKey, ViewState]] = set()
         self._static_snapshot_printed = False
 
@@ -247,8 +260,6 @@ class ActionLoggerPure(ActionLoggerTable):
     def start(self) -> None:
         if self._interactive:
             super().start()
-        else:
-            self.console.print(heading(f"mudyla / {len(self.action_keys)} actions"))
 
     def uses_terminal_input(self) -> bool:
         return self._interactive and super().uses_terminal_input()
@@ -256,11 +267,15 @@ class ActionLoggerPure(ActionLoggerTable):
     def _get_terminal_size(self) -> tuple[int, int]:
         return self.console.width, self.console.height
 
+    def _overview_directory(self) -> Optional[Path]:
+        task = self._get_selected_task()
+        return task.action_dir if self.show_dirs and task is not None else None
+
     def _get_content_height(self) -> int:
         height = self.console.height
         if self.state != ViewState.TABLE:
             return max(1, height - (self._input_action is not None) if height <= 5 else height - 3 - (self._detail_toolbar() is not None))
-        return max(1, height - (2 if height < 5 else 3))
+        return max(1, height - 2 - int(height >= 5 and self._overview_directory() is not None))
 
     def _action_rows(self) -> list[Text]:
         actions = [(key, self.tasks[key]) for key in self.action_keys]
@@ -276,9 +291,9 @@ class ActionLoggerPure(ActionLoggerTable):
         lines = []
         now = time.time()
         for index, (key, state) in enumerate(actions):
-            glyph = self._status_glyph(state.status, now)
             line = Text()
-            line.append_text(self._text(f"{'>' if index == self.selected_index else ' '} {glyph} ", self._get_status_style(state.status)))
+            line.append_text(self._text(f"{'>' if index == self.selected_index else ' '} ", self._get_status_style(state.status)))
+            line.append_text(self._status_marker(key, now))
             name = self._text(key.id.name, "bold")
             name.truncate(name_width, overflow=overflow)
             name.pad_right(name_width - name.cell_len)
@@ -291,24 +306,32 @@ class ActionLoggerPure(ActionLoggerTable):
                 line.append(" ")
                 line.append_text(identity)
             duration = state.duration if state.duration is not None else now - state.start_time if state.start_time is not None else None
-            label = self.STATUS_DISPLAY[state.status][3]
             elapsed = self._format_duration(duration) if duration is not None else "-"
             line.append(f" {elapsed:>{time_width}}: ", style="dim")
             if state.latest:
                 line.append_text(self._text(state.latest, "red" if state.stream == "stderr" else ""))
-            elif duration is not None and state.status in {TaskStatus.SKIPPED, TaskStatus.CANCELLED, TaskStatus.RESTORED}:
-                line.append(label, style=self._get_status_style(state.status))
+            else:
+                line.append("<empty>", style="dim")
             line.truncate(max(1, width - 1), overflow=overflow)
             lines.append(line)
         return lines
 
-    def _status_glyph(self, status: TaskStatus, now: float) -> str:
-        ascii_only = self.console.options.ascii_only
-        glyphs = {TaskStatus.TBD: "o" if ascii_only else "○", TaskStatus.DONE: "+" if ascii_only else "✓",
-                  TaskStatus.FAILED: "x" if ascii_only else "✕", TaskStatus.RESTORED: "+" if ascii_only else "↺",
-                  TaskStatus.SKIPPED: "-", TaskStatus.CANCELLED: "!"}
-        frames = "|/-\\" if ascii_only else "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        return frames[int(now * 8) % len(frames)] if status == TaskStatus.RUNNING else glyphs[status]
+    def _status_marker(self, key: ActionKey, now: float) -> Text:
+        status = self.tasks[key].status
+        style = self._get_status_style(status)
+        symbol = {TaskStatus.TBD: StatusSymbol.READY, TaskStatus.RUNNING: StatusSymbol.RUNNING,
+                  TaskStatus.DONE: StatusSymbol.DONE, TaskStatus.FAILED: StatusSymbol.FAILED,
+                  TaskStatus.RESTORED: StatusSymbol.RESTORED, TaskStatus.SKIPPED: StatusSymbol.SKIPPED,
+                  TaskStatus.CANCELLED: StatusSymbol.CANCELLED}[status]
+        if status == TaskStatus.RUNNING:
+            style = "yellow"
+        if status == TaskStatus.TBD and self._graph is not None:
+            ready = self._dependencies_ready(key)
+            if not ready:
+                symbol = StatusSymbol.WAITING
+            style = "cyan" if ready else "dim"
+        glyph = self._output.symbols.status(symbol, now=now)
+        return self._text(f"{glyph} ", style)
 
     def _action_lines(self) -> tuple[list[list[Segment]], dict[ActionKey, int]]:
         options = self.console.options.update(width=self.console.width)
@@ -342,8 +365,9 @@ class ActionLoggerPure(ActionLoggerTable):
             label.append(f" {durations[key]:>{time_width}}:", style="dim not bold")
             available = width - label.cell_len - 1
             task = self.tasks[key]
-            if task.latest and available > 0:
-                preview = self._text(task.latest, "red not bold" if task.stream == "stderr" else "not bold")
+            if available > 0:
+                preview = (self._text(task.latest, "red not bold" if task.stream == "stderr" else "not bold")
+                           if task.latest else self._text("<empty>", "dim not bold"))
                 preview.truncate(available, overflow="crop" if options.ascii_only else "ellipsis")
                 label.append(" ")
                 label.append_text(preview)
@@ -368,19 +392,7 @@ class ActionLoggerPure(ActionLoggerTable):
                 lines[index] = Segment.adjust_line_length(styled, self.console.width, style=selection_style)
 
     def _tree_status(self, key: ActionKey) -> Text:
-        task = self.tasks[key]
-        glyph = self._status_glyph(task.status, self._tree_frame_time)
-        style = self._get_status_style(task.status)
-        if task.status == TaskStatus.TBD:
-            assert self._graph is not None
-            stopped = self.kill_requested or self.execution_complete or any(
-                state.status in {TaskStatus.FAILED, TaskStatus.CANCELLED} for state in self.tasks.values())
-            ready = not stopped and all(self.tasks[dep.action].status in {TaskStatus.DONE, TaskStatus.RESTORED}
-                                        for dep in self._graph.get_node(key).dependencies)
-            if ready:
-                glyph = ">" if self.console.options.ascii_only else "◇"
-            style = "cyan" if ready else "dim"
-        return self._text(f"{glyph} ", style)
+        return self._status_marker(key, self._tree_frame_time)
 
     def _checklist_footer(self) -> tuple[Text, Text]:
         actions = list(self.tasks.items())
@@ -398,24 +410,40 @@ class ActionLoggerPure(ActionLoggerTable):
         start, end = self._table_window()
         return Group(*self._action_rows()[start:end], *self._checklist_footer())
 
+    def _dependencies_ready(self, key: ActionKey) -> bool:
+        assert self._graph is not None
+        stopped = self.kill_requested or self.execution_complete or any(
+            state.status in {TaskStatus.FAILED, TaskStatus.CANCELLED} for state in self.tasks.values())
+        return not stopped and all(self.tasks[dep.action].status in {TaskStatus.DONE, TaskStatus.RESTORED}
+                                   for dep in self._graph.get_node(key).dependencies)
+
+    def _branch_theme(self) -> BranchTheme:
+        if self._output.no_color or self.console.no_color or self.console.color_system is None:
+            return BranchTheme.DISABLED
+        if self._background_probe is None or self._background_probe.background is None or self.console.color_system == "standard":
+            return BranchTheme.TERMINAL
+        return (BranchTheme.LIGHT if luminance(self._background_probe.background) >= LIGHT_BACKGROUND_THRESHOLD
+                else BranchTheme.DARK)
+
     def _plan_edge_style(self, key: ActionKey) -> str:
         status = self.tasks[key].status
-        if status in {TaskStatus.TBD, TaskStatus.SKIPPED}:
-            return "dim"
-        return ("blue" if status == TaskStatus.RESTORED else self._get_status_style(status)) + " not dim"
+        active = (self._dependencies_ready(key) if status == TaskStatus.TBD
+                  else status != TaskStatus.SKIPPED)
+        return "not dim" if active else "dim"
 
     def _plan_section(self) -> Group:
         assert self._graph is not None
         self._tree_frame_time = time.time()
         if self._plan_style == "dag":
             assert self._dag is not None
-            return dag_section(self._dag, self.console.options.ascii_only)
+            return dag_section(self._dag, self._output.symbols)
         if self._plan_style == "table":
             return section("Plan:", execution_table(self._graph, self.action_keys, self._output.context,
                            self.use_short_ids, self._sharing_counts, self.console.options.ascii_only), None, None)
         assert self._plan_style == "tree"
+        assert self._plan_display is not None
         return tree_section(execution_tree(self._graph, self.action_keys, self._output.context, self.use_short_ids,
-                                           self._sharing_counts, self._tree_status), self.console.options.ascii_only)
+                                           self._sharing_counts, self._tree_status, display=self._plan_display), self._output.symbols)
 
     def _preparation_renderable(self) -> RenderableType:
         prefix = super()._preparation_renderable() if self.fullscreen else Group()
@@ -474,23 +502,17 @@ class ActionLoggerPure(ActionLoggerTable):
                     actions = section("Actions:", Group(*self._action_rows()), None, summary)
                     return Group(self._plan_section(), Text(""), actions) if self._graph is not None else actions
                 content = self._overview_content()
-                if height < 5:
+                directory_path = self._overview_directory()
+                if height < 5 or directory_path is None:
                     return Group(content, summary, controls)
-                title = self._text(f"mudyla / {len(self.action_keys)} actions", "bold cyan")
-                if self.show_dirs:
-                    task = self._get_selected_task()
-                    if task is not None and task.action_dir is not None:
-                        directory = self._text(str(task.action_dir), "")
-                        room = max(0, width - title.cell_len - 5)
-                        if directory.cell_len > room:
-                            while directory.cell_len > max(0, room - 3):
-                                directory = directory[1:]
-                            directory = Text("...") + directory
-                            directory.truncate(room, overflow="crop")
-                        title.append(" / ")
-                        title.append_text(directory)
-                title.truncate(max(0, width - 2), overflow="crop")
-                return section(title, content, None, Group(summary, controls))
+                directory = self._text(str(directory_path), "")
+                room = max(0, width - 2)
+                if directory.cell_len > room:
+                    while directory.cell_len > max(0, room - 3):
+                        directory = directory[1:]
+                    directory = Text("...") + directory
+                    directory.truncate(room, overflow="crop")
+                return section(directory, content, None, Group(summary, controls))
             detail = Align(self._build_detail_content(), height=self._get_content_height(), vertical="top")
             if height <= 5:
                 return Group(detail, self._build_footer()) if self._input_action is not None else Group(detail)

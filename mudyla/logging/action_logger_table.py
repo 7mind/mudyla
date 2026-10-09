@@ -21,7 +21,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, cast
 
 from rich import box
 from rich.align import Align
@@ -177,6 +177,8 @@ class ActionLoggerTable(ActionLogger):
         use_short_ids: bool = True,
         run_info: Optional[RenderableType] = None,
         fullscreen: bool = False,
+        console: Optional[Console] = None,
+        force_interactive: bool = False,
     ):
         self.no_color = no_color
         self.show_dirs = show_dirs
@@ -194,19 +196,28 @@ class ActionLoggerTable(ActionLogger):
         self._overview_height = 0
         self._action_anchors: dict[ActionKey, int] = {}
 
-        # Formatters - use OutputFormatter which creates all sub-formatters
-        self._output = OutputFormatter(no_color=no_color)
-        self._action_formatter = self._output.action
-        self._context_formatter = self._output.context
-
         # Store action keys - these are the canonical identifiers
         self.action_keys: list[ActionKey] = list(action_keys)
 
         # Console for rendering - respect no_color setting
-        terminal_env = dict(os.environ)
-        if terminal_env.get("TERM") in {"dumb", "unknown"}:
-            terminal_env["TERM"] = "xterm-256color"
-        self.console = Console(force_terminal=True, force_interactive=True, no_color=no_color, _environ=terminal_env)
+        if console is None or force_interactive and (not console.is_interactive or console.is_dumb_terminal):
+            terminal_env = dict(os.environ)
+            if terminal_env.get("TERM") in {"dumb", "unknown"}:
+                terminal_env["TERM"] = "xterm-256color"
+            self.console = Console(file=console.file if console is not None else None,
+                                   width=console._width if console is not None else None,
+                                   height=console._height if console is not None else None,
+                                   color_system=cast(Optional[Literal["auto", "standard", "256", "truecolor", "windows"]],
+                                                     console.color_system) if console is not None else "auto",
+                                   force_terminal=True, force_interactive=True, no_color=no_color,
+                                   _environ=terminal_env)
+        else:
+            self.console = console
+
+        # Formatters use the same rendering destination as the live table.
+        self._output = OutputFormatter(no_color=no_color, console=self.console)
+        self._action_formatter = self._output.action
+        self._context_formatter = self._output.context
 
         # Shared state - keyed by ActionKey, formatting done at display time
         self.tasks: dict[ActionKey, TaskState] = {

@@ -35,6 +35,12 @@ _mdl() {
   local cur="${words[$CURRENT]}"
   local prev="${words[$CURRENT-1]}"
 
+  case "$prev" in
+    --plan) compadd tree dag table; return ;;
+    --plan-minimize) compadd true false; return ;;
+    --plan-dag-solver) compadd grid-auto grid-low grid-medium grid-high grid-opt dagre elk sugiyama; return ;;
+  esac
+
   # Axis option aliases
   local -a axis_options
   axis_options=(--axis --use -u -a)

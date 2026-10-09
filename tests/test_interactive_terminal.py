@@ -39,8 +39,7 @@ def test_pure_overview_footer_matches_mouse_ownership(keep_running):
     from mudyla.logging.action_logger_pure import ActionLoggerPure
     from mudyla.logging.formatters import OutputFormatter
 
-    output = OutputFormatter(no_color=True, compact=True)
-    output._console = Console(file=StringIO(), width=160, height=24, force_terminal=True)
+    output = OutputFormatter(no_color=True, compact=True, console=Console(file=StringIO(), width=160, height=24, force_terminal=True))
     logger = ActionLoggerPure(action_keys(1), output, True, keep_running=keep_running)
     assert ("Wheel/PgUp/PgDn scroll" in logger._build_footer().plain) == keep_running
 
@@ -154,13 +153,13 @@ def test_highlighted_line_numbers_match_scroll_position(tmp_path, monkeypatch, v
 @pytest.mark.parametrize("view", [ViewState.TABLE, ViewState.LOGS_STDOUT])
 def test_view_uses_output_encoding(tmp_path, monkeypatch, encoding, no_color, view):
     key = ActionKey(ActionId("build-é-構築"), ContextId(()))
-    logger = ActionLoggerTable([key], no_color=no_color)
-    logger.mark_running(key, tmp_path)
-    logger.state = view
     (tmp_path / "stdout.log").write_text("résultat 構築\n", encoding="utf-8")
-    monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
     with TextIOWrapper(BytesIO(), encoding=encoding) as stream:
-        logger.console = Console(file=stream, width=80, height=24, force_terminal=True, no_color=no_color)
+        logger = ActionLoggerTable([key], no_color=no_color,
+                                   console=Console(file=stream, width=80, height=24, force_terminal=True, no_color=no_color))
+        logger.mark_running(key, tmp_path)
+        logger.state = view
+        monkeypatch.setattr(logger, "_get_terminal_size", lambda: (80, 24))
         logger.console.print(logger._build_renderable())
         stream.flush()
 
@@ -215,10 +214,10 @@ def test_render_error_restores_screen_cursor_and_terminal(monkeypatch, stage, mo
     master, slave = os.openpty()
     with os.fdopen(slave, "r", encoding="utf-8") as terminal, TextIOWrapper(BytesIO(), encoding="ascii") as stream:
         monkeypatch.setattr(sys, "stdin", terminal)
-        logger = (ActionLoggerPure(action_keys(1), OutputFormatter(no_color=True, compact=True), True,
+        console = Console(file=stream, width=80, height=24, force_terminal=True)
+        logger = (ActionLoggerPure(action_keys(1), OutputFormatter(no_color=True, compact=True, console=console), True,
                                    force_interactive=True) if mode == "pure" else
-                  ActionLoggerTable(action_keys(1), no_color=True))
-        logger.console = Console(file=stream, width=80, height=24, force_terminal=True)
+                  ActionLoggerTable(action_keys(1), no_color=True, console=console))
         logger.state = ViewState.LOGS_STDOUT
         original = termios.tcgetattr(terminal)
         try:
