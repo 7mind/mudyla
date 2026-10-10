@@ -171,7 +171,7 @@ class TestMultiContextEdgeCases:
         """Test that actions without axis conditions get default context."""
         result = mdl.run_success([":create-directory"])
 
-        mdl.assert_goal_context(result, "create-directory", 'at (none) with output-dir="test-output"')
+        mdl.assert_goal_context(result, "create-directory", 'at global with output-dir="test-output"')
 
         # Verify execution completed
         mdl.assert_in_output(result, "Execution completed successfully")

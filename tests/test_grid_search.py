@@ -38,6 +38,31 @@ def test_auto_enumerates_one_thousand_independent_components_without_recursion()
     assert projection.geometry(result) is projection.geometry(result)
 
 
+def test_independent_component_input_preparation_scales_linearly(monkeypatch):
+    original_hash = ActionKey.__hash__
+
+    def count_hashes(count):
+        keys = [ActionKey.from_name(f"node{index}") for index in range(count)]
+        sample = fixture("independent-input", keys, [], list(range(count)), 180)
+        sizes = {key: NodeSize(1, 1) for key in keys}
+        display = build_display_edges(sample.graph, tuple(keys), full=True)
+        calls = 0
+
+        def counted_hash(key):
+            nonlocal calls
+            calls += 1
+            return original_hash(key)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(ActionKey, "__hash__", counted_hash)
+            graph = build_solver_input(sample.graph, keys, sizes, display=display)
+        assert graph.components == tuple((index,) for index in range(count))
+        assert graph.execution_order == graph.presentation_order == tuple(keys)
+        return calls
+
+    assert count_hashes(200) <= 2 * count_hashes(100)
+
+
 def test_connected_chain_enumeration_does_not_depend_on_python_recursion_depth():
     from mudyla.dag.solver.objective import NativeObjective
 

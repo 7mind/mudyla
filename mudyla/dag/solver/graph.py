@@ -41,7 +41,7 @@ def build_solver_input(graph: ActionGraph, execution_order: list[ActionKey], nod
             connected.add(key)
             pending.extend(neighbors[key] - connected)
         unseen.difference_update(connected)
-        components.append(tuple((positions[key] for key in original if key in connected)))
+        components.append(tuple(sorted(positions[key] for key in connected)))
     presentation = tuple((original[index] for component in components for index in component))
     return SolverInput(original, presentation, display, tuple(components), sizes)
 

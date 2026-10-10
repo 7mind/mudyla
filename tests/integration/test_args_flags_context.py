@@ -19,7 +19,7 @@ class TestArgsFlagsContext:
         # 1 compile (because compile uses 'target', which defaults to empty, and doesn't depend on 'mode')
         
         for mode in ["dev", "prod"]:
-            mdl.assert_goal_context(result, "build", f'at (none) with mode="{mode}", target=""')
+            mdl.assert_goal_context(result, "build", f'at global with mode="{mode}", target=""')
         
         # compile (shared) + 2 builds = 3 actions
         mdl.assert_in_output(result, "3 actions with 0 retained, planned in")
@@ -37,8 +37,8 @@ class TestArgsFlagsContext:
         # build does NOT depend on check.
         # So build should be shared.
         
-        mdl.assert_goal_context(result, "test", 'at (none) with mode="dev", target="" flags check=true')
-        mdl.assert_goal_context(result, "test", 'at (none) with mode="dev", target=""')
+        mdl.assert_goal_context(result, "test", 'at global with mode="dev", target="" flags check=true')
+        mdl.assert_goal_context(result, "test", 'at global with mode="dev", target=""')
         
         # Shared compile -> Shared build -> 2 tests
         # Actions: compile, build, test(true), test(false/default) = 4 actions
@@ -67,4 +67,4 @@ class TestArgsFlagsContext:
             ":compile", "--target=x86",
         ])
         
-        mdl.assert_goal_context(result, "compile", 'at (none) with target="x86"')
+        mdl.assert_goal_context(result, "compile", 'at global with target="x86"')
