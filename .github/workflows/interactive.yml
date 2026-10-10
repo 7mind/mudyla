@@ -51,24 +51,12 @@ jobs:
           --junitxml=test-reports/terminal-junit.xml -o junit_family=xunit1
       - name: Check logger types
         run: python -m mypy mudyla/logging/terminal_logger.py mudyla/logging/terminal_logger_simple.py mudyla/logging/terminal_logger_verbose.py mudyla/logging/terminal_logger_github.py mudyla/logging/terminal_logger_teamcity.py mudyla/logging/teamcity.py mudyla/logging/terminal_logger_pure.py mudyla/logging/formatters/symbols.py mudyla/logging/terminal_logger_table.py mudyla/logging/windows_mouse.py mudyla/logging/terminal_output.py mudyla/logging/terminal_background.py mudyla/logging/formatters/details.py mudyla/logging/formatters/plan.py mudyla/logging/formatters/dag.py mudyla/logging/formatters/layered.py mudyla/logging/formatters/output.py mudyla/logging/formatters/sections.py mudyla/logging/formatters/native_dag.py mudyla/dag/solver mudyla/dag/display.py mudyla/logging/formatters/branches.py mudyla/executor/runtime_python.py mudyla/logging/display_session.py mudyla/logging/retainer_display.py mudyla/executor/retainer_executor.py mudyla/executor/process.py mudyla/executor/process_windows.py mudyla/cli_builder.py --follow-imports=silent
-      - name: Publish terminal test results (Linux)
-        if: always() && runner.os == 'Linux'
-        uses: EnricoMi/publish-unit-test-result-action@v2
+      - name: Publish terminal test results
+        if: always()
+        uses: dorny/test-reporter@v3.0.0
         with:
-          files: test-reports/terminal-junit.xml
-          check_name: Terminal Test Results (${{ matrix.os }}, Python ${{ matrix.python }})
-          comment_mode: off
-      - name: Publish terminal test results (macOS)
-        if: always() && runner.os == 'macOS'
-        uses: EnricoMi/publish-unit-test-result-action/macos@v2
-        with:
-          files: test-reports/terminal-junit.xml
-          check_name: Terminal Test Results (${{ matrix.os }}, Python ${{ matrix.python }})
-          comment_mode: off
-      - name: Publish terminal test results (Windows)
-        if: always() && runner.os == 'Windows'
-        uses: EnricoMi/publish-unit-test-result-action/windows@v2
-        with:
-          files: test-reports/terminal-junit.xml
-          check_name: Terminal Test Results (${{ matrix.os }}, Python ${{ matrix.python }})
-          comment_mode: off
+          name: Terminal Test Results (${{ matrix.os }}, Python ${{ matrix.python }})
+          path: test-reports/terminal-junit.xml
+          reporter: python-xunit
+          use-actions-summary: 'false'
+          fail-on-error: 'true'
