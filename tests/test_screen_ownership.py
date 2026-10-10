@@ -184,7 +184,7 @@ def test_inline_idle_refresh_preserves_history_and_frame_anchor(width, ending):
     import pyte
     capture = StringIO()
     console = Console(file=capture, width=width, height=24, force_terminal=True,
-                      color_system="truecolor", no_color=False)
+                      color_system="truecolor", no_color=False, legacy_windows=False)
     rows = {
         "blank": ["界é", ""],
         "space": ["界é", " "],

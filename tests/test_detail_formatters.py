@@ -193,12 +193,13 @@ def test_contexts_without_axes_use_dim_global_preserving_other_fields(encoding, 
 @pytest.mark.parametrize("width", [8, 12, 40, 80, 160])
 @pytest.mark.parametrize("encoding", ["utf-8", "ascii"])
 @pytest.mark.parametrize("no_color", [False, True])
-def test_incremental_run_info_early_and_late_values_share_column_when_wrapped(width, encoding, no_color):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_incremental_run_info_early_and_late_values_share_column_when_wrapped(width, encoding, no_color, newline):
     from io import BytesIO, TextIOWrapper
     from rich.cells import cell_len
     from mudyla.logging.formatters.output import RunInfoField
 
-    stream = TextIOWrapper(BytesIO(), encoding=encoding)
+    stream = TextIOWrapper(BytesIO(), encoding=encoding, newline=newline)
     console = Console(file=stream, width=width, force_terminal=True, color_system="truecolor", no_color=no_color)
     output = OutputFormatter(no_color=no_color, compact=True, console=console)
     output.start_recording(defer=True)
@@ -211,7 +212,7 @@ def test_incremental_run_info_early_and_late_values_share_column_when_wrapped(wi
         stream.flush()
         emitted = stream.buffer.getvalue()[offset:]
         offset = stream.buffer.tell()
-        rendered = Text.from_ansi(emitted.decode(encoding)).plain
+        rendered = Text.from_ansi(emitted.decode(encoding).replace("\r\n", "\n")).plain
         lines = rendered.splitlines()
         assert all(cell_len(line) <= width for line in lines)
         assert value in "".join(line.strip() for line in lines)

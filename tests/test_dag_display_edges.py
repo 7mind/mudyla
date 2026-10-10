@@ -376,9 +376,11 @@ def test_auto_retains_complete_row_geometry_when_later_work_expires(monkeypatch,
 
 
 def test_auto_projection_cache_routes_each_distinct_column_arrangement_once(monkeypatch):
+    from mudyla.dag.solver import budget as budget_module
     from mudyla.dag.solver.factory import create_solver
     from mudyla.logging.formatters import layered
     from mudyla.logging.formatters.native_dag import build_native_row_layout
+    monkeypatch.setattr(budget_module.time, 'monotonic', lambda: 0.0)
     keys = [ActionKey.from_name(name) for name in ('source', 'left', 'right', 'goal')]
     sample = fixture('projection-cache', keys, [(1, Dependency(keys[0])), (2, Dependency(keys[0])),
                                               (3, Dependency(keys[1])), (3, Dependency(keys[2]))], [3], 120)
@@ -406,6 +408,52 @@ def test_auto_projection_cache_routes_each_distinct_column_arrangement_once(monk
     geometry = build_native_row_layout(result, projection=projection, preparation_ms=(result).solve_ms).geometry
     assert build_native_row_layout(result, projection=projection, preparation_ms=(result).solve_ms).geometry is geometry
     assert solver.solve() is result and counts == before
+
+
+def test_auto_projection_cache_preserves_completed_geometry_when_later_rasterization_expires(monkeypatch):
+    from mudyla.dag.solver import budget as budget_module
+    from mudyla.dag.solver.factory import create_solver
+    from mudyla.logging.formatters import layered
+    from mudyla.logging.formatters.native_dag import build_native_row_layout
+    clock = [0.0]
+    monkeypatch.setattr(budget_module.time, 'monotonic', lambda: clock[0])
+    keys = [ActionKey.from_name(name) for name in ('source', 'left', 'right', 'goal')]
+    sample = fixture('projection-cache-expiry', keys, [(1, Dependency(keys[0])), (2, Dependency(keys[0])),
+                                                     (3, Dependency(keys[1])), (3, Dependency(keys[2]))], [3], 120)
+    model = build_solver_input(sample.graph, keys, {key: NodeSize(1, 1) for key in keys},
+                               display=build_display_edges(sample.graph, tuple(keys), full=False))
+    allocated: list[tuple[int, ...]] = []
+    rasterized: list[tuple[int, ...]] = []
+    original_allocate = layered._allocate_routing
+    original_rasterize = layered._rasterize_routes
+
+    def allocate(columns, edges, budget):
+        allocated.append(columns)
+        return original_allocate(columns, edges, budget)
+
+    def rasterize(columns, tracks, routes, action_y, budget):
+        rasterized.append(columns)
+        if len(rasterized) == 2:
+            clock[0] = OVERALL_BUDGET_SECONDS + 1.0
+        return original_rasterize(columns, tracks, routes, action_y, budget)
+
+    monkeypatch.setattr(layered, '_allocate_routing', allocate)
+    monkeypatch.setattr(layered, '_rasterize_routes', rasterize)
+    projection = RowProjectionObjective(model)
+    solver = create_solver('auto', model, objective=projection, budget=LayoutBudget(OVERALL_BUDGET_SECONDS))
+    result = solver.solve()
+    assert result.selected == 'grid-opt'
+    assert result.attempts[-1].timed_out and result.attempts[-1].phase == 'row_raster'
+    assert result.progress is not None and result.progress.evaluated_layouts == 1
+    assert len(allocated) == len(rasterized) == 2
+    assert allocated[1] not in projection._layouts
+    assert tuple(projection._layouts) == (allocated[0],)
+    assert len(projection._columns_by_components) == 1
+    assert set(projection._columns_by_components.values()) == {allocated[0]}
+    before = len(allocated), len(rasterized)
+    geometry = build_native_row_layout(result, projection=projection, preparation_ms=result.solve_ms).geometry
+    assert build_native_row_layout(result, projection=projection, preparation_ms=result.solve_ms).geometry is geometry
+    assert solver.solve() is result and (len(allocated), len(rasterized)) == before
 
 
 def test_auto_objective_failure_preserves_completed_attempts_without_launching_later_solver(monkeypatch):
