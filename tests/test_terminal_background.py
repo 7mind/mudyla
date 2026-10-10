@@ -200,6 +200,53 @@ def test_windows_reader_filters_reply_and_preserves_extended_and_unicode_keys(mo
     assert logger._background_probe.background == (0, 0, 0)
 
 
+@pytest.mark.parametrize("state", ["pending", "answered", "expired"])
+def test_shutdown_waits_only_for_remaining_background_probe_deadline(monkeypatch, state):
+    logger = prepared_logger(table.TableTerminalLogger, [])
+    probe = BackgroundProbe(0)
+    original_deadline = probe.deadline
+    assert original_deadline == .25
+    now = original_deadline if state == "expired" else original_deadline / 2
+    started = now
+    if state == "answered":
+        probe.feed("\x1b]11;rgb:fa/fa/fa\x07", now)
+        assert probe.answered
+    logger._background_probe = probe
+    logger._input_enabled = True
+    waits, joins = [], []
+    alive = True
+
+    def sleep(seconds):
+        nonlocal now
+        assert state == "pending"
+        assert 0 < seconds <= original_deadline - now
+        waits.append(seconds)
+        now += seconds
+
+    def join(timeout):
+        nonlocal alive
+        assert logger.stop_flag and not probe.pending(now)
+        joins.append(timeout)
+        logger._drain_background_reply()
+        alive = False
+
+    logger._main_thread = SimpleNamespace(is_alive=lambda: alive, join=join)
+    with monkeypatch.context() as timing:
+        timing.setattr(table.time, "monotonic", lambda: now)
+        timing.setattr(table.time, "sleep", sleep)
+        logger.stop()
+        first_waits = list(waits)
+        logger.stop()
+        assert waits == first_waits
+
+    assert sum(waits) == pytest.approx(original_deadline - started if state == "pending" else 0)
+    assert now == (original_deadline if state == "pending" else started)
+    assert probe.deadline == original_deadline
+    assert joins == [1.0]
+    assert logger.stop_flag and not alive and not logger._terminal_active
+    assert probe.background == ((250, 250, 250) if state == "answered" else None)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal lifecycle")
 @pytest.mark.parametrize("quit_first,reply", [(False, True), (True, True), (False, False)])
 @pytest.mark.parametrize("slow_initial_frame", [False, True])
@@ -251,8 +298,6 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
             started = time.monotonic()
             logger.start()
             logger.stop()
-            elapsed = time.monotonic() - started
-            assert elapsed < (.9 if slow_initial_frame else .6)
             if slow_initial_frame:
                 assert query_times[0] - started >= .3
             assert logger._background_probe.background == ((250, 250, 250) if reply else None)
@@ -265,9 +310,7 @@ def test_native_query_shutdown_owns_input_until_reply_or_bounded_deadline(monkey
             if mode == "table":
                 assert b"\x1b[?1049h" not in captured
                 assert b"\x1b[?1000h" not in captured and b"\x1b[?1006h" not in captured
-            started = time.monotonic()
             logger.stop()
-            assert time.monotonic() - started < .1
         finally:
             done.set()
             worker.join(timeout=1)
@@ -330,11 +373,9 @@ def test_native_shutdown_collects_reply_queued_before_deadline_during_refresh(mo
         worker = threading.Thread(target=terminal_reply)
         worker.start()
         try:
-            started = time.monotonic()
             logger.start()
             assert refreshing.wait(timeout=.3)
             logger.stop()
-            assert time.monotonic() - started < .6
             assert logger._background_probe.background == (250, 250, 250)
             assert logger._pending_input == (prefix + suffix).encode()
             assert not logger._main_thread.is_alive()
@@ -343,9 +384,7 @@ def test_native_shutdown_collects_reply_queued_before_deadline_during_refresh(mo
             assert restored[3] & changed_flags == original[3] & changed_flags
             assert restored[:3] == original[:3] and restored[4:] == original[4:]
             assert captured.count(BACKGROUND_QUERY.encode()) == 1
-            started = time.monotonic()
             logger.stop()
-            assert time.monotonic() - started < .1
         finally:
             logger.stop()
             done.set()
@@ -511,9 +550,7 @@ def test_shutdown_does_not_collect_input_after_terminal_restoration(monkeypatch)
             logger.start()
             assert paused.wait(timeout=.5)
             assert logger._terminal_active
-            started = time.monotonic()
             logger.stop()
-            assert time.monotonic() - started < 1.6
             assert logger._main_thread.is_alive()
             assert not logger._terminal_active
             assert termios.tcgetattr(terminal)[3] & termios.ICANON
