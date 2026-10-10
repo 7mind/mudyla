@@ -356,32 +356,36 @@ class TableTerminalLogger(TerminalLogger):
 
     def _setup_terminal(self) -> None:
         """Set up terminal for raw input (cross-platform)."""
-        if not self._input_enabled:
-            return
-        if sys.platform == "win32":
-            self._old_terminal_settings = None
-            self._windows_mouse = WindowsMouseInput(msvcrt.get_osfhandle(sys.stdin.fileno()))
-        else:
-            try:
-                self._old_terminal_settings = termios.tcgetattr(sys.stdin)
-                settings = termios.tcgetattr(sys.stdin)
-                tty.cfmakecbreak(settings)
-                settings[3] |= termios.NOFLSH
-                termios.tcsetattr(sys.stdin, termios.TCSANOW, settings)
-                self._terminal_active = True
-            except (termios.error, AttributeError, ValueError):
+        with self.lock:
+            if not self._input_enabled:
+                return
+            if sys.platform == "win32":
                 self._old_terminal_settings = None
+                self._windows_mouse = WindowsMouseInput(msvcrt.get_osfhandle(sys.stdin.fileno()))
+                self._terminal_active = True
+            else:
+                try:
+                    self._old_terminal_settings = termios.tcgetattr(sys.stdin)
+                    settings = termios.tcgetattr(sys.stdin)
+                    tty.cfmakecbreak(settings)
+                    settings[3] |= termios.NOFLSH
+                    termios.tcsetattr(sys.stdin, termios.TCSANOW, settings)
+                    self._terminal_active = True
+                except (termios.error, AttributeError, ValueError):
+                    self._old_terminal_settings = None
 
     def _restore_terminal(self) -> None:
         """Restore terminal settings (cross-platform)."""
-        if self._windows_mouse is not None:
-            self._windows_mouse.set_capture(False)
-        if sys.platform != "win32" and self._terminal_active and self._old_terminal_settings:
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_terminal_settings)
+        with self.lock:
+            if self._windows_mouse is not None:
+                self._windows_mouse.set_capture(False)
                 self._terminal_active = False
-            except (termios.error, ValueError):
-                pass
+            if sys.platform != "win32" and self._terminal_active and self._old_terminal_settings:
+                try:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_terminal_settings)
+                    self._terminal_active = False
+                except (termios.error, ValueError):
+                    pass
 
     def _set_mouse_capture(self, enabled: bool) -> None:
         enabled = enabled and self._screen_active and self.uses_terminal_input()
@@ -411,6 +415,25 @@ class TableTerminalLogger(TerminalLogger):
     # Key Input (Cross-platform)
     # =========================================================================
 
+    def _collect_input(self, timeout: float, limit: int) -> Optional[int]:
+        """Append filtered input; return None if unready or zero on EOF."""
+        if sys.platform == "win32":
+            if not msvcrt.kbhit():
+                return None
+            char = msvcrt.getwch()
+            self._pending_windows_input += (self._background_probe.feed(char, time.monotonic())
+                                           if self._background_probe is not None else char)
+            return 1
+
+        fd = sys.stdin.fileno()
+        ready, _, _ = select.select([fd], [], [], timeout)
+        if not ready:
+            return None
+        raw = os.read(fd, limit)
+        self._pending_input += (self._background_probe.feed(raw.decode("latin1"), time.monotonic()).encode("latin1")
+                                if self._background_probe is not None else raw)
+        return len(raw)
+
     def _read_key_windows(self) -> str:
         """Read a single key press on Windows (non-blocking)."""
         if sys.platform != "win32":
@@ -425,14 +448,10 @@ class TableTerminalLogger(TerminalLogger):
             if self._pending_windows_input:
                 ch, self._pending_windows_input = self._pending_windows_input[0], self._pending_windows_input[1:]
                 break
-            if not msvcrt.kbhit():
+            if self._collect_input(0, 1) is None:
                 return ""
-            ch = msvcrt.getwch()
-            if self._background_probe is None:
-                break
-            filtered = self._background_probe.feed(ch, time.monotonic())
-            if filtered:
-                ch, self._pending_windows_input = filtered[0], filtered[1:]
+            if self._pending_windows_input:
+                ch, self._pending_windows_input = self._pending_windows_input[0], self._pending_windows_input[1:]
                 break
         else:
             return ""
@@ -498,16 +517,12 @@ class TableTerminalLogger(TerminalLogger):
             self._pending_input += self._background_probe.feed("", time.monotonic()).encode("latin1")
         remaining = self.MAX_INPUT_BYTES if self._background_probe is not None else 1
         while not self._pending_input and remaining:
-            fd = sys.stdin.fileno()
-            ready, _, _ = select.select([fd], [], [], timeout)
-            if not ready:
+            count = self._collect_input(timeout, remaining)
+            if count is None:
                 return None
-            raw = os.read(fd, remaining)
-            if not raw:
+            if not count:
                 return b""
-            self._pending_input = (self._background_probe.feed(raw.decode("latin1"), time.monotonic()).encode("latin1")
-                                   if self._background_probe is not None else raw)
-            remaining -= len(raw)
+            remaining -= count
             timeout = 0
         if not self._pending_input:
             return None
@@ -1350,6 +1365,18 @@ class TableTerminalLogger(TerminalLogger):
                 self._input_enabled = False
                 break
             time.sleep(0.001)
+        with self.lock:
+            if (self._terminal_active and self._input_enabled and self._background_probe is not None
+                    and not self._background_probe.answered):
+                remaining = self.MAX_INPUT_BYTES
+                while remaining:
+                    count = self._collect_input(0, remaining)
+                    if count is None:
+                        break
+                    if not count:
+                        self._input_enabled = False
+                        break
+                    remaining -= count
 
     # =========================================================================
     # Lifecycle

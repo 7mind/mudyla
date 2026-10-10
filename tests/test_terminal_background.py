@@ -282,3 +282,256 @@ def test_white_palette_background_keeps_selected_row_visible():
     color = style.bgcolor.get_truecolor()
     assert max(color) < 255
     assert style.color is None and style.bold is None and style.dim is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal lifecycle")
+@pytest.mark.parametrize("mode", ["pure", "table"])
+def test_native_shutdown_collects_reply_queued_before_deadline_during_refresh(monkeypatch, mode):
+    import select
+    import termios
+
+    master, slave = os.openpty()
+    captured = bytearray()
+    refreshing = threading.Event()
+    replied = threading.Event()
+    done = threading.Event()
+    reply_times = []
+    prefix, suffix = "pré", "\x1b[Bsuffix"
+    with os.fdopen(slave, "r", encoding="utf-8") as terminal, os.fdopen(os.dup(slave), "w", encoding="utf-8") as stream:
+        original = termios.tcgetattr(terminal)
+        monkeypatch.setattr(sys, "stdin", terminal)
+        monkeypatch.setenv("TERM", "xterm-256color")
+        graph, keys = crossing_graph()
+        output = OutputFormatter(no_color=False, compact=True, console=Console(file=stream, width=80, height=24, color_system="truecolor", no_color=False))
+        logger = (prepared_logger(PureTerminalLogger, keys, output, True, graph=graph) if mode == "pure" else
+                  prepared_logger(table.TableTerminalLogger, keys, console=output.console))
+        refresh = logger._refresh_display
+
+        def hold_refresh():
+            if logger._background_probe is not None and not refreshing.is_set():
+                refreshing.set()
+                assert replied.wait(timeout=.1)
+                assert reply_times[0] < logger._background_probe.deadline
+                time.sleep(max(0, logger._background_probe.deadline - time.monotonic()) + .02)
+                assert time.monotonic() >= logger._background_probe.deadline
+            refresh()
+
+        monkeypatch.setattr(logger, "_refresh_display", hold_refresh)
+
+        def terminal_reply():
+            while not done.is_set():
+                if select.select([master], [], [], .01)[0]:
+                    captured.extend(os.read(master, 65536))
+                if BACKGROUND_QUERY.encode() in captured and refreshing.is_set() and not replied.is_set():
+                    os.write(master, prefix.encode() + b"\x1b]11;rgb:fa/fa/fa\x07" + suffix.encode())
+                    reply_times.append(time.monotonic())
+                    replied.set()
+
+        worker = threading.Thread(target=terminal_reply)
+        worker.start()
+        try:
+            started = time.monotonic()
+            logger.start()
+            assert refreshing.wait(timeout=.3)
+            logger.stop()
+            assert time.monotonic() - started < .6
+            assert logger._background_probe.background == (250, 250, 250)
+            assert logger._pending_input == (prefix + suffix).encode()
+            assert not logger._main_thread.is_alive()
+            restored = termios.tcgetattr(terminal)
+            changed_flags = termios.ICANON | termios.ECHO | termios.ISIG | termios.NOFLSH
+            assert restored[3] & changed_flags == original[3] & changed_flags
+            assert restored[:3] == original[:3] and restored[4:] == original[4:]
+            assert captured.count(BACKGROUND_QUERY.encode()) == 1
+            started = time.monotonic()
+            logger.stop()
+            assert time.monotonic() - started < .1
+        finally:
+            logger.stop()
+            done.set()
+            worker.join(timeout=1)
+            assert not worker.is_alive()
+            os.close(master)
+
+
+@pytest.fixture(params=["posix", "windows"])
+def expired_probe_input(monkeypatch, request):
+    if request.param == "posix" and sys.platform == "win32":
+        pytest.skip("POSIX input")
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True, fileno=lambda: 9))
+    logger = prepared_logger(table.TableTerminalLogger, [])
+    logger._background_probe = BackgroundProbe(0)
+    chunks, reads = [], []
+    monkeypatch.setattr(table.time, "monotonic", lambda: 1)
+    monkeypatch.setattr(table.time, "sleep", lambda seconds: pytest.fail("Expired collection must not sleep"))
+    monkeypatch.setattr(logger, "_read_key", lambda: pytest.fail("Expired collection must not decode keys"))
+    if request.param == "windows":
+        monkeypatch.setattr(table.sys, "platform", "win32")
+
+        def getwch():
+            reads.append(1)
+            return chunks.pop(0)
+
+        monkeypatch.setattr(table, "msvcrt", SimpleNamespace(kbhit=lambda: bool(chunks), getwch=getwch), raising=False)
+        from mudyla.logging import windows_mouse
+        from tests.test_windows_mouse import ConsoleAPI
+
+        monkeypatch.setattr(windows_mouse, "_console_api", lambda: ConsoleAPI(0x267, []))
+        monkeypatch.setattr(table.msvcrt, "get_osfhandle", lambda fd: fd, raising=False)
+    else:
+        import termios
+
+        settings = [0, 0, 0, termios.ICANON | termios.ECHO, 0, 0, [b"\x00"] * termios.NCCS]
+        monkeypatch.setattr(table.termios, "tcgetattr", lambda fd: settings[:6] + [settings[6][:]])
+        monkeypatch.setattr(table.termios, "tcsetattr", lambda fd, when, value: None)
+
+        def ready(read, write, error, timeout):
+            assert timeout == 0
+            return (read if chunks else [], [], [])
+
+        def read(fd, limit):
+            chunk = chunks.pop(0)
+            raw, rest = chunk[:limit], chunk[limit:]
+            if rest:
+                chunks.insert(0, rest)
+            reads.append(len(raw))
+            return raw
+
+        monkeypatch.setattr(table.select, "select", ready)
+        monkeypatch.setattr(table.os, "read", read)
+    logger._setup_terminal()
+    assert logger._terminal_active
+    return logger, chunks, reads
+
+
+@pytest.mark.parametrize("payload,ordinary,background", [
+    ("j\x1b]11;rgb:ff/ff/ff\x07é\x1b[B\x1bq", "jé\x1b[B\x1bq", (255, 255, 255)),
+    ("j\x1b]11;rgb:1/2/", "j", None),
+    ("j\x1b]11;rgb:z/0/0\x07q", "jz/0/0q", None),
+])
+def test_expired_shutdown_collection_preserves_ready_input_and_reply_grammar(expired_probe_input, payload, ordinary, background):
+    logger, chunks, reads = expired_probe_input
+    if sys.platform == "win32":
+        logger._pending_windows_input = "prior"
+        chunks.extend(payload)
+    else:
+        logger._pending_input = b"prior"
+        chunks.extend(bytes([byte]) for byte in payload.encode())
+    logger._drain_background_reply()
+    assert logger._background_probe.background == background
+    assert len(logger._background_probe._candidate) < 32
+    assert not chunks
+    assert sum(reads) <= logger.MAX_INPUT_BYTES
+    if sys.platform == "win32":
+        assert logger._pending_windows_input == "prior" + ordinary
+    else:
+        assert logger._pending_input == ("prior" + ordinary).encode()
+
+
+def test_expired_shutdown_collection_stops_at_cumulative_input_limit(expired_probe_input):
+    logger, chunks, reads = expired_probe_input
+    payload = "x" * (logger.MAX_INPUT_BYTES + 1)
+    chunk_size = 7
+    chunks.extend(payload if sys.platform == "win32" else
+                  [payload[index:index + chunk_size].encode() for index in range(0, len(payload), chunk_size)])
+    logger._drain_background_reply()
+    assert sum(reads) == logger.MAX_INPUT_BYTES
+    assert len(chunks) == 1
+    if sys.platform == "win32":
+        assert logger._pending_windows_input == payload[:-1]
+    else:
+        assert logger._pending_input == payload[:-1].encode()
+
+
+@pytest.mark.parametrize("answered,input_enabled", [(False, True), (True, True), (False, False)])
+def test_expired_shutdown_collection_never_waits_or_consumes_after_input_release(expired_probe_input, answered, input_enabled):
+    logger, chunks, reads = expired_probe_input
+    logger._background_probe.answered = answered
+    logger._input_enabled = input_enabled
+    if answered or not input_enabled:
+        chunks.extend("q" if sys.platform == "win32" else [b"q"])
+    before = list(chunks)
+    logger._drain_background_reply()
+    assert chunks == before
+    assert not reads
+    assert logger._background_probe.background is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX input")
+def test_expired_shutdown_collection_recognizes_eof(expired_probe_input):
+    logger, chunks, reads = expired_probe_input
+    if sys.platform == "win32":
+        pytest.skip("Windows input has no byte-stream EOF")
+    chunks.append(b"")
+    logger._drain_background_reply()
+    assert not logger._input_enabled
+    assert reads == [0]
+
+
+def test_expired_windows_collection_preserves_extended_keys_and_utf16_units(expired_probe_input):
+    logger, chunks, reads = expired_probe_input
+    if sys.platform != "win32":
+        pytest.skip("Windows input units")
+    payload = "\xe0P\ud83d\ude00"
+    chunks.extend(payload)
+    logger._drain_background_reply()
+    assert logger._pending_windows_input == payload
+    assert sum(reads) == len(payload)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal lifecycle")
+def test_shutdown_does_not_collect_input_after_terminal_restoration(monkeypatch):
+    import select
+    import termios
+
+    master, slave = os.openpty()
+    paused, resume, done = threading.Event(), threading.Event(), threading.Event()
+    with os.fdopen(slave, "r", encoding="utf-8") as terminal, os.fdopen(os.dup(slave), "w", encoding="utf-8") as stream:
+        monkeypatch.setattr(sys, "stdin", terminal)
+        monkeypatch.setenv("TERM", "xterm-256color")
+        logger = prepared_logger(table.TableTerminalLogger, [], console=Console(
+            file=stream, width=80, height=24, color_system="truecolor", no_color=False))
+        refresh = logger._refresh_display
+
+        def held_refresh():
+            if logger._background_probe is not None and not paused.is_set():
+                paused.set()
+                assert resume.wait(timeout=5)
+            refresh()
+
+        def drain_output():
+            while not done.is_set():
+                if select.select([master], [], [], .01)[0]:
+                    os.read(master, 65536)
+
+        monkeypatch.setattr(logger, "_refresh_display", held_refresh)
+        worker = threading.Thread(target=drain_output)
+        worker.start()
+        try:
+            logger.start()
+            assert paused.wait(timeout=.5)
+            assert logger._terminal_active
+            started = time.monotonic()
+            logger.stop()
+            assert time.monotonic() - started < 1.6
+            assert logger._main_thread.is_alive()
+            assert not logger._terminal_active
+            assert termios.tcgetattr(terminal)[3] & termios.ICANON
+            payload = b"ownership-check\n"
+            os.write(master, payload)
+            assert select.select([slave], [], [], .1)[0]
+            resume.set()
+            logger._main_thread.join(timeout=1)
+            assert not logger._main_thread.is_alive()
+            assert logger._pending_input == b""
+            assert select.select([slave], [], [], 0)[0]
+            assert os.read(slave, len(payload)) == payload
+        finally:
+            resume.set()
+            if logger._main_thread is not None:
+                logger._main_thread.join(timeout=1)
+            logger.stop()
+            done.set()
+            worker.join(timeout=1)
+            assert not worker.is_alive()
+            os.close(master)

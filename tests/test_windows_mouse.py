@@ -4,6 +4,7 @@ from tests.logger_fixtures import prepared_logger
 
 import ctypes
 from io import StringIO
+import threading
 from types import SimpleNamespace
 import pytest
 
@@ -13,6 +14,7 @@ from mudyla.logging import terminal_logger_table as interactive
 from mudyla.dag.graph import ActionKey
 from mudyla.logging.terminal_logger_pure import PureTerminalLogger
 from mudyla.logging.formatters import OutputFormatter
+from mudyla.logging.terminal_background import BackgroundProbe
 
 
 class Function:
@@ -121,3 +123,134 @@ def test_shared_windows_reader_routes_wheel_and_keys_and_restores_mode(monkeypat
     logger._set_mouse_capture(False)
     logger._restore_terminal()
     assert api.mode == 0x267
+
+
+@pytest.fixture
+def windows_input(monkeypatch):
+    api = ConsoleAPI(0x267, [])
+    chars = list("input")
+    logger = prepared_logger(interactive.TableTerminalLogger, [])
+    logger._input_enabled = True
+    logger._background_probe = BackgroundProbe(0)
+    monkeypatch.setattr(windows_mouse, "_console_api", lambda: api)
+    monkeypatch.setattr(interactive.sys, "platform", "win32")
+    monkeypatch.setattr(interactive.sys, "stdin", SimpleNamespace(fileno=lambda: 7))
+    monkeypatch.setattr(interactive, "msvcrt", SimpleNamespace(
+        get_osfhandle=lambda fd: fd, kbhit=lambda: bool(chars), getwch=lambda: chars.pop(0)), raising=False)
+    return logger, api, chars
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_windows_input_ownership_follows_setup_and_successful_restoration(windows_input, capture):
+    logger, api, chars = windows_input
+    assert not logger._terminal_active
+    logger._setup_terminal()
+    assert logger._terminal_active
+    logger._windows_mouse.set_capture(capture)
+    logger._restore_terminal()
+    assert not logger._terminal_active
+    assert api.mode == 0x267
+    logger._drain_background_reply()
+    assert chars == list("input")
+    assert logger._pending_windows_input == ""
+    logger._restore_terminal()
+    assert not logger._terminal_active
+
+
+def test_windows_input_release_failure_retains_ownership_for_retry(monkeypatch, windows_input):
+    logger, api, _ = windows_input
+    logger._setup_terminal()
+    logger._windows_mouse.set_capture(True)
+    api.SetConsoleMode.callback = lambda handle, mode: 0
+    monkeypatch.setattr(windows_mouse, "_console_error", lambda: OSError("console release failed"))
+    with pytest.raises(OSError, match="console release failed"):
+        logger._restore_terminal()
+    assert logger._terminal_active
+    api.SetConsoleMode.callback = api.set_mode
+    logger._restore_terminal()
+    assert not logger._terminal_active
+    assert api.mode == 0x267
+
+
+def test_windows_input_setup_failure_does_not_acquire_ownership(monkeypatch, windows_input):
+    logger, _, _ = windows_input
+
+    def unavailable():
+        raise OSError("console setup failed")
+
+    monkeypatch.setattr(windows_mouse, "_console_api", unavailable)
+    with pytest.raises(OSError, match="console setup failed"):
+        logger._setup_terminal()
+    assert not logger._terminal_active
+    assert logger._windows_mouse is None
+
+
+@pytest.mark.parametrize("first", ["release", "collect"])
+def test_windows_release_and_final_collection_serialize_ownership(monkeypatch, windows_input, first):
+    logger, api, chars = windows_input
+    logger._setup_terminal()
+    logger._windows_mouse.set_capture(True)
+    entered, resume, attempted = threading.Event(), threading.Event(), threading.Event()
+    boundaries, failures = [], []
+    native_release = api.SetConsoleMode.callback
+
+    def boundary(name):
+        boundaries.append(name)
+        if name == first and not entered.is_set():
+            entered.set()
+            assert resume.wait(timeout=1)
+
+    def release(handle, mode):
+        boundary("release")
+        return native_release(handle, mode)
+
+    def ready():
+        boundary("collect")
+        return bool(chars)
+
+    def operate(operation):
+        try:
+            operation()
+        except BaseException as error:
+            failures.append(error)
+
+    api.SetConsoleMode.callback = release
+    monkeypatch.setattr(interactive.msvcrt, "kbhit", ready)
+    operations = {"release": logger._restore_terminal, "collect": logger._drain_background_reply}
+    first_worker = threading.Thread(target=operate, args=(operations[first],))
+    second_worker = threading.Thread(target=operate, args=(operations["collect" if first == "release" else "release"],))
+    original_lock = logger.lock
+
+    class Lock:
+        def __enter__(self):
+            if threading.current_thread() is second_worker:
+                attempted.set()
+            return original_lock.__enter__()
+
+        def __exit__(self, *args):
+            return original_lock.__exit__(*args)
+
+    logger.lock = Lock()
+    try:
+        first_worker.start()
+        assert entered.wait(timeout=.5)
+        second_worker.start()
+        assert attempted.wait(timeout=.5)
+        assert boundaries == [first]
+        assert logger._terminal_active
+    finally:
+        resume.set()
+        first_worker.join(timeout=1)
+        if second_worker.ident is not None:
+            second_worker.join(timeout=1)
+    assert not first_worker.is_alive() and not second_worker.is_alive()
+    assert not failures
+    assert not logger._terminal_active
+    if first == "release":
+        assert boundaries == ["release"]
+        assert chars == list("input")
+        assert logger._pending_windows_input == ""
+    else:
+        assert boundaries[-1] == "release"
+        assert chars == []
+        assert logger._pending_windows_input == "input"
