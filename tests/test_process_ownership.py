@@ -7,10 +7,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
-from mudyla.executor.process import ProcessFactory, StdinMode, process_factory
+from mudyla.executor.process import PosixProcess, ProcessFactory, StdinMode, process_factory
 from mudyla.executor.process_windows import Handle, NativeChild, StandardHandles, WindowsAPI, WindowsProcessFactory
 
 
@@ -147,6 +148,27 @@ def test_windows_adapter_wait_timeout_and_initialization_failure_keep_original_c
     process.terminate_tree()
     assert process.wait(1) == 1
     process.close()
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_posix_adapter_rejects_windows_termination_only_while_open(monkeypatch, closed):
+    child = Mock(spec=subprocess.Popen, pid=123, stdin=None,
+                 stdout=io.BufferedReader(io.BytesIO()), stderr=io.BufferedReader(io.BytesIO()))
+    process = PosixProcess(child)
+    killpg = Mock()
+    monkeypatch.setattr(os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    try:
+        if closed:
+            process.close()
+            process.terminate_tree()
+            process.terminate_tree()
+        else:
+            with pytest.raises(RuntimeError, match="POSIX process APIs require a POSIX platform"):
+                process.terminate_tree()
+        killpg.assert_not_called()
+    finally:
+        process.close()
 
 
 def test_platform_process_preserves_binary_pipes_unicode_environment_cwd_and_input(tmp_path):

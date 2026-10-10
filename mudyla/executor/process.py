@@ -69,6 +69,8 @@ class PosixProcess:
     def terminate_tree(self) -> None:
         with self.lock:
             if not self.closed:
+                if sys.platform == "win32":
+                    raise RuntimeError("POSIX process APIs require a POSIX platform")
                 try:
                     os.killpg(self.pid, signal.SIGKILL)
                 except ProcessLookupError:
