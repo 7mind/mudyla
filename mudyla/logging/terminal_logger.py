@@ -26,7 +26,7 @@ from ..dag.validator import ValidationError
 from .display_session import DisplaySession
 from .formatters.branches import BranchTheme
 from .formatters.dag import DagLayout, build_dag_layout, dag_section, execution_dag
-from .formatters.details import JsonValue, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
+from .formatters.details import JsonValue, KeyValueRow, KeyValueView, action_label, axis_field, contexts_view, duration_text, literal_text, output_view, summary_field
 from .formatters.output import OutputFormatter, RunInfoField
 from .formatters.plan import PlanStyle, execution_table, execution_tree, sharing_counts, tree_section
 from .formatters.sections import section
@@ -310,16 +310,19 @@ class TerminalLogger(ABC):
                                                    style="green" if result.success else "red"))]
             if result.duration_seconds is not None:
                 fields.append(summary_field("Total wall time", Text(duration_text(result.duration_seconds), style="cyan not dim not bold")))
-            restored = [action_label(key, self.output.context, self.use_short_ids, True)
-                        for key, value in result.action_results.items() if value.restored]
-            if restored:
-                fields.append(summary_field("Restored", Text(", ").join(restored)))
+            fields.extend(self._action_result_fields(result))
             logs = str(result.run_directory) if keep_run_dir or not result.success else "use --keep-run-dir to retain artifacts"
             fields.append(summary_field("Logs", literal_text(logs)))
             self.output.print(Group(Text(""), section("Result:", KeyValueView(fields), None, None), Text("")))
         else:
             self.output.print(f"\n{self.output.symbols.Check if result.success else self.output.symbols.Cross} "
                 f"[bold {'green' if result.success else 'red'}]Execution {'completed successfully' if result.success else 'failed'}![/bold {'green' if result.success else 'red'}]")
+
+    def _action_result_fields(self, result: "ExecutionResult") -> list[KeyValueRow]:
+        """Provide the action fields within the compact Result section."""
+        restored = [action_label(key, self.output.context, self.use_short_ids, True)
+                    for key, value in result.action_results.items() if value.restored]
+        return [summary_field("Restored", Text(", ").join(restored))] if restored else []
 
     def report_outputs(self, result: "ExecutionResult", selected: Sequence[ActionKey], *,
                        full_output: bool, out_path: Path | None) -> None:

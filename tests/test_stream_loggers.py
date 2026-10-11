@@ -54,6 +54,247 @@ def run_project(path: Path, options: list[str], script: str, *, columns: int = 3
                           cwd=path, env=env, capture_output=True, text=True, timeout=10)
 
 
+def ci_action_output(output: str, mode: str) -> tuple[str, list[str], list[str]]:
+    if mode == "github":
+        opened = [line.removeprefix("::group::") for line in output.splitlines() if line.startswith("::group::")]
+        closed = [line for line in output.splitlines() if line == "::endgroup::"]
+        return output, opened, closed
+    from mudyla.logging.teamcity import parse_message
+    parsed = [parse_message(line) for line in output.splitlines() if line.startswith("##teamcity[")]
+    assert all(record is not None for record in parsed), output
+    messages = "\n".join(record.attributes["text"] for record in parsed if record is not None and record.name == "message")
+    opened = [record.attributes["name"] for record in parsed if record is not None and record.name == "blockOpened"]
+    closed = [record.attributes["name"] for record in parsed if record is not None and record.name == "blockClosed"]
+    return messages, opened, closed
+
+
+@pytest.mark.parametrize("mode", ["github", "teamcity"])
+@pytest.mark.parametrize("invocations,expected_names,expected_markers", [
+    ([":work", "--message=first"], ["work"], ["work@first"]),
+    ([":work", "--message=first", ":work", "--message=first"], ["work"], ["work@first"]),
+    ([":work", "--message=first", ":work", "--message=second"], ["work where message=first", "work where message=second"], ["work@first", "work@second"]),
+    ([":work", ":work", "--message=first"], ["work for global", "work where message=first"], ["work@global", "work@first"]),
+    ([":work", "--message=first", ":other", "--message=second"], ["work", "other"], ["work@first", "other@second"]),
+])
+def test_ci_group_names_qualify_only_duplicate_actions_and_preserve_markers_on_restore(tmp_path, mode, invocations, expected_names, expected_markers):
+    from mudyla.dag.context import ContextId
+    from mudyla.logging.formatters import OutputFormatter
+    from mudyla.logging.formatters.details import context_label
+
+    (tmp_path / ".git").mkdir()
+    definitions = tmp_path / ".mdl" / "defs"
+    definitions.mkdir(parents=True)
+    (definitions / "actions.md").write_text(
+        '# arguments\n- `args.message`: Context\n  - type: `string`\n\n' +
+        "\n\n".join(f'# action: {name}\n```python\nmdl.use("args.message")\n'
+                      f'mdl.ret("value", "{name}", "string")\n```' for name in ["work", "other"]))
+    formatter = OutputFormatter(no_color=True).context
+    aliases = {"@" + value: context_label(ContextId(axis_values=(), args=(("message", value),)), formatter, True).plain
+               for value in ["first", "second"]}
+    names = expected_names
+    markers = [name.replace("@first", aliases["@first"]).replace("@second", aliases["@second"])
+               for name in expected_markers]
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]), NO_COLOR="1", COLUMNS="300")
+    command = [sys.executable, "-m", "mudyla", "--without-nix", "--logger", mode,
+               "--keep-run-dir", *invocations]
+    first = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
+    assert first.returncode == 0, first.stdout + first.stderr
+    messages, opened, closed = ci_action_output(first.stdout, mode)
+    assert sorted(opened) == sorted(names), first.stdout
+    assert len(closed) == len(opened)
+    if mode == "teamcity":
+        assert closed == opened
+    for name in markers:
+        assert sum(line.startswith(name + ": Running command `") for line in messages.splitlines()) == 1, messages
+        assert sum(line.startswith(name + ": Finished (") for line in messages.splitlines()) == 1, messages
+    metadata = [json.loads(path.read_text()) for path in (tmp_path / ".mdl" / "runs").rglob("meta.json")]
+    assert sorted(record["action_name"] for record in metadata) == sorted(name.split("@")[0] for name in expected_markers)
+    assert all({"action_name", "success", "start_time", "end_time", "duration_seconds", "exit_code", "stdout_size", "stderr_size"}
+               == set(record) for record in metadata)
+    contexts = [json.loads(path.read_text()) for path in (tmp_path / ".mdl" / "runs").rglob("context.json")]
+    assert len(contexts) == len(names)
+    assert all(set(context) == {"sys", "axis", "env", "args", "flags", "actions"} for context in contexts)
+    assert sorted(context["args"].get("message", "global") for context in contexts) == sorted(name.split("@")[1] for name in expected_markers)
+    second = subprocess.run(command + ["--continue"], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
+    assert second.returncode == 0, second.stdout + second.stderr
+    messages, opened, closed = ci_action_output(second.stdout, mode)
+    assert opened == closed == []
+    for name in markers:
+        assert sum(line.startswith(name + ": Restored (") for line in messages.splitlines()) == 1, messages
+
+
+@pytest.mark.parametrize("mode", ["github", "teamcity"])
+def test_ci_group_names_use_final_execution_order(monkeypatch, mode):
+    from rich.console import Console
+    from mudyla.ast.models import ActionDefinition, SourceLocation
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionGraph, ActionKey, ActionNode
+    from mudyla.logging.terminal_logger_github import GitHubTerminalLogger
+    from mudyla.logging.terminal_logger_teamcity import TeamCityTerminalLogger
+
+    capture = StringIO()
+    monkeypatch.setattr(sys, "stdout", capture)
+    key = ActionKey.from_name("work", ContextId(axis_values=(("platform", "first"),)))
+    unused = ActionKey.from_name("work", ContextId(axis_values=(("platform", "unused"),)))
+    graph = ActionGraph({item: ActionNode(item, ActionDefinition("work", [], {}, SourceLocation("fixture.md", 1, "work")))
+                         for item in [key, unused]}, {key})
+    logger_type = GitHubTerminalLogger if mode == "github" else TeamCityTerminalLogger
+    logger = prepared_logger(logger_type, [key], graph=graph, console=Console(file=capture, width=300, no_color=True))
+    logger.begin_action(key, ["command"])
+    logger.mark_done(key, 1.0)
+    logger.end_action(key)
+    logger.finalize()
+    messages, opened, closed = ci_action_output(capture.getvalue(), mode)
+    assert opened == ["work"], capture.getvalue()
+    assert len(closed) == 1
+    original_name = logger._identity(key).plain
+    assert original_name + ": Running command `command`" in messages
+    assert original_name + ": Finished (1.0 s)" in messages
+
+
+@pytest.mark.parametrize("mode,short,parallel", [("github", True, False), ("teamcity", True, True),
+    ("github", False, False), ("teamcity", False, False)])
+def test_ci_group_names_use_context_values_without_changing_marker_formatting(monkeypatch, mode, short, parallel):
+    from rich.console import Console
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.formatters.details import context_label
+    from mudyla.logging.terminal_logger_github import GitHubTerminalLogger
+    from mudyla.logging.terminal_logger_teamcity import TeamCityTerminalLogger
+
+    capture = StringIO()
+    monkeypatch.setattr(sys, "stdout", capture)
+    name = "work[quoted]'|"
+    keys = [ActionKey.from_name(name), ActionKey.from_name(name, ContextId(axis_values=(("platform", "first"),)))]
+    logger_type = GitHubTerminalLogger if mode == "github" else TeamCityTerminalLogger
+    logger = prepared_logger(logger_type, keys, use_short_ids=short, parallel=parallel,
+                             console=Console(file=capture, width=300, no_color=True))
+    for key, label in zip(keys, [name + " for global", name + " for first"]):
+        logger.begin_action(key, ["command"])
+        logger.mark_failed(key, 1.0)
+        logger.end_action(key)
+        messages, opened, closed = ci_action_output(capture.getvalue(), mode)
+        assert opened[-1] == label
+        assert len(closed) == len(opened)
+        if mode == "teamcity":
+            assert closed == opened
+        assert name + context_label(key.context_id, logger.output.context, short).plain + ": Failed (1.0 s)" in messages
+
+
+@pytest.mark.parametrize("mode", ["github", "teamcity"])
+@pytest.mark.parametrize("axes,args,flags,expected", [
+    ([(("platform", "linux-x86"), ("profile", "prod")), (("platform", "mac-arm"), ("profile", "dev"))],
+     [(), ()], [(), ()], ["test for linux-x86, prod", "test for mac-arm, dev"]),
+    ([(), ()], [(("arg", "foo"),), (("arg", "bar"),)], [(), ()], ["test where arg=foo", "test where arg=bar"]),
+    ([(("platform", "linux-x86"), ("profile", "prod")), (("platform", "mac-arm"), ("profile", "dev"))],
+     [(("test", "foo"),), (("test", "bar"),)], [(), ()],
+     ["test for linux-x86, prod with test=foo", "test for mac-arm, dev with test=bar"]),
+    ([(("platform", "linux-x86"),), (("platform", "linux-x86"),)],
+     [(("constant", "same"), ("test", "foo")), (("constant", "same"), ("test", "bar"))], [(), ()],
+     ["test where test=foo", "test where test=bar"]),
+    ([(("platform", "linux-x86"),), (("platform", "mac-arm"),)],
+     [(("constant", "same"),), (("constant", "same"),)], [(), ()],
+     ["test for linux-x86", "test for mac-arm"]),
+    ([(), ()], [(), ()], [(("trace", False),), (("trace", True),)],
+     ["test where trace=false", "test where trace=true"]),
+    ([(("platform", "linux-x86"),), (("platform", "mac-arm"),)], [(), ()],
+     [(("trace", False),), (("trace", True),)],
+     ["test for linux-x86 with trace=false", "test for mac-arm with trace=true"]),
+])
+def test_ci_group_names_describe_axis_values_and_arguments(monkeypatch, mode, axes, args, flags, expected):
+    from rich.console import Console
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.terminal_logger_github import GitHubTerminalLogger
+    from mudyla.logging.terminal_logger_teamcity import TeamCityTerminalLogger
+
+    capture = StringIO()
+    monkeypatch.setattr(sys, "stdout", capture)
+    keys = [ActionKey.from_name("test", ContextId(axis_values=axis_values, args=argument_values, flags=flag_values))
+            for axis_values, argument_values, flag_values in zip(axes, args, flags)]
+    logger_type = GitHubTerminalLogger if mode == "github" else TeamCityTerminalLogger
+    logger = prepared_logger(logger_type, keys, console=Console(file=capture, width=300, no_color=True))
+    for key in keys:
+        logger.begin_action(key, ["command"])
+        logger.mark_done(key, 1.0)
+        logger.end_action(key)
+    messages, opened, closed = ci_action_output(capture.getvalue(), mode)
+    assert opened == expected, capture.getvalue()
+    assert len(closed) == len(opened)
+    if mode == "teamcity":
+        assert closed == opened
+    for key in keys:
+        assert logger._identity(key).plain + ": Finished (1.0 s)" in messages
+
+
+def test_action_group_names_distinguish_missing_values_and_quote_structured_values():
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.formatters.action import action_group_names
+
+    contexts = [ContextId(axis_values=(("platform", "linux"),), args=arguments) for arguments in
+                [(), (("arg", "not set"),), (("arg", ""),), (("arg", ("a,b", "c")),), (("arg", "line\nnext\u2028end"),)]]
+    keys = [ActionKey.from_name("test", context) for context in contexts]
+    names = action_group_names(keys)
+    assert [names[key] for key in keys] == ["test where arg is not set", 'test where arg="not set"',
+        'test where arg=""', 'test where arg=["a,b","c"]', 'test where arg="line\\nnext\\u2028end"']
+    assert action_group_names([keys[0], keys[0]]) == {keys[0]: "test"}
+
+
+def test_action_group_names_include_axis_names_when_global_values_collide():
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.formatters.action import action_group_names
+
+    keys = [ActionKey.from_name("test"), ActionKey.from_name("test", ContextId(axis_values=(("platform", "global"),)))]
+    names = action_group_names(keys)
+    assert [names[key] for key in keys] == ["test for global", "test for platform=global"]
+
+
+@pytest.mark.parametrize("mode", ["github", "teamcity"])
+def test_ci_group_names_preserve_service_framing_for_multiline_values(monkeypatch, mode):
+    from rich.console import Console
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.terminal_logger_github import GitHubTerminalLogger
+    from mudyla.logging.terminal_logger_teamcity import TeamCityTerminalLogger
+
+    capture = StringIO()
+    monkeypatch.setattr(sys, "stdout", capture)
+    value = "line\n::endgroup::\r##teamcity[blockClosed name='fake']\u2028end"
+    keys = [ActionKey.from_name("test", ContextId(axis_values=(), args=(("arg", item),))) for item in [value, "plain"]]
+    logger_type = GitHubTerminalLogger if mode == "github" else TeamCityTerminalLogger
+    logger = prepared_logger(logger_type, keys, console=Console(file=capture, width=300, no_color=True))
+    for key in keys:
+        logger.begin_action(key, ["command"])
+        logger.mark_done(key, 1.0)
+        logger.end_action(key)
+    _, opened, closed = ci_action_output(capture.getvalue(), mode)
+    assert len(opened) == len(closed) == 2
+    assert opened == ['test where arg="line\\n::endgroup::\\r##teamcity[blockClosed name=\'fake\']\\u2028end"', "test where arg=plain"]
+
+
+@pytest.mark.parametrize("value", ["%0A", "%0D", "%25", "%250A"])
+def test_github_group_names_preserve_literals_after_runner_command_decoding(monkeypatch, value):
+    from rich.console import Console
+    from mudyla.dag.context import ContextId
+    from mudyla.dag.graph import ActionKey
+    from mudyla.logging.terminal_logger_github import GitHubTerminalLogger
+
+    capture = StringIO()
+    monkeypatch.setattr(sys, "stdout", capture)
+    keys = [ActionKey.from_name("test", ContextId(axis_values=(), args=(("arg", item),))) for item in [value, "plain"]]
+    logger = prepared_logger(GitHubTerminalLogger, keys, console=Console(file=capture, width=300, no_color=True))
+    logger.begin_action(keys[0], ["command"])
+    logger.mark_done(keys[0], 1.0)
+    logger.end_action(keys[0])
+    _, opened, closed = ci_action_output(capture.getvalue(), "github")
+    assert len(opened) == len(closed) == 1
+    decoded = opened[0].replace("%0D", "\r").replace("%0A", "\n").replace("%25", "%")
+    assert decoded == f'test where arg="{value}"'
+    assert logger._group_names[keys[0]] == decoded
+
+
 @pytest.mark.parametrize("options", [["--simple-log"], ["--verbose"], ["--logger", "raw"]])
 @pytest.mark.parametrize("dry", [False, True])
 def test_append_only_modes_share_compact_sections_and_one_initial_plan(tmp_path, options, dry):
@@ -182,6 +423,8 @@ def test_partial_stream_fragments_preserve_callback_order_and_marker_boundary(mo
     for payload, stream in fragments:
         logger.write_output(key, payload, stream)
     payload = "".join(text for text, _ in fragments)
+    if mode == "github" and stderr_first:
+        payload = "\n".join(text for text, _ in fragments)
     assert capture.getvalue() == payload
     logger.mark_done(key, 1.0)
     boundary = "" if payload.endswith("\n") else "\n"
@@ -214,7 +457,7 @@ def test_stream_modes_share_sections_and_exact_action_markers(tmp_path, mode):
     result = run_project(tmp_path, ["--logger", mode], 'mdl.ret("value", 0, "int")')
     assert result.returncode == 0, result.stdout + result.stderr
     for heading in ["Run info:", "Contexts:", "Goals:", "Plan:", "Actions:", "Result:", "Outputs:"]:
-        assert result.stdout.count(heading) == 1, result.stdout
+        assert result.stdout.splitlines().count(heading) == 1, result.stdout
     assert result.stdout.count("work@global: Running command `") == 1, result.stdout
     assert result.stdout.count("work@global: Finished (") == 1, result.stdout
     assert "Command:" not in result.stdout and "RUN " not in result.stdout
@@ -421,7 +664,7 @@ def test_failure_replay_restores_terminal_text_before_result(tmp_path, mode, ter
                                 capture_output=True, text=True, timeout=10)
         assert result.returncode == 1
         displayed = result.stdout
-    assert displayed.count(fragment) == (1 if mode == "simple" else 2)
+    assert displayed.count(fragment) == 1
     assert "Result:" in displayed and "Execution failed!" in displayed
     assert next((tmp_path / ".mdl" / "runs").rglob("stdout.log")).read_text() == fragment
     if terminal:

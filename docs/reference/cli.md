@@ -80,14 +80,31 @@ dry runs and continuation, followed by lifecycle events, `Result:` and typed
 omitted; `--full-output` includes dependency outputs as well as goals. Saved JSON
 keeps every selected action, including empty output maps. They never redraw the
 terminal or take ownership of action stdin.
+GitHub and TeamCity add action counts and nonempty `Failed:` and `Restored:` lists
+to `Result:`, using the same readable names as their action groups, in plan order.
+For example, `8 actions — 5 completed, 1 failed, 2 restored`; failed entries show
+the first nonblank error line or exit code. When execution ends early, the counts
+state how many planned actions have results, without assigning outcomes to the
+remaining actions. GitHub disables workflow commands while printing `Result:` so
+literal reasons and paths cannot create groups, then restores command processing.
 Their Actions markers use `action@context: Running command \`command\``, followed by
 `Finished (duration)`, `Failed (duration)` or a distinct `Restored (duration)`.
 Restored actions do not print a command-start marker. On colored terminals,
 `Running command` is yellow, command text blue, completion green and failure red,
 all at normal intensity without bold.
+GitHub group titles and TeamCity block names use `test` when its name identifies
+one action in the final execution plan. Multiple contexts for the same action
+show only differing fields: `test for linux-x86, prod`, `test where arg=foo`, or
+`test for linux-x86, prod with test=foo`. Flags use the same `name=true` form.
+An empty context uses `test for global`; missing fields say `name is not set`.
+Complex strings and arrays use JSON quoting. Axis names appear when values alone
+would produce identical titles.
+Lifecycle markers and saved metadata retain their existing identities.
 Markers retain one logical line; the terminal wraps long commands at its edge.
-Sequential verbose and GitHub preserve unprefixed child text, ANSI and stdout/stderr
-selection. Parallel verbose prefixes new records with `action@context: `, including
+Sequential verbose preserves unprefixed child text, ANSI and stdout/stderr
+selection. GitHub displays both child streams on stdout so group records and
+their output share one ordered stream. Switching streams finishes a partial
+displayed line so workflow commands start on their own line. Parallel verbose prefixes new records with `action@context: `, including
 partial prompts, and separates interleaved fragments from different actions.
 On capable terminals, prefixes reuse the identity foreground colors and restore
 the child's foreground afterward. Other child attributes remain active. Prefixes
@@ -101,7 +118,15 @@ not isolation of arbitrary child terminal effects. Capture files retain original
 `stdout.log` contains the existing combined stdout/stderr capture;
 `stderr.log` contains stderr separately. Simple failures show the combined capture
 once and give both paths. `--no-out-on-fail` suppresses that replay; verbose, GitHub and TeamCity continue streaming. GitHub completion markers appear inside their groups;
-cancellation still closes every opened group. Failure replay remains outside them.
+cancellation still closes every opened group. GitHub failure diagnostics retain
+capture paths and errors without replaying output already streamed.
+Child GitHub groups appear as sequential paths: `test`, `test / foo`, then
+`test` again after the child closes. Deeper groups extend that path; parallel
+actions switch the displayed group as output arrives. `stop-commands` closes the
+displayed group before disabling commands. Disabled output remains literal and
+ungrouped until the resume token arrives; an action that terminates without
+resuming has its token resumed before logger cleanup. Tokens that cannot produce
+a matching resume command fail the action before disabling commands.
 Verbose, GitHub and TeamCity default to sequential execution; `--par` overrides that choice.
 Simple follows the project/default parallel policy.
 
@@ -134,8 +159,8 @@ quotes, brackets, pipes, controls and Unicode, including surrogate pairs. Contex
 outputs and diagnostics containing service-looking text remain literal messages.
 `NO_COLOR` does not disable the protocol.
 
-Sequential execution forwards child stdout/stderr immediately, without parsing
-or rewriting native TeamCity records. `--par` incrementally routes ordinary
+Sequential execution forwards child stdout/stderr without rewriting native
+TeamCity records. Both modes frame native records incrementally; `--par` routes ordinary
 fragments as NORMAL messages and namespaces native `flowId`/`flowStarted parent`
 values by the complete action context. Native test, progress, artifact and severity
 attributes remain intact. Single-argument records retain their argument through
@@ -150,7 +175,10 @@ Candidates exceeding 1,048,576 decoded characters fail the action and terminate
 its process tree. Incomplete final records become literal output.
 
 Completion precedes block closure; cancellation closes remaining emitted blocks
-without inventing completion or test results. Native enable/disable commands retain
+without inventing completion or test results. Native child blocks retain nesting;
+closing an outer block or parent flow honors TeamCity's implicit child closure.
+Unfinished explicit child flows close before their owning test finishes or the
+action wrapper closes. Native enable/disable commands retain
 their semantics. A child that leaves service-message processing disabled can make
 TeamCity ignore later completion/closure records, even though mdl emits balanced
 blocks; mdl does not synthesize an enable command. Protocol round trips were checked
@@ -498,6 +526,8 @@ outcome and output reports; `finish_run` provides idempotent cleanup on every pa
 `GitHubTerminalLogger` owns grouping and CI diagnostics; `TeamCityTerminalLogger` owns
 TeamCity blocks, native-message routing and escaped presentation. The engine reports command,
 output and completion events while retaining process, cancellation and artifact ownership.
+CI loggers determine group-title ambiguity from distinct keys in the complete
+execution order, keeping titles stable throughout execution.
 The engine calls `end_action` after status notification and `finalize` after all
 workers stop, so cancellation can close remaining records independently of transient `stop` calls.
 Failure presentation receives the full `ActionKey` explicitly so context-specific diagnostics

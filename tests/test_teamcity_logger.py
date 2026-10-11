@@ -116,7 +116,7 @@ def test_incremental_native_framing_preserves_every_chunk_boundary(native):
     from mudyla.logging.teamcity import ChildMessages, parse_message
     for split in range(len(native) + 1):
         ordinary, messages = [], []
-        parser = ChildMessages(ordinary.append, messages.append)
+        parser = ChildMessages(ordinary.append, messages.append, lambda raw: None)
         parser.write("prompt>" + native[:split])
         assert "".join(ordinary) == "prompt>"
         parser.write(native[split:] + "tail")
@@ -131,7 +131,7 @@ def test_incremental_native_framing_preserves_every_chunk_boundary(native):
 def test_malformed_and_truncated_records_remain_literal(text):
     from mudyla.logging.teamcity import ChildMessages
     ordinary, native = [], []
-    parser = ChildMessages(ordinary.append, native.append)
+    parser = ChildMessages(ordinary.append, native.append, lambda raw: None)
     for char in text:
         parser.write(char)
     parser.finish()
@@ -316,7 +316,7 @@ def test_teamcity_finalization_balances_blocks_after_cancellation(tmp_path, para
 def test_native_attribute_whitespace_preserves_valid_record():
     from mudyla.logging.teamcity import ChildMessages
     ordinary, native = [], []
-    parser = ChildMessages(ordinary.append, native.append)
+    parser = ChildMessages(ordinary.append, native.append, lambda raw: None)
     parser.write("##teamcity[message\ttext = 'value'\tstatus='NORMAL' tc:tags='custom']")
     parser.finish()
     assert ordinary == []
@@ -344,9 +344,16 @@ def test_parallel_failure_diagnostics_use_exact_action_context_flow(tmp_path):
     assert flow in {block["flowId"] for block in blocks}
     failed = [record for record in parsed if "Failed (" in record.attributes.get("text", "") and record.attributes.get("flowId") == flow]
     assert len(failed) == 1
-    assert next(block["name"] for block in blocks if block["flowId"] == flow) in failed[0].attributes["text"]
     context_payload = [record for record in parsed if "CONTEXT=" in record.attributes.get("text", "") and record.attributes.get("flowId") == flow]
     assert len(context_payload) == 1
+    message = context_payload[0].attributes["text"].removeprefix("CONTEXT=").strip()
+    assert next(block["name"] for block in blocks if block["flowId"] == flow) == f"work where message={message}"
+    from mudyla.dag.context import ContextId
+    from mudyla.logging.formatters import OutputFormatter
+    from mudyla.logging.formatters.details import context_label
+    context = ContextId(axis_values=(), args=(("message", message),))
+    identity = "work" + context_label(context, OutputFormatter(no_color=True).context, True).plain
+    assert identity + ": Failed (" in failed[0].attributes["text"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shared terminal")
@@ -376,7 +383,7 @@ def test_sequential_stderr_fragment_keeps_generated_record_on_own_terminal_line(
 def test_physical_newline_rejects_native_candidate_and_resynchronizes(newline):
     from mudyla.logging.teamcity import ChildMessages
     ordinary, native = [], []
-    parser = ChildMessages(ordinary.append, native.append)
+    parser = ChildMessages(ordinary.append, native.append, lambda raw: None)
     invalid = "##teamcity[testStarted name='fake" + newline
     parser.write(invalid)
     assert "".join(ordinary) == invalid
@@ -430,7 +437,7 @@ def test_legacy_native_escapes_preserve_test_and_flow_identity(legacy, codepoint
 def test_rejected_native_whitespace_stays_literal(candidate):
     from mudyla.logging.teamcity import ChildMessages
     ordinary, native = [], []
-    parser = ChildMessages(ordinary.append, native.append)
+    parser = ChildMessages(ordinary.append, native.append, lambda raw: None)
     parser.write(candidate)
     parser.finish()
     assert native == []

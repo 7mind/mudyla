@@ -9,18 +9,86 @@ Styling is always applied - the Rich console handles no_color mode.
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, Iterable
+import json
+import re
+import unicodedata
+from collections import Counter
+from typing import TYPE_CHECKING, Iterable, TypeAlias
 
 from rich.text import Text
 
 from .context import ContextFormatter
 
 if TYPE_CHECKING:
-    from ...dag.graph import ActionKey
+    from ...dag.graph import ActionId, ActionKey
 
 
 TRUNCATED_HASH_LENGTH = 7
 MAX_DIRNAME_LENGTH = 64
+ContextValue: TypeAlias = str | tuple[str, ...] | bool
+
+
+def _single_line(value: str) -> str:
+    return "".join(json.dumps(char)[1:-1] if unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"}
+                   else char for char in value)
+
+
+def _group_value(value: ContextValue) -> str:
+    if isinstance(value, str) and re.fullmatch(r"[\w./:+-]+", value):
+        return value
+    return _single_line(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _varying_fields(context_fields: Iterable[tuple[tuple[str, ContextValue], ...]]) -> list[str]:
+    values = [dict(fields) for fields in context_fields]
+    names = sorted({name for fields in values for name in fields})
+    return [name for name in names if len({fields.get(name) for fields in values}) > 1]
+
+
+def _named_group_value(name: str, values: dict[str, ContextValue]) -> str:
+    if name not in values:
+        return f"{name} is not set"
+    return f"{name}={_group_value(values[name])}"
+
+
+def _action_group_name(key: ActionKey, axes: list[str], arguments: list[str], flags: list[str],
+                       named_axes: bool) -> str:
+    name = _single_line(key.id.name)
+    context = key.context_id
+    if not context.axis_values and not context.args and not context.flags:
+        return name + " for global"
+    axis_values: dict[str, ContextValue] = dict(context.axis_values)
+    axis_parts = [_named_group_value(axis, axis_values) if named_axes or axis not in axis_values
+                  else _group_value(axis_values[axis]) for axis in axes]
+    argument_values: dict[str, ContextValue] = dict(context.args)
+    flag_values: dict[str, ContextValue] = dict(context.flags)
+    fields = [_named_group_value(argument, argument_values) for argument in arguments]
+    fields.extend(_named_group_value(flag, flag_values) for flag in flags)
+    if axis_parts:
+        name += " for " + ", ".join(axis_parts)
+    if fields:
+        name += (" with " if axis_parts else " where ") + ", ".join(fields)
+    return name
+
+
+def action_group_names(action_keys: Iterable[ActionKey]) -> dict[ActionKey, str]:
+    groups: dict[ActionId, list[ActionKey]] = {}
+    for key in set(action_keys):
+        groups.setdefault(key.id, []).append(key)
+    names: dict[ActionKey, str] = {}
+    for keys in groups.values():
+        if len(keys) == 1:
+            names[keys[0]] = _single_line(keys[0].id.name)
+            continue
+        axes = _varying_fields(key.context_id.axis_values for key in keys)
+        arguments = _varying_fields(key.context_id.args for key in keys)
+        flags = _varying_fields(key.context_id.flags for key in keys)
+        titles = {key: _action_group_name(key, axes, arguments, flags, False) for key in keys}
+        counts = Counter(titles.values())
+        for key, title in titles.items():
+            names[key] = _action_group_name(key, axes, arguments, flags, True) if counts[title] > 1 else title
+        assert len({names[key] for key in keys}) == len(keys), "CI group names must distinguish action contexts"
+    return names
 
 
 def truncate_dirname(name: str, max_length: int = MAX_DIRNAME_LENGTH) -> str:

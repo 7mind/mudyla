@@ -123,9 +123,11 @@ def parse_message(text: str) -> Optional[ServiceMessage]:
 class ChildMessages:
     """Only an ambiguous opener or one bounded native record can remain pending."""
 
-    def __init__(self, ordinary: Callable[[str], None], native: Callable[[ServiceMessage], None]):
+    def __init__(self, ordinary: Callable[[str], None], native: Callable[[ServiceMessage], None],
+                 raw_record: Callable[[str], None]):
         self._ordinary = ordinary
         self._native = native
+        self._raw_record = raw_record
         self._candidate: list[str] = []
         self._escaped = False
         self._in_message = False
@@ -150,6 +152,7 @@ class ChildMessages:
                         self._ordinary(candidate)
                     else:
                         self._native(parsed)
+                        self._raw_record(candidate)
                     self._candidate.clear()
                     self._in_message = False
                 continue
