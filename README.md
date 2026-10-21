@@ -40,7 +40,7 @@ Opening details from an inline view temporarily enters fullscreen; returning res
 the same action selection.
 `--plan auto|tree|dag|table` selects the plan layout in any logger. The default,
 `auto`, uses DAG for fewer than 30 planned actions and table for 30 or more,
-or when DAG layout exceeds its time budget.
+or when DAG layout reaches its 1-second deadline.
 Explicit `tree`, `dag`, and `table` selections always use that layout.
 DAG uses `--plan-dag-solver grid-auto` by default. `--plan-minimize true|false` controls redundant
 connections in tree and DAG views (default: `true`); table plans retain all dependency information.

@@ -1,9 +1,7 @@
 """Public preparation paths must share the solver's domain timeout boundary."""
 
-from tests.logger_fixtures import prepared_logger
-
-from io import StringIO
 import threading
+import time
 
 import pytest
 
@@ -11,9 +9,8 @@ from mudyla.ast.models import ActionDefinition, SourceLocation
 from mudyla.dag.display import build_display_edges
 from mudyla.dag.graph import ActionGraph, ActionNode, ActionKey, Dependency
 from mudyla.dag.solver.base import OverallTimeout
-from mudyla.logging.terminal_logger import LoggerMode
-from mudyla.logging.terminal_logger_pure import PureTerminalLogger
-from mudyla.logging.formatters import OutputFormatter
+from mudyla.dag.solver.budget import LayoutBudget
+from mudyla.logging.formatters import dag
 from mudyla.logging.formatters.dag import build_dag_layout
 
 
@@ -32,17 +29,21 @@ def dense_graph():
     return graph, keys, build_display_edges(graph, tuple(keys), full=True)
 
 
-@pytest.mark.parametrize("entry", ["builder", "logger"])
-def test_layout_preparation_uses_domain_timeout(entry, tmp_path):
-    graph, keys, display = dense_graph()
-    output = OutputFormatter(no_color=True, compact=True)
-    output.console.file = StringIO()
+@pytest.mark.parametrize("phase", ["build_display_edges", "build_solver_input"])
+def test_layout_preparation_uses_caller_owned_domain_timeout(phase, monkeypatch):
+    graph, keys, _ = dense_graph()
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    original = getattr(dag, phase)
+
+    def delayed(*args, **kwargs):
+        clock[0] = 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dag, phase, delayed)
     threads = tuple(threading.enumerate())
     try:
         with pytest.raises(OverallTimeout):
-            if entry == "builder":
-                build_dag_layout(graph, keys, display=display)
-            else:
-                prepared_logger(PureTerminalLogger, keys, output, True, graph=graph, plan_display=display)
+            build_dag_layout(graph, keys, budget=LayoutBudget(.2))
     finally:
         assert tuple(threading.enumerate()) == threads

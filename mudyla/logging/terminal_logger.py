@@ -23,6 +23,7 @@ from ..dag.display import build_display_edges
 from ..dag.graph import ActionGraph, ActionKey
 from ..dag.solver.model import DisplayEdges, SolverMode
 from ..dag.solver.base import OverallTimeout
+from ..dag.solver.budget import LayoutBudget
 from ..dag.validator import ValidationError
 from .display_session import DisplaySession
 from .formatters.branches import BranchTheme
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 
 
 PLAN_TABLE_THRESHOLD = 30
+AUTO_PLAN_BUDGET_SECONDS = 1.0
 
 
 class LoggerMode(str, Enum):
@@ -228,7 +230,9 @@ class TerminalLogger(ABC):
         if self.plan_style == "dag":
             assert self.dag_solver is not None
             try:
-                self.layout = build_dag_layout(graph, self.execution_order, mode=self.dag_solver, minimize=self.plan_minimize)
+                self.layout = build_dag_layout(graph, self.execution_order, mode=self.dag_solver,
+                                              minimize=self.plan_minimize,
+                                              budget=LayoutBudget(AUTO_PLAN_BUDGET_SECONDS) if automatic else None)
             except OverallTimeout:
                 if not automatic:
                     raise

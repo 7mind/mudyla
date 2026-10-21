@@ -14,7 +14,7 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--github-actions`: Alias for `--logger github`; stream output with GitHub Actions groups.
 *   `--teamcity`: Alias for `--logger teamcity`; emit TeamCity service messages.
 *   `--logger pure|table|simple|verbose|github|teamcity`: Select the logger (`pure` by default). `raw` remains an alias for `simple`.
-*   `--plan auto|tree|dag|table`: Select the plan presentation for every logger (default: `auto`). Auto uses DAG for fewer than 30 actions in the final execution plan after pruning, and table for 30 or more or when DAG layout exceeds its time budget. Explicit `tree`, `dag`, or `table` selections always use the specified layout.
+*   `--plan auto|tree|dag|table`: Select the plan presentation for every logger (default: `auto`). Auto uses DAG for fewer than 30 actions in the final execution plan after pruning, and table for 30 or more or when DAG layout reaches its 1-second deadline. Explicit `tree`, `dag`, or `table` selections always use the specified layout.
 *   `--plan-minimize true|false`: Omit redundant ordering connections in tree and DAG views (default: `true`). Table plans always retain all dependency information.
 *   `--plan-dag-solver grid-auto|grid-low|grid-medium|grid-high|grid-opt|dagre|elk|sugiyama`: Select the DAG solver (default: `grid-auto`).
 *   `--simple-log`: Alias for `--logger simple`.
@@ -318,7 +318,7 @@ The PNGs rasterize Rich SVG exports with CoreText/Menlo. The
 
 Plan defaults to `--plan auto` with every logger: a connected dependency graph
 for fewer than 30 planned actions, or a table for 30 or more.
-Auto also falls back to table if DAG layout exceeds its time budget.
+Auto also falls back to table if DAG layout reaches its 1-second deadline.
 Select a presentation explicitly:
 
 ```bash
@@ -603,11 +603,11 @@ mdl --without-nix --plan-dag-solver grid-auto --fullscreen :demo-interactive
 | `grid-low` | The fully evaluated greedy seed. |
 | `grid-medium` | The same Grid search, up to 20 complete layout evaluations. |
 | `grid-high` | The same Grid search, up to 100 complete layout evaluations. |
-| `grid-opt` | The same finite Grid search without an effort cap, within the shared time limit. |
+| `grid-opt` | The same finite Grid search to exhaustion, without an effort or time limit. |
 | `dagre` | Longest-path ranks, weighted median ordering, transpose passes and corrected Brandes–Köpf coordinates. |
 | `sugiyama` | Dependency-depth ranks, barycenter ordering and bounded quadratic coordinate relaxation. |
 | `elk` | Linear-segment placement, pendulum passes and orthogonal north/south port channels with common-target trunks. |
-| `grid-auto` | Continue one Grid search through the effort checkpoints until exhaustion or the time limit. |
+| `grid-auto` | Continue one Grid search through the effort checkpoints until exhaustion or 200 ms, waiting for the first complete layout if necessary. |
 
 These selectors use Python implementations of the stated algorithm phases;
 they do not reproduce complete upstream engines or require an external runtime.
@@ -630,20 +630,25 @@ order; exhaustion proves its optimum for the supplied objective. An effort or
 time limit provides no proof. This does not claim an optimum across other layout
 algorithms. Dagre, ELK and Sugiyama remain manual selectors.
 
-`grid-auto` improves layouts for up to 200 ms. If no complete layout exists yet,
-it continues until the first layout completes or 1 second elapses. A first layout
-completed after 200 ms returns immediately. Both deadlines start before preparation
-and include search expansion, native scoring and displayed projection. Other
-DAG solvers retain the shared 200 ms deadline. A deadline returns the best
-complete cached Grid incumbent; if even the seed cannot finish, `--plan auto`
-falls back to table and `--plan dag` reports the unfinished phase. Partial
+`grid-auto` uses a soft 200 ms optimization deadline. If no complete layout exists
+yet, it continues until the first layout completes, then returns immediately.
+Other DAG solvers have no automatic time limit and retain their stated effort
+limits; Ctrl-C interrupts them.
+
+`--plan auto` imposes a hard 1-second layout deadline for every selected solver.
+Reaching it selects table even if the solver has a complete incumbent.
+`--plan dag` imposes no hard deadline, so `grid-auto` can finish its first layout
+after 1 second. Both deadlines start before preparation and include search
+expansion, native scoring and displayed projection. A soft deadline returns the
+best complete cached Grid incumbent. Partial
 evaluations never replace an incumbent or count as tries. Other failures propagate with attempt history.
 These effort limits tune work rather than guaranteeing a fixed improvement.
 Deadline checks run cooperatively between finite operations; scheduling and
 checkpoint overhead can slightly exceed the nominal time limit.
-Lower-level callers pass the first-solution limit explicitly, for example
-`LayoutBudget(AUTO_FIRST_SOLUTION_BUDGET_SECONDS)`. After the first complete
-layout, Auto calls `budget.limit_to(OVERALL_BUDGET_SECONDS)` on that same budget;
+Lower-level callers can pass a hard limit explicitly, for example
+`build_dag_layout(graph, execution_order, budget=LayoutBudget(1.0))`.
+After the first complete layout, Auto calls
+`budget.limit_to(OVERALL_BUDGET_SECONDS)` on that same budget;
 `limit_to` can only shorten its duration and preserves its original start time.
 
 Terminal presentation keeps the existing action rows, including names, contexts,
@@ -668,7 +673,8 @@ CLI, Engine and Pure reuse this same builder and immutable layout. For lower-lev
 mathematical callers, `build_solver_input(graph, execution_order, node_sizes,
 display=display, budget=budget)` preserves the schedule, component presentation
 order and full-key typed edges. `create_solver(mode, input, objective=objective,
-budget=budget)` receives the caller-owned budget explicitly.
+budget=budget)` receives the caller-owned budget explicitly. `LayoutBudget(None)`
+disables its deadline; a finite duration remains enforced for every solver.
 
 `CandidateObjective.score(candidate, budget)` provides the required solver objective;
 `NativeObjective()` retains raw-geometry selection for mathematical/reference callers.

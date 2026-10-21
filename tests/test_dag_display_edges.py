@@ -233,36 +233,17 @@ def test_auto_minimized_choice_minimizes_the_displayed_gutter_objective():
         f'Auto chose {result.selected}, but {winner.mode} has a smaller displayed gutter objective')
 
 
-def test_direct_cli_projection_timeout_reports_completed_solver_attempts(tmp_path, monkeypatch, capsys):
-    import mudyla.cli as cli_module
+def test_caller_projection_timeout_reports_completed_solver_attempts(monkeypatch):
     from mudyla.dag.solver import budget as budget_module
     from mudyla.dag.solver.base import OverallTimeout
+    from mudyla.dag.solver.factory import create_solver
     clock = [0.0]
     monkeypatch.setattr(budget_module.time, 'monotonic', lambda: clock[0])
-    (tmp_path / '.git').mkdir()
-    definitions = tmp_path / '.mdl' / 'defs'
-    definitions.mkdir(parents=True)
-    (definitions / 'actions.md').write_text('''# action: source
-
-```python
-pass
-```
-
-# action: goal
-
-```python
-mdl.dep("action.source")
-pass
-```
-''', encoding='utf-8')
-    monkeypatch.chdir(tmp_path)
+    keys = [ActionKey.from_name(name) for name in ('source', 'goal')]
+    sample = fixture('projection-timeout', keys, [(1, Dependency(keys[0]))], [1], 120)
+    display = build_display_edges(sample.graph, tuple(keys), full=True)
+    model = build_solver_input(sample.graph, keys, {key: NodeSize(1, 1) for key in keys}, display=display)
     attempts = []
-    failures = []
-
-    def timeout(phase, history):
-        value = OverallTimeout(phase, history)
-        failures.append(value)
-        return value
 
     def expire(self, candidate, budget):
         attempts.extend(candidate.attempts)
@@ -270,15 +251,14 @@ pass
         budget.check('row_columns')
 
     monkeypatch.setattr(RowProjectionObjective, 'score', expire)
-    from mudyla.dag.solver import base as base_module
-    monkeypatch.setattr(base_module, 'OverallTimeout', timeout)
-    assert CLI().run(['--without-nix', '--dry-run', '--plan', 'dag', '--plan-dag-solver', 'dagre', ':goal']) == 1
-    captured = capsys.readouterr()
+    solver = create_solver('dagre', model, objective=RowProjectionObjective(model),
+                           budget=LayoutBudget(OVERALL_BUDGET_SECONDS))
+    with pytest.raises(OverallTimeout) as failure:
+        solver.solve()
     assert attempts and all(attempt.complete for attempt in attempts)
-    assert 'row_columns' in captured.out
-    assert 'Traceback' not in captured.err, 'Direct projection timeout escaped the domain failure boundary'
-    assert len(failures) == 1 and failures[0].attempts == tuple(attempts)
-    assert isinstance(failures[0].__cause__, budget_module.BudgetExpired)
+    assert failure.value.phase == 'row_columns'
+    assert failure.value.attempts == tuple(attempts)
+    assert isinstance(failure.value.__cause__, budget_module.BudgetExpired)
 
 
 def test_default_cli_projection_timeout_falls_back_to_table(tmp_path, monkeypatch, capsys):

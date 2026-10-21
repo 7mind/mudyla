@@ -23,7 +23,7 @@ from ...dag.solver.model import DagEdge, DisplayEdges, SolverResult
 from ...dag.solver.model import NodeSize, SolverMode
 from ...dag.solver.factory import DEFAULT_SOLVER_MODE, create_solver
 from ...dag.solver.graph import build_solver_input
-from ...dag.solver.budget import AUTO_FIRST_SOLUTION_BUDGET_SECONDS, BudgetExpired, LayoutBudget, OVERALL_BUDGET_SECONDS
+from ...dag.solver.budget import BudgetExpired, LayoutBudget
 from ...dag.solver.base import OverallTimeout
 from ...dag.display import build_display_edges
 from .symbols import StatusSymbol, SymbolsFormatter
@@ -233,12 +233,13 @@ class DependencyDag:
 
 def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey], *,
                      display: DisplayEdges | None = None, mode: SolverMode = DEFAULT_SOLVER_MODE,
-                     minimize: bool = True) -> NativeDagLayout:
+                     minimize: bool = True, budget: LayoutBudget | None = None) -> NativeDagLayout:
     from .native_dag import RowProjectionObjective, build_native_row_layout
 
-    started = time.monotonic()
-    budget = LayoutBudget(AUTO_FIRST_SOLUTION_BUDGET_SECONDS if mode == "auto" else OVERALL_BUDGET_SECONDS)
+    if budget is None:
+        budget = LayoutBudget(None)
     budget.start()
+    hard_deadline = budget.deadline
     try:
         selected = display if display is not None else build_display_edges(
             graph, tuple(execution_order), full=not minimize, budget=budget)
@@ -248,7 +249,10 @@ def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey], *,
     except BudgetExpired as error:
         raise OverallTimeout(error.phase, ()) from error
     result = create_solver(mode, model, objective=projection, budget=budget).solve()
-    return build_native_row_layout(result, projection=projection, preparation_ms=(time.monotonic() - started) * 1000)
+    layout = build_native_row_layout(result, projection=projection, preparation_ms=budget.elapsed() * 1000)
+    if hard_deadline is not None and time.monotonic() >= hard_deadline:
+        raise OverallTimeout("layout_commit", result.attempts)
+    return layout
 
 
 def execution_dag(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,
