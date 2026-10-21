@@ -13,7 +13,7 @@ from mudyla.dag.solver.budget import BudgetExpired
 from mudyla.dag.solver.factory import create_solver
 from mudyla.dag.solver.budget import LayoutBudget, OVERALL_BUDGET_SECONDS
 from mudyla.dag.solver.graph import build_solver_input
-from mudyla.dag.solver.model import NodeSize
+from mudyla.dag.solver.model import LayoutScore, NodeSize
 from mudyla.dag.solver.objective import NativeObjective
 from mudyla.logging.formatters import dag, layered
 from mudyla.logging.formatters.native_dag import RowProjectionObjective
@@ -151,3 +151,119 @@ def test_late_second_projection_preserves_grid_committed_seed(monkeypatch):
     monkeypatch.setattr(budget, "check", unexpected_check)
     assert solver.solve() is result
     assert objective.geometry(result) is completed[0]
+
+
+@pytest.fixture
+def controlled_layout_time(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    keys = [ActionKey.from_name(f"node{index}") for index in range(3)]
+    nodes = {key: ActionNode(key, ActionDefinition(
+        key.id.name, [], {}, SourceLocation("deadline", 1, key.id.name))) for key in keys}
+    for source, target in zip(keys, keys[1:]):
+        nodes[target].dependencies.add(Dependency(source))
+        nodes[source].dependents.add(Dependency(target))
+    return clock, ActionGraph(nodes, {keys[-1]}), keys
+
+
+@pytest.mark.parametrize("first_seconds", [.2, .6, .999])
+def test_auto_accepts_first_complete_layout_until_one_second(controlled_layout_time, monkeypatch, first_seconds):
+    clock, graph, keys = controlled_layout_time
+    original = RowProjectionObjective.score
+    completed = []
+
+    def first_solution(self, candidate, budget):
+        clock[0] = first_seconds
+        score = original(self, candidate, budget)
+        completed.append(candidate.components)
+        return score
+
+    monkeypatch.setattr(RowProjectionObjective, "score", first_solution)
+    layout = dag.build_dag_layout(graph, keys, mode="auto")
+    assert completed == [layout.native_result.components]
+    assert layout.native_result.progress.evaluated_layouts == 1
+    assert layout.native_result.progress.stop_reason == "deadline"
+    assert layout.preparation_ms == pytest.approx(first_seconds * 1000)
+
+
+@pytest.mark.parametrize("first_seconds", [1.0, 1.01])
+@pytest.mark.parametrize("phase", ["row_columns", "grid_commit"])
+def test_auto_rejects_first_layout_at_one_second(controlled_layout_time, monkeypatch, first_seconds, phase):
+    clock, graph, keys = controlled_layout_time
+    original = RowProjectionObjective.score
+
+    def late_solution(self, candidate, budget):
+        if phase == "row_columns":
+            clock[0] = first_seconds
+        score = original(self, candidate, budget)
+        clock[0] = first_seconds
+        return score
+
+    monkeypatch.setattr(RowProjectionObjective, "score", late_solution)
+    with pytest.raises(OverallTimeout) as timeout:
+        dag.build_dag_layout(graph, keys, mode="auto")
+    assert timeout.value.attempts[0].budget_seconds == 1.0
+    assert timeout.value.attempts[0].timed_out
+    assert timeout.value.phase == phase
+
+
+def test_auto_stops_improving_at_two_hundred_milliseconds(controlled_layout_time, monkeypatch):
+    clock, graph, keys = controlled_layout_time
+    original = RowProjectionObjective.score
+    times = iter([.05, .15, .2])
+    completed = []
+
+    def improving(self, candidate, budget):
+        clock[0] = next(times)
+        original(self, candidate, budget)
+        completed.append(candidate.components)
+        return LayoutScore(0, 0, 3 - len(completed))
+
+    monkeypatch.setattr(RowProjectionObjective, "score", improving)
+    layout = dag.build_dag_layout(graph, keys, mode="auto")
+    assert len(completed) == 2
+    assert layout.native_result.components == completed[1]
+    assert layout.native_result.progress.evaluated_layouts == 2
+    assert layout.native_result.progress.best_try == 2
+    assert layout.native_result.progress.stop_reason == "deadline"
+    assert layout.preparation_ms == pytest.approx(200)
+
+
+def test_budget_limit_keeps_original_start_and_cannot_extend_deadline(controlled_layout_time):
+    clock, _, _ = controlled_layout_time
+    budget = LayoutBudget(1)
+    budget.start()
+    clock[0] = .1
+    budget.limit_to(.2)
+    assert budget.remaining() == pytest.approx(.1)
+    budget.limit_to(1)
+    assert budget.remaining() == pytest.approx(.1)
+    clock[0] = .2
+    with pytest.raises(BudgetExpired):
+        budget.check("deadline")
+
+
+@pytest.mark.parametrize("projection_seconds,succeeds", [(.3, True), (.4, False)])
+def test_auto_first_solution_budget_includes_preparation(controlled_layout_time, monkeypatch, projection_seconds, succeeds):
+    clock, graph, keys = controlled_layout_time
+    original_input = dag.build_solver_input
+    original_score = RowProjectionObjective.score
+
+    def prepare(*args, **kwargs):
+        result = original_input(*args, **kwargs)
+        clock[0] = .6
+        return result
+
+    def project(self, candidate, budget):
+        clock[0] += projection_seconds
+        return original_score(self, candidate, budget)
+
+    monkeypatch.setattr(dag, "build_solver_input", prepare)
+    monkeypatch.setattr(RowProjectionObjective, "score", project)
+    if succeeds:
+        layout = dag.build_dag_layout(graph, keys, mode="auto")
+        assert layout.preparation_ms == pytest.approx(900)
+        assert layout.native_result.progress.evaluated_layouts == 1
+    else:
+        with pytest.raises(OverallTimeout):
+            dag.build_dag_layout(graph, keys, mode="auto")

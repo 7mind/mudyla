@@ -29,7 +29,7 @@ from mudyla.logging.formatters.dag import DagLayout, build_dag_layout, execution
 from mudyla.logging.formatters import layered
 
 
-@pytest.mark.parametrize("plan", ["table", "tree", "dag"])
+@pytest.mark.parametrize("plan", ["auto", "table", "tree", "dag"])
 def test_plan_options_are_builtin_flags(plan):
     args, unknown = CLI().parser.parse_known_args(["--plan", plan])
     assert unknown == [] and args.plan_style == plan
@@ -636,7 +636,7 @@ def test_unspecified_plan_matches_explicit_dag_and_retains_tree_alternative(comp
     cli = CLI()
     args = cli.parser.parse_args([])
     cli._apply_platform_defaults(args, True)
-    assert args.plan_style == "dag"
+    assert args.plan_style == "auto"
     assert frames[0] == frames[1]
     assert "Plan:" in frames[2] and "shared; shown above" in frames[2]
 

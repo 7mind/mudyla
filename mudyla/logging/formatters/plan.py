@@ -17,7 +17,7 @@ from .sections import section
 from .symbols import StatusSymbol, SymbolsFormatter
 
 MIN_LABEL_WIDTH = 8
-PlanStyle = Literal["table", "tree", "dag"]
+PlanStyle = Literal["auto", "table", "tree", "dag"]
 
 
 def execution_table(graph: ActionGraph, execution_order: list[ActionKey], formatter: ContextFormatter,

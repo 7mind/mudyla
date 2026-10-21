@@ -104,9 +104,9 @@ def test_explicit_full_table_plan_and_run_fields_use_shared_sections(tmp_path, m
     assert "deps ready" not in plan
 
 
-@pytest.mark.parametrize("mode,option,expected", [("table", [], "dag"), ("table", ["--plan", "tree"], "tree"),
-    ("table", ["--plan", "dag"], "dag"), ("pure", [], "dag")])
-def test_plan_defaults_to_dag_and_preserves_explicit_presentations(mode, option, expected):
+@pytest.mark.parametrize("mode,option,expected", [("table", [], "auto"), ("table", ["--plan", "tree"], "tree"),
+    ("table", ["--plan", "dag"], "dag"), ("pure", [], "auto")])
+def test_plan_defaults_to_auto_and_preserves_explicit_presentations(mode, option, expected):
     cli = CLI()
     args = cli.parser.parse_args(["--logger", mode, "--force-interactive", *option])
     cli._apply_platform_defaults(args, True)

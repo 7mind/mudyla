@@ -14,7 +14,7 @@ Usage: `mdl [OPTIONS] :goal1 :goal2 ...`
 *   `--github-actions`: Alias for `--logger github`; stream output with GitHub Actions groups.
 *   `--teamcity`: Alias for `--logger teamcity`; emit TeamCity service messages.
 *   `--logger pure|table|simple|verbose|github|teamcity`: Select the logger (`pure` by default). `raw` remains an alias for `simple`.
-*   `--plan tree|dag|table`: Select the plan presentation for every logger (default: `dag`).
+*   `--plan auto|tree|dag|table`: Select the plan presentation for every logger (default: `auto`). Auto uses DAG for fewer than 30 actions in the final execution plan after pruning, and table for 30 or more or when DAG layout exceeds its time budget. Explicit `tree`, `dag`, or `table` selections always use the specified layout.
 *   `--plan-minimize true|false`: Omit redundant ordering connections in tree and DAG views (default: `true`). Table plans always retain all dependency information.
 *   `--plan-dag-solver grid-auto|grid-low|grid-medium|grid-high|grid-opt|dagre|elk|sugiyama`: Select the DAG solver (default: `grid-auto`).
 *   `--simple-log`: Alias for `--logger simple`.
@@ -56,7 +56,7 @@ and run artifacts. They change how execution appears:
 
 | Logger | Behavior |
 |--------|----------|
-| `pure` (default) | Interactive Actions DAG with animated status, elapsed times, latest log lines and totals. Borderless detail views; optional separate Plan tree and checklist. |
+| `pure` (default) | Interactive Actions DAG or a static Plan table with a flat Actions list, selected by `--plan`. Animated status, elapsed times, latest log lines, totals and borderless detail views. |
 | `table` | Content-sized live action columns, counts in the footer, and the same action controls and detail views. `--plan table` selects the full static plan table. |
 | `simple` | Append-only command/start and completion markers, compact Plan and summaries. Captures successful output silently; shows the combined capture once on failure. |
 | `verbose` | Simple's compact sections plus commands and immediate stdout/stderr, including partial prompts. Failure summaries identify the error and log files without replaying streamed output. |
@@ -316,8 +316,10 @@ The PNGs rasterize Rich SVG exports with CoreText/Menlo. The
 
 ![pure execution checklist with --plan tree](../ui/pure-tree-dark.png)
 
-Plan uses a connected dependency graph by default with every logger.
-Select a different presentation explicitly:
+Plan defaults to `--plan auto` with every logger: a connected dependency graph
+for fewer than 30 planned actions, or a table for 30 or more.
+Auto also falls back to table if DAG layout exceeds its time budget.
+Select a presentation explicitly:
 
 ```bash
 mdl :build :test
@@ -329,7 +331,7 @@ mdl --plan table :build :test
 The explicit table Plan includes action numbers, contexts, goal markers, dependency
 row references (`~` weak, `?` soft), and counts of sharing goal contexts. Action names
 and context identifiers wrap in narrow terminals instead of losing their identity.
-All loggers use the shared DAG layout by default. Executing pure attaches runtime
+When auto selects DAG, all loggers use the shared DAG layout. Executing pure attaches runtime
 data and keyboard selection to this graph under `Actions:`; dry runs and other
 loggers print a static `Plan:`. Explicit `--plan table`, `--plan tree`, and `--plan dag`
 select the shared table, tree, or DAG, including with `--logger table`; the live action
@@ -609,8 +611,9 @@ mdl --without-nix --plan-dag-solver grid-auto --fullscreen :demo-interactive
 
 These selectors use Python implementations of the stated algorithm phases;
 they do not reproduce complete upstream engines or require an external runtime.
-An explicit `--plan-dag-solver` requires `--plan dag`. Tree and table presentations
-bypass DAG solving when the solver option is omitted. The DAG works with inline
+An explicit `--plan-dag-solver` accepts `--plan auto` or `--plan dag`. With auto,
+the solver runs only below 30 planned actions. Explicit tree and table presentations
+bypass DAG solving and reject the solver option. The DAG works with inline
 progress, `--fullscreen` and `--it`.
 
 Native candidates retain their unrelated-overlap, crossing and normalized-area
@@ -627,14 +630,21 @@ order; exhaustion proves its optimum for the supplied objective. An effort or
 time limit provides no proof. This does not claim an optimum across other layout
 algorithms. Dagre, ELK and Sugiyama remain manual selectors.
 
-One shared 200 ms deadline bounds the complete layout operation, including
-search expansion, native scoring and displayed projection. A deadline returns the
-best complete cached Grid incumbent; if even the seed cannot finish, the CLI
-reports the unfinished phase explicitly. Partial evaluations never replace an
-incumbent or count as tries. Other failures propagate with attempt history.
+`grid-auto` improves layouts for up to 200 ms. If no complete layout exists yet,
+it continues until the first layout completes or 1 second elapses. A first layout
+completed after 200 ms returns immediately. Both deadlines start before preparation
+and include search expansion, native scoring and displayed projection. Other
+DAG solvers retain the shared 200 ms deadline. A deadline returns the best
+complete cached Grid incumbent; if even the seed cannot finish, `--plan auto`
+falls back to table and `--plan dag` reports the unfinished phase. Partial
+evaluations never replace an incumbent or count as tries. Other failures propagate with attempt history.
 These effort limits tune work rather than guaranteeing a fixed improvement.
 Deadline checks run cooperatively between finite operations; scheduling and
 checkpoint overhead can slightly exceed the nominal time limit.
+Lower-level callers pass the first-solution limit explicitly, for example
+`LayoutBudget(AUTO_FIRST_SOLUTION_BUDGET_SECONDS)`. After the first complete
+layout, Auto calls `budget.limit_to(OVERALL_BUDGET_SECONDS)` on that same budget;
+`limit_to` can only shorten its duration and preserves its original start time.
 
 Terminal presentation keeps the existing action rows, including names, contexts,
 durations, latest output, selection and details. The selected layout supplies

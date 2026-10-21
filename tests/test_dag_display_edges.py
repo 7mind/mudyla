@@ -272,7 +272,7 @@ pass
     monkeypatch.setattr(RowProjectionObjective, 'score', expire)
     from mudyla.dag.solver import base as base_module
     monkeypatch.setattr(base_module, 'OverallTimeout', timeout)
-    assert CLI().run(['--without-nix', '--dry-run', '--plan-dag-solver', 'dagre', ':goal']) == 1
+    assert CLI().run(['--without-nix', '--dry-run', '--plan', 'dag', '--plan-dag-solver', 'dagre', ':goal']) == 1
     captured = capsys.readouterr()
     assert attempts and all(attempt.complete for attempt in attempts)
     assert 'row_columns' in captured.out
@@ -281,7 +281,7 @@ pass
     assert isinstance(failures[0].__cause__, budget_module.BudgetExpired)
 
 
-def test_default_cli_projection_timeout_reports_domain_failure(tmp_path, monkeypatch, capsys):
+def test_default_cli_projection_timeout_falls_back_to_table(tmp_path, monkeypatch, capsys):
     import mudyla.cli as cli_module
     from mudyla.dag.solver import budget as budget_module
     from mudyla.dag.solver.base import OverallTimeout
@@ -319,9 +319,9 @@ pass
     monkeypatch.setattr(layered, '_allocate_routing', expire)
     import mudyla.dag.solver.grid as grid_module
     monkeypatch.setattr(grid_module, 'OverallTimeout', timeout)
-    assert CLI().run(['--without-nix', '--dry-run', ':goal']) == 1
+    assert CLI().run(['--without-nix', '--dry-run', ':goal']) == 0
     captured = capsys.readouterr()
-    assert 'row_tracks' in captured.out
+    assert 'Deps: prerequisite row' in captured.out
     assert 'Traceback' not in captured.err, 'Default projection timeout escaped the domain failure boundary'
     assert len(failures) == 1 and failures[0].attempts
     assert failures[0].attempts[-1].timed_out

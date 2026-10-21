@@ -23,7 +23,7 @@ from ...dag.solver.model import DagEdge, DisplayEdges, SolverResult
 from ...dag.solver.model import NodeSize, SolverMode
 from ...dag.solver.factory import DEFAULT_SOLVER_MODE, create_solver
 from ...dag.solver.graph import build_solver_input
-from ...dag.solver.budget import BudgetExpired, LayoutBudget, OVERALL_BUDGET_SECONDS
+from ...dag.solver.budget import AUTO_FIRST_SOLUTION_BUDGET_SECONDS, BudgetExpired, LayoutBudget, OVERALL_BUDGET_SECONDS
 from ...dag.solver.base import OverallTimeout
 from ...dag.display import build_display_edges
 from .symbols import StatusSymbol, SymbolsFormatter
@@ -237,7 +237,7 @@ def build_dag_layout(graph: ActionGraph, execution_order: list[ActionKey], *,
     from .native_dag import RowProjectionObjective, build_native_row_layout
 
     started = time.monotonic()
-    budget = LayoutBudget(OVERALL_BUDGET_SECONDS)
+    budget = LayoutBudget(AUTO_FIRST_SOLUTION_BUDGET_SECONDS if mode == "auto" else OVERALL_BUDGET_SECONDS)
     budget.start()
     try:
         selected = display if display is not None else build_display_edges(

@@ -8,7 +8,7 @@ from mudyla.parser.markdown_parser import MarkdownParser
 from mudyla.utils.project_root import find_project_root
 
 
-@pytest.mark.parametrize('plan', ['dag', 'tree', 'table'])
+@pytest.mark.parametrize('plan', ['auto', 'dag', 'tree', 'table'])
 def test_canonical_plan_options_accept_explicit_values(plan):
     args, unknown = build_arg_parser().parse_known_args([
         '--plan', plan, '--plan-minimize', 'false', '--plan-dag-solver', 'dagre'])
@@ -17,12 +17,12 @@ def test_canonical_plan_options_accept_explicit_values(plan):
     assert args.plan_dag_solver == 'dagre'
 
 
-def test_plan_defaults_to_minimized_grid_auto_for_every_logger():
+def test_plan_defaults_to_auto_with_minimized_grid_auto_for_every_logger():
     cli = CLI()
     for mode in ('pure', 'table', 'simple'):
         args = cli.parser.parse_args(['--logger', mode, '--force-interactive'])
         cli._apply_platform_defaults(args, quiet_mode=True)
-        assert args.plan_style == 'dag'
+        assert args.plan_style == 'auto'
         assert args.plan_minimize is True and args.plan_dag_solver == 'grid-auto'
 
 
@@ -175,12 +175,12 @@ def test_explicit_dag_solver_rejects_non_dag_plans_before_discovery(plan, monkey
     cli = CLI()
     monkeypatch.setattr(cli, '_discover_markdown_files', lambda *args: pytest.fail('Conflicting plan reached discovery'))
     assert cli.run(['--plan', plan, '--plan-dag-solver', 'grid-auto', ':goal']) == 2
-    assert '--plan-dag-solver requires --plan dag' in capsys.readouterr().err
+    assert '--plan-dag-solver requires --plan auto or --plan dag' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('shell,file', [('bash', 'mdl.bash'), ('zsh', '_mdl')])
 @pytest.mark.parametrize('option,values', [
-    ('--plan', ['tree', 'dag', 'table']),
+    ('--plan', ['auto', 'tree', 'dag', 'table']),
     ('--plan-minimize', ['true', 'false']),
     ('--plan-dag-solver', ['grid-auto', 'grid-low', 'grid-medium', 'grid-high', 'grid-opt', 'dagre', 'elk', 'sugiyama']),
 ])

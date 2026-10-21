@@ -22,6 +22,7 @@ from ..dag.compiler import CompilationError
 from ..dag.display import build_display_edges
 from ..dag.graph import ActionGraph, ActionKey
 from ..dag.solver.model import DisplayEdges, SolverMode
+from ..dag.solver.base import OverallTimeout
 from ..dag.validator import ValidationError
 from .display_session import DisplaySession
 from .formatters.branches import BranchTheme
@@ -35,6 +36,9 @@ from .formatters.symbols import StatusSymbol
 if TYPE_CHECKING:
     from ..executor.engine import ActionResult, ExecutionResult
     from ..executor.retainer_executor import RetainerCompletion, RetainerRequest
+
+
+PLAN_TABLE_THRESHOLD = 30
 
 
 class LoggerMode(str, Enum):
@@ -218,10 +222,19 @@ class TerminalLogger(ABC):
         self.execution_order = list(execution_order)
         facts = self.retainers.complete_plan(len(execution_order))
         assert facts.retained_keys == frozenset(retained_targets)
+        automatic = self.plan_style == "auto"
+        if automatic:
+            self.plan_style = "dag" if len(execution_order) < PLAN_TABLE_THRESHOLD else "table"
         if self.plan_style == "dag":
             assert self.dag_solver is not None
-            self.layout = build_dag_layout(graph, self.execution_order, mode=self.dag_solver, minimize=self.plan_minimize)
-            self.display = self.layout.display
+            try:
+                self.layout = build_dag_layout(graph, self.execution_order, mode=self.dag_solver, minimize=self.plan_minimize)
+            except OverallTimeout:
+                if not automatic:
+                    raise
+                self.plan_style = "table"
+            else:
+                self.display = self.layout.display
         elif self.plan_style == "tree":
             self.display = build_display_edges(graph, tuple(execution_order), full=not self.plan_minimize)
         self.static_plan = self._plan()

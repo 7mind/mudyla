@@ -5,6 +5,7 @@ import time
 from typing import TypeVar
 
 OVERALL_BUDGET_SECONDS = 0.2
+AUTO_FIRST_SOLUTION_BUDGET_SECONDS = 1.0
 T = TypeVar("T")
 
 
@@ -27,6 +28,14 @@ class LayoutBudget:
     def remaining(self) -> float:
         assert self._deadline is not None, "Layout budget has not started"
         return max(0.0, self._deadline - time.monotonic())
+
+    def limit_to(self, seconds: float) -> None:
+        """Shorten the duration measured from the original start, without restarting."""
+        assert seconds > 0
+        assert self._deadline is not None, "Layout budget has not started"
+        duration = min(self.seconds, seconds)
+        self._deadline -= self.seconds - duration
+        self.seconds = duration
 
     def check(self, phase: str) -> None:
         if self.remaining() <= 0:

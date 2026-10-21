@@ -38,8 +38,11 @@ Shrinking the terminal during inline updates can leave previous frame fragments 
 `--it` / `--interactive` opens fullscreen and keeps the completed view open.
 Opening details from an inline view temporarily enters fullscreen; returning restores
 the same action selection.
-`--plan tree|dag|table` selects the plan layout in any logger; the default is DAG
-with `--plan-dag-solver grid-auto`. `--plan-minimize true|false` controls redundant
+`--plan auto|tree|dag|table` selects the plan layout in any logger. The default,
+`auto`, uses DAG for fewer than 30 planned actions and table for 30 or more,
+or when DAG layout exceeds its time budget.
+Explicit `tree`, `dag`, and `table` selections always use that layout.
+DAG uses `--plan-dag-solver grid-auto` by default. `--plan-minimize true|false` controls redundant
 connections in tree and DAG views (default: `true`); table plans retain all dependency information.
 Press `i` in the Actions list or stdout view to send input to a selected running action:
 

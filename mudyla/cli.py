@@ -146,7 +146,7 @@ class CLI:
             logger.finish_run()
 
     def _create_logger(self, args: argparse.Namespace) -> TerminalLogger:
-        solver: SolverMode | None = ("auto" if args.plan_style == "dag" and args.plan_dag_solver in {None, "grid-auto"}
+        solver: SolverMode | None = ("auto" if args.plan_style in {"auto", "dag"} and args.plan_dag_solver in {None, "grid-auto"}
                                     else args.plan_dag_solver)
         return create_terminal_logger(LoggerMode(args.logger) if args.logger is not None else LoggerMode.PURE,
             no_color=args.no_color, force_interactive=args.force_interactive, interactive=args.interactive,
@@ -197,9 +197,9 @@ class CLI:
         except ValueError as error:
             self.parser.error(str(error))
         args.logger = mode.value
-        if args.plan_style != 'dag' and args.plan_dag_solver is not None:
-            self.parser.error('--plan-dag-solver requires --plan dag')
-        if args.plan_style == 'dag' and args.plan_dag_solver is None:
+        if args.plan_style not in {'auto', 'dag'} and args.plan_dag_solver is not None:
+            self.parser.error('--plan-dag-solver requires --plan auto or --plan dag')
+        if args.plan_style in {'auto', 'dag'} and args.plan_dag_solver is None:
             args.plan_dag_solver = 'grid-auto'
         args.verbose = mode == LoggerMode.VERBOSE
         args.github_actions = mode == LoggerMode.GITHUB

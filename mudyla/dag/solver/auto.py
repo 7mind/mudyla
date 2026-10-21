@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 from .base import DagSolver
+from .budget import OVERALL_BUDGET_SECONDS
 from .grid import GRID_EFFORT_LIMITS, GridSearch
 from .model import SolverCandidate, SolverMode, SolverResult
 
@@ -18,6 +19,8 @@ class AutoSolver(DagSolver):
         candidates: list[SolverCandidate] = []
         for mode, limit in GRID_EFFORT_LIMITS:
             candidate = self.search.advance(limit)
+            if not candidates:
+                self.budget.limit_to(OVERALL_BUDGET_SECONDS)
             progress = candidate.progress
             assert progress is not None
             if limit is None or progress.stop_reason != 'effort_limit':

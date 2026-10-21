@@ -134,7 +134,7 @@ def test_default_solver_is_resolved_only_at_argument_normalization():
     args = cli.parser.parse_args([])
     assert args.plan_dag_solver is None
     cli._apply_platform_defaults(args, quiet_mode=True)
-    assert args.plan_style == 'dag' and args.plan_dag_solver == 'grid-auto'
+    assert args.plan_style == 'auto' and args.plan_dag_solver == 'grid-auto'
 
 def test_default_dependency_crossings_use_cuts_without_bridge_glyphs():
     keys = [ActionKey.from_name(name) for name in ('a', 'b', 'c', 'x', 'y', 'z')]

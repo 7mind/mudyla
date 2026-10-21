@@ -5,7 +5,7 @@ _mdl_completion() {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     case "$prev" in
-        --plan) COMPREPLY=($(compgen -W "tree dag table" -- "$cur")); return 0 ;;
+        --plan) COMPREPLY=($(compgen -W "auto tree dag table" -- "$cur")); return 0 ;;
         --plan-minimize) COMPREPLY=($(compgen -W "true false" -- "$cur")); return 0 ;;
         --plan-dag-solver) COMPREPLY=($(compgen -W "grid-auto grid-low grid-medium grid-high grid-opt dagre elk sugiyama" -- "$cur")); return 0 ;;
     esac

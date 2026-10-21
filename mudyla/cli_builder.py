@@ -74,8 +74,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show execution plan without executing",
     )
-    parser.add_argument('--plan', dest='plan_style', choices=('tree', 'dag', 'table'), default='dag',
-                        help='Plan presentation (default: dag)')
+    parser.add_argument('--plan', dest='plan_style', choices=('auto', 'tree', 'dag', 'table'), default='auto',
+                        help='Plan presentation (default: auto; DAG below 30 actions, '
+                             'table for 30 or more actions or a DAG layout timeout)')
     parser.add_argument('--plan-minimize', type=_boolean, default=True,
                         help='Remove redundant execution-order connections in tree/DAG plans (default: true)')
     parser.add_argument('--plan-dag-solver', default=None,
